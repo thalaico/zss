@@ -217,11 +217,17 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 }
 
 pub fn blockElement(box_gen: *BoxGen) !Result {
-    if (box_gen.inline_context.ifc.top.?.depth == 1) {
-        return try endMode(box_gen);
-    } else {
-        std.debug.panic("TODO: Block boxes within IFCs", .{});
+    // Close nested inline boxes down to depth 1
+    // This handles block elements inside inline elements (e.g., <span><div>...</div></span>)
+    // TODO: Full CSS 2.1 spec requires splitting the IFC, but this minimal implementation
+    // closes inline boxes and continues, which is safe and unblocks rendering.
+    while (box_gen.inline_context.ifc.top.?.depth > 1) {
+        _ = try popInlineBox(box_gen);
+        // Note: popInlineBox() automatically decrements depth
     }
+    
+    // Now at depth 1, end the IFC normally
+    return try endMode(box_gen);
 }
 
 pub fn nullNode(box_gen: *BoxGen) !?Result {
