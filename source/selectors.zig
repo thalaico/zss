@@ -230,9 +230,15 @@ fn matchCompoundSelector(
                 const element_with_id = env.getElementById(id) orelse return false;
                 if (element != element_with_id) return false;
             },
-            .class,
-            .attribute,
-            => panic("TODO: Unsupported simple selector: {s}", .{@tagName(data[index].simple_selector_tag)}),
+            .class => {
+                // Skip class selectors for now (not implemented)
+                // Return false to not match this selector
+                return false;
+            },
+            .attribute => {
+                // Skip attribute selectors for now (not implemented)
+                return false;
+            },
             .pseudo_class => {
                 index += 1;
                 const pseudo_class = data[index].pseudo_class_selector;
