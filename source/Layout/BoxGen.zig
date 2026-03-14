@@ -141,7 +141,11 @@ fn dispatch(
         .none => box_gen.getLayout().advanceNode(),
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
-        .absolute => box_gen.getLayout().advanceNode(), // TODO: Absolute positioning not yet implemented - skip rendering
+        .absolute => {
+            // Simplified absolute positioning: render as block in normal flow
+            // TODO: Implement proper out-of-flow positioning with containing blocks
+            try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style);
+        },
     }
 }
 

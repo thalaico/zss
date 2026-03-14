@@ -174,7 +174,11 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                 const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
                 solveInsetsRelative(specified.insets, containing_block_size, &computed_insets, used_insets);
             },
-            else => panic("TODO: Block insets with {s} positioning", .{@tagName(computed_box_style.position)}),
+            .absolute, .fixed, .sticky => {
+                // TODO: Implement proper absolute/fixed/sticky positioning
+                // For now, treat as static to avoid panic
+                solveInsetsStatic(specified.insets, &computed_insets, used_insets);
+            },
         }
     }
 
