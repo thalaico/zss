@@ -167,14 +167,19 @@ fn dispatchBlockElement(
         
         // Route table elements to table layout mode
         if (type_iter.eql("table")) {
-            return try table.tableElement(box_gen, node);
+            return try table.tableElement(box_gen, node, box_style.position);
         } else if (type_iter.eql("tr")) {
-            return try table.rowElement(box_gen, node);
+            return try table.rowElement(box_gen, node, box_style.position);
         }
     }
     
     // Regular block element handling
-    const inner_box_style = box_style.outer.block;
+    // Get inner box style based on outer type
+    const inner_box_style = switch (box_style.outer) {
+        .block => |b| b,
+        .absolute => |b| b,
+        else => unreachable, // dispatchBlockElement should only be called with block or absolute
+    };
     switch (is_root) {
         .root => try initial.blockElement(box_gen, node, inner_box_style, box_style.position),
         .not_root => sw: switch (current_mode) {
@@ -373,6 +378,7 @@ const BlockInfo = struct {
     stacking_context_id: ?StackingContextTree.Id,
     absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
     node: NodeId,
+    out_of_flow: bool,
 };
 
 fn newBlock(box_gen: *BoxGen) !BlockRef {
@@ -422,6 +428,7 @@ pub fn pushInitialContainingBlock(box_gen: *BoxGen, size: math.Size) !BlockRef {
         .stacking_context_id = stacking_context_id,
         .absolute_containing_block_id = absolute_containing_block_id,
         .node = undefined,
+        .out_of_flow = false,
     };
     box_gen.stacks.containing_block_size.top = .{
         .width = size.w,
@@ -458,6 +465,8 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     };
     subtree.items(.borders)[index] = .{};
     subtree.items(.margins)[index] = .{};
+    subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
+    subtree.items(.out_of_flow)[index] = false;
 }
 
 pub fn pushFlowBlock(
@@ -481,6 +490,7 @@ pub fn pushFlowBlock(
         .stacking_context_id = stacking_context_id,
         .absolute_containing_block_id = absolute_containing_block_id,
         .node = node,
+        .out_of_flow = box_style.position == .absolute,
     });
     try box_gen.stacks.containing_block_size.push(layout.allocator, .{
         .width = switch (available_width) {
@@ -514,7 +524,7 @@ pub fn popFlowBlock(
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
     };
     const height = flow.solveUsedHeight(block_info.sizes, auto_height);
-    setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node);
+    setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow);
 }
 
 pub fn pushStfFlowBlock(
@@ -560,7 +570,7 @@ pub fn popStfFlowBlock2(
     const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip);
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, auto_height);
-    setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node);
+    setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false);
 
     const ref: BlockRef = .{ .subtree = subtree_id, .index = block.index };
     if (stacking_context_id) |id| box_gen.sct_builder.setBlock(id, box_tree.ptr, ref);
@@ -791,11 +801,15 @@ fn setDataBlock(
     height: math.Unit,
     stacking_context: ?StackingContextTree.Id,
     node: NodeId,
+    out_of_flow: bool,
 ) void {
     subtree.items(.skip)[index] = skip;
     subtree.items(.type)[index] = .block;
     subtree.items(.stacking_context)[index] = stacking_context;
     subtree.items(.node)[index] = node;
+    // Initialize insets to zero; cosmetic layout pass will set actual values for positioned elements
+    subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
+    subtree.items(.out_of_flow)[index] = out_of_flow;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -845,6 +859,8 @@ fn setDataIfcContainer(
     };
     subtree.items(.borders)[index] = .{};
     subtree.items(.margins)[index] = .{};
+    subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
+    subtree.items(.out_of_flow)[index] = false;
 }
 
 fn setDataSubtreeProxy(
@@ -872,4 +888,6 @@ fn setDataSubtreeProxy(
     };
     subtree.items(.borders)[index] = .{};
     subtree.items(.margins)[index] = .{};
+    subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
+    subtree.items(.out_of_flow)[index] = false;
 }

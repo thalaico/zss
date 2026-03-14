@@ -233,6 +233,8 @@ pub const Subtree = struct {
         background: BlockBoxBackground,
         overflow: values.types.Overflow,
         opacity: values.types.Opacity,
+        /// True for position:absolute/fixed elements that should not participate in normal flow.
+        out_of_flow: bool,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

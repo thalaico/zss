@@ -233,13 +233,13 @@ fn endMode(box_gen: *BoxGen) void {
 }
 
 /// Handle a table element
-pub fn tableElement(box_gen: *BoxGen, node: NodeId) !void {
+pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
     
     // Treat table as a block, but track it in table context
-    const sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
-    const stacking_context = flow.solveStackingContext(computer, .static);
+    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
     
     // Push table state and pre-compute column count from DOM structure.
@@ -255,14 +255,14 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId) !void {
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .table, .bfc_depth = box_gen.bfc_stack.top.? });
-    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }
 
 /// Handle a table-row element
-pub fn rowElement(box_gen: *BoxGen, node: NodeId) !void {
+pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
     
@@ -270,14 +270,14 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId) !void {
     box_gen.table_context.beginRow();
     
     // Treat row as a block
-    const sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
-    const stacking_context = flow.solveStackingContext(computer, .static);
+    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
     
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .row, .bfc_depth = box_gen.bfc_stack.top.? });
-    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();

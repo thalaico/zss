@@ -174,9 +174,15 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                 const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
                 solveInsetsRelative(specified.insets, containing_block_size, &computed_insets, used_insets);
             },
-            .absolute, .fixed, .sticky => {
-                // TODO: Implement proper absolute/fixed/sticky positioning
-                // For now, treat as static to avoid panic
+            .absolute => {
+                const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
+                // Simplified absolute positioning:
+                // Apply insets as offsets from containing block
+                // TODO: Implement proper out-of-flow positioning with containing block resolution
+                solveInsetsAbsolute(specified.insets, containing_block_size, &computed_insets, used_insets);
+            },
+            .fixed, .sticky => {
+                // TODO: Implement fixed and sticky positioning
                 solveInsetsStatic(specified.insets, &computed_insets, used_insets);
             },
         }
@@ -328,6 +334,70 @@ fn solveInsetsRelative(
         .x = left orelse right orelse 0,
         // TODO: This depends on the writing mode of the containing block
         .y = top orelse bottom orelse 0,
+    };
+}
+
+fn solveInsetsAbsolute(
+    specified: SpecifiedValues(.insets),
+    containing_block_size: Size,
+    computed: *ComputedValues(.insets),
+    used: *BoxTree.Insets,
+) void {
+    // For absolute positioning, insets are relative to containing block edges
+    // Left: distance from left edge of containing block
+    // Top: distance from top edge of containing block
+    // If left is auto, use 0 (simplified - should use static position)
+    // If top is auto, use 0 (simplified - should use static position)
+    
+    var left: Unit = 0;
+    var top: Unit = 0;
+    
+    switch (specified.left) {
+        .px => |value| {
+            computed.left = .{ .px = value };
+            left = solve.length(.px, value);
+        },
+        .percentage => |value| {
+            computed.left = .{ .percentage = value };
+            left = solve.percentage(value, containing_block_size.w);
+        },
+        .auto => {
+            computed.left = .auto;
+            left = 0; // Simplified: should compute static position
+        },
+    }
+    
+    switch (specified.top) {
+        .px => |value| {
+            computed.top = .{ .px = value };
+            top = solve.length(.px, value);
+        },
+        .percentage => |value| {
+            computed.top = .{ .percentage = value };
+            top = solve.percentage(value, containing_block_size.h);
+        },
+        .auto => {
+            computed.top = .auto;
+            top = 0; // Simplified: should compute static position
+        },
+    }
+    
+    // Right and bottom are used for sizing when width/height are auto
+    // For now, just compute them for completeness
+    switch (specified.right) {
+        .px => |value| computed.right = .{ .px = value },
+        .percentage => |value| computed.right = .{ .percentage = value },
+        .auto => computed.right = .auto,
+    }
+    switch (specified.bottom) {
+        .px => |value| computed.bottom = .{ .px = value },
+        .percentage => |value| computed.bottom = .{ .percentage = value },
+        .auto => computed.bottom = .auto,
+    }
+    
+    used.* = .{
+        .x = left,
+        .y = top,
     };
 }
 

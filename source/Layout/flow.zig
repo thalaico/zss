@@ -490,7 +490,18 @@ pub fn solveInsets(
                 }
             }
         },
-        .absolute => unreachable,
+        .absolute => {
+            // Absolute positioning: insets computed during cosmetic layout
+            // For now, set all insets to 0 in flow layout
+            inline for (.{
+                .inset_inline_start,
+                .inset_inline_end,
+                .inset_block_start,
+                .inset_block_end,
+            }) |field| {
+                sizes.setValue(field, 0);
+            }
+        },
     }
 }
 
@@ -541,7 +552,11 @@ pub fn solveStackingContext(computer: *StyleComputer, position: BoxTree.BoxStyle
             .integer => |integer| return .{ .parentable = integer },
             .auto => return .{ .non_parentable = 0 },
         },
-        .absolute => unreachable,
+        .absolute => switch (z_index.z_index) {
+            // Absolute positioning creates stacking context when z-index is specified
+            .integer => |integer| return .{ .parentable = integer },
+            .auto => return .{ .non_parentable = 0 },
+        },
     }
 }
 
@@ -555,14 +570,21 @@ pub fn solveUsedHeight(sizes: BlockUsedSizes, auto_height: Unit) Unit {
 
 pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtree.Size) Unit {
     const skips = subtree.items(.skip);
+    const out_of_flow_flags = subtree.items(.out_of_flow);
     var child = index + 1;
     const end = index + skip;
     var offset: Unit = 0;
     while (child < end) {
-        subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
-        const box_offsets = subtree.items(.box_offsets)[child];
-        const margins = subtree.items(.margins)[child];
-        offset += box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+        if (out_of_flow_flags[child]) {
+            // Absolute/fixed positioned elements don't participate in normal flow.
+            // Give them offset 0 — their position is determined by insets from the cosmetic pass.
+            subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+        } else {
+            subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
+            const box_offsets = subtree.items(.box_offsets)[child];
+            const margins = subtree.items(.margins)[child];
+            offset += box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+        }
         child += skips[child];
     }
     return offset;
