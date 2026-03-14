@@ -335,9 +335,7 @@ fn blockBoxBackgrounds(
     },
     background_ptr: *BoxTree.BlockBoxBackground,
 ) !void {
-    std.debug.print("[SOLVE background] specified.background_color.color = {}, current_color = {}\n", .{specified.background_color.color, current_color});
     background_ptr.color = solve.color(specified.background_color.color, current_color);
-    std.debug.print("[SOLVE background] background_ptr.color = rgba({},{},{},{})\n", .{background_ptr.color.r, background_ptr.color.g, background_ptr.color.b, background_ptr.color.a});
 
     const images = specified.background.image;
     const clips = specified.background_clip.clip;
