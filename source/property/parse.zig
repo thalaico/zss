@@ -281,6 +281,38 @@ pub fn @"margin-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType
     return .{ .vertical_edges = .{ .margin_bottom = .{ .declared = value } } };
 }
 
+pub fn margin(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.margin) {
+    ctx.initDecl(declaration_index);
+    var sizes: [4]values.groups.SingleValue(types.LengthPercentageAuto) = undefined;
+    var num: u3 = 0;
+    for (0..4) |i| {
+        const size = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse break;
+        sizes[i] = .{ .declared = size };
+        num += 1;
+    }
+    if (!ctx.empty()) return null;
+    switch (num) {
+        0 => return null,
+        1 => return .{
+            .horizontal_edges = .{ .margin_left = sizes[0], .margin_right = sizes[0] },
+            .vertical_edges = .{ .margin_top = sizes[0], .margin_bottom = sizes[0] },
+        },
+        2 => return .{
+            .horizontal_edges = .{ .margin_left = sizes[1], .margin_right = sizes[1] },
+            .vertical_edges = .{ .margin_top = sizes[0], .margin_bottom = sizes[0] },
+        },
+        3 => return .{
+            .horizontal_edges = .{ .margin_left = sizes[1], .margin_right = sizes[1] },
+            .vertical_edges = .{ .margin_top = sizes[0], .margin_bottom = sizes[2] },
+        },
+        4 => return .{
+            .horizontal_edges = .{ .margin_left = sizes[3], .margin_right = sizes[1] },
+            .vertical_edges = .{ .margin_top = sizes[0], .margin_bottom = sizes[2] },
+        },
+        else => unreachable,
+    }
+}
+
 pub fn left(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.left) {
     ctx.initDecl(declaration_index);
     const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
@@ -424,6 +456,16 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
     const value = values.parse.color(ctx) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .background_color = .{ .color = .{ .declared = value } } };
+}
+
+/// Minimal background shorthand: only handles `background: <color>` case.
+/// Full CSS background shorthand supports image, position, size, repeat, etc.
+/// but the single-color case covers the vast majority of real-world usage.
+pub fn background(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.background) {
+    ctx.initDecl(declaration_index);
+    const color_value = values.parse.color(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .background_color = .{ .color = .{ .declared = color_value } } };
 }
 
 pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.@"background-image") {

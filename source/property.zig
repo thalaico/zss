@@ -48,6 +48,7 @@ pub const Property = enum {
     @"margin-right",
     @"margin-top",
     @"margin-bottom",
+    margin,
     left,
     right,
     top,
@@ -71,6 +72,7 @@ pub const Property = enum {
     @"background-clip",
     @"background-origin",
     @"background-size",
+    background,
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -107,6 +109,10 @@ pub const Property = enum {
             .@"margin-right"          => &.{.{.horizontal_edges, &.{.margin_right}  }},
             .@"margin-top"            => &.{.{.vertical_edges  , &.{.margin_top}    }},
             .@"margin-bottom"         => &.{.{.vertical_edges  , &.{.margin_bottom} }},
+            .margin                   => &.{
+                .{.horizontal_edges, &.{.margin_left, .margin_right}},
+                .{.vertical_edges,   &.{.margin_top, .margin_bottom}},
+            },
             .left                     => &.{.{.insets          , &.{.left}          }},
             .right                    => &.{.{.insets          , &.{.right}         }},
             .top                      => &.{.{.insets          , &.{.top}           }},
@@ -134,6 +140,11 @@ pub const Property = enum {
             .@"background-clip"       => &.{.{.background_clip , &.{.clip}          }},
             .@"background-origin"     => &.{.{.background      , &.{.origin}        }},
             .@"background-size"       => &.{.{.background      , &.{.size}          }},
+            .background               => &.{
+                .{.background_color, &.{.color}},
+                .{.background,       &.{.image, .repeat, .attachment, .position, .origin, .size}},
+                .{.background_clip,  &.{.clip}},
+            },
         };
         // zig fmt: on
     }

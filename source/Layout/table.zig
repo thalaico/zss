@@ -348,8 +348,9 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         sizes.margin_inline_start_untagged = table_ctx.row_x_cursor;
     }
 
-    // Advance cursor for next cell in this row
-    table_ctx.advanceCursor(cell_width);
+    // Advance cursor by full border-box width (content + padding + border)
+    const cell_border_box = cell_width + sizes.padding_inline_start + sizes.padding_inline_end + sizes.border_inline_start + sizes.border_inline_end;
+    table_ctx.advanceCursor(cell_border_box);
     
     computer.commitNode(.box_gen);
     
