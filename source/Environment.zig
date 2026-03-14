@@ -39,6 +39,7 @@ root_node: ?NodeId,
 node_properties: NodeProperties,
 ids_to_nodes: std.AutoHashMapUnmanaged(IdName, NodeId),
 
+nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
@@ -116,6 +117,7 @@ pub fn init(
         .root_node = null,
         .node_properties = .{},
         .ids_to_nodes = .empty,
+        .nodes_to_classes = .empty,
 
         .next_url_id = 0,
         .urls_to_images = .empty,
@@ -140,6 +142,14 @@ pub fn deinit(env: *Environment) void {
 
     env.node_properties.deinit(env.allocator);
     env.ids_to_nodes.deinit(env.allocator);
+    // Free the class name slices stored in nodes_to_classes, then the map itself.
+    {
+        var it = env.nodes_to_classes.valueIterator();
+        while (it.next()) |val| {
+            env.allocator.free(val.*);
+        }
+        env.nodes_to_classes.deinit(env.allocator);
+    }
 
     env.urls_to_images.deinit(env.allocator);
 }
@@ -546,6 +556,30 @@ pub fn registerId(env: *Environment, id: IdName, node: NodeId) !void {
 pub fn getElementById(env: *const Environment, id: IdName) ?NodeId {
     // TODO: Even if an element was returned, it could have been destroyed.
     return env.ids_to_nodes.get(id);
+}
+
+/// Store the class names associated with a DOM node.
+/// The caller must pass an allocator-owned slice; ownership transfers to the Environment.
+pub fn registerClasses(env: *Environment, node: NodeId, class_names_slice: []const ClassName) !void {
+    try env.nodes_to_classes.put(env.allocator, node, class_names_slice);
+}
+
+/// Returns true if the given node has the specified class name.
+pub fn nodeHasClass(env: *const Environment, node: NodeId, class_name: ClassName) bool {
+    const classes = env.nodes_to_classes.get(node) orelse return false;
+    for (classes) |cn| {
+        if (cn == class_name) return true;
+    }
+    return false;
+}
+
+/// Intern a class name from a raw UTF-8 string (e.g. from a DOM class attribute).
+/// Uses the same case sensitivity as the class_names interner was initialized with.
+pub fn addClassNameFromString(env: *Environment, string: []const u8) !ClassName {
+    const index = switch (env.id_class_sensitivity) {
+        inline else => |case| try env.class_names.addFromString(case, env.allocator, string),
+    };
+    return @enumFromInt(index);
 }
 
 pub const Testing = struct {

@@ -231,9 +231,9 @@ fn matchCompoundSelector(
                 if (element != element_with_id) return false;
             },
             .class => {
-                // Skip class selectors for now (not implemented)
-                // Return false to not match this selector
-                return false;
+                index += 1;
+                const class_name = data[index].class_selector;
+                if (!env.nodeHasClass(element, class_name)) return false;
             },
             .attribute => {
                 // Skip attribute selectors for now (not implemented)

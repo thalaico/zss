@@ -258,50 +258,89 @@ fn addFromTokenIterator(
 /// `string` must be UTF-8 encoded.
 pub fn addFromString(interner: *Utf8StringInterner, comptime case: Case, allocator: Allocator, string: []const u8) !usize {
     switch (case) {
-        .sensitive => @compileError("addFromString not implemented for case sensitive strings"),
-        .insensitive => {},
-    }
+        .sensitive => {
+            interner.debug.assertCase(.sensitive);
+            const SensitiveAdapter = struct {
+                interner: *const Utf8StringInterner,
 
-    const Adapter = struct {
-        interner: *const Utf8StringInterner,
-
-        pub fn hash(_: @This(), key: []const u8) u32 {
-            var hasher = Hasher{};
-            hasher.addString(key);
-            return hasher.end(.insensitive);
-        }
-
-        pub fn eql(adapter: @This(), key: []const u8, _: void, index: usize) bool {
-            const range = adapter.interner.indexer.values()[index];
-            if (key.len != range.len) return false;
-
-            var key_index: usize = 0;
-            var segment_iterator = adapter.interner.string.iterator(range.position, range.len);
-            while (segment_iterator.next()) |segment| {
-                const key_slice = key[key_index..][0..segment.len];
-                for (key_slice, segment) |a, b| {
-                    if (std.ascii.toLower(a) != b) return false;
+                pub fn hash(_: @This(), key: []const u8) u32 {
+                    var hasher = Hasher{};
+                    hasher.addString(key);
+                    return hasher.end(.sensitive);
                 }
-                key_index += segment.len;
+
+                pub fn eql(adapter: @This(), key: []const u8, _: void, index: usize) bool {
+                    const range = adapter.interner.indexer.values()[index];
+                    if (key.len != range.len) return false;
+
+                    var key_index: usize = 0;
+                    var segment_iterator = adapter.interner.string.iterator(range.position, range.len);
+                    while (segment_iterator.next()) |segment| {
+                        const key_slice = key[key_index..][0..segment.len];
+                        if (!std.mem.eql(u8, key_slice, segment)) return false;
+                        key_index += segment.len;
+                    }
+                    return true;
+                }
+            };
+
+            const gop = try interner.indexer.getOrPutAdapted(allocator, string, SensitiveAdapter{ .interner = interner });
+            if (gop.found_existing) return gop.index;
+            if (gop.index == interner.max_size) {
+                interner.indexer.swapRemoveAt(gop.index);
+                return error.MaxSizeExceeded;
             }
-            return true;
-        }
-    };
 
-    interner.debug.assertCase(.insensitive);
-    const gop = try interner.indexer.getOrPutAdapted(allocator, string, Adapter{ .interner = interner });
-    if (gop.found_existing) return gop.index;
-    if (gop.index == interner.max_size) {
-        interner.indexer.swapRemoveAt(gop.index);
-        return error.MaxSizeExceeded;
+            const range = Range{ .position = interner.string.position, .len = @intCast(string.len) };
+            try interner.string.append(allocator, string);
+            // No case adjustment needed for sensitive strings
+
+            gop.value_ptr.* = range;
+            return gop.index;
+        },
+        .insensitive => {
+            interner.debug.assertCase(.insensitive);
+            const Adapter = struct {
+                interner: *const Utf8StringInterner,
+
+                pub fn hash(_: @This(), key: []const u8) u32 {
+                    var hasher = Hasher{};
+                    hasher.addString(key);
+                    return hasher.end(.insensitive);
+                }
+
+                pub fn eql(adapter: @This(), key: []const u8, _: void, index: usize) bool {
+                    const range = adapter.interner.indexer.values()[index];
+                    if (key.len != range.len) return false;
+
+                    var key_index: usize = 0;
+                    var segment_iterator = adapter.interner.string.iterator(range.position, range.len);
+                    while (segment_iterator.next()) |segment| {
+                        const key_slice = key[key_index..][0..segment.len];
+                        for (key_slice, segment) |a, b| {
+                            if (std.ascii.toLower(a) != b) return false;
+                        }
+                        key_index += segment.len;
+                    }
+                    return true;
+                }
+            };
+
+            const gop = try interner.indexer.getOrPutAdapted(allocator, string, Adapter{ .interner = interner });
+            if (gop.found_existing) return gop.index;
+            if (gop.index == interner.max_size) {
+                interner.indexer.swapRemoveAt(gop.index);
+                return error.MaxSizeExceeded;
+            }
+
+            const range = Range{ .position = interner.string.position, .len = @intCast(string.len) };
+            try interner.string.append(allocator, string);
+            adjustCase(interner, .insensitive, range);
+
+            gop.value_ptr.* = range;
+            return gop.index;
+        },
     }
-
-    const range = Range{ .position = interner.string.position, .len = @intCast(string.len) };
-    try interner.string.append(allocator, string);
-    adjustCase(interner, .insensitive, range);
-
-    gop.value_ptr.* = range;
-    return gop.index;
 }
 
 test "Utf8StringInterner" {
