@@ -52,6 +52,8 @@ pub const Token = union(enum) {
     pub const Unit = enum {
         px,
         em,
+        vw,
+        vh,
     };
 
     pub const Dimension = struct {

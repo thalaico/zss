@@ -355,6 +355,10 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
         // Convert em to px using default font-size (16px).
         // TODO: Use computed font-size from cascade context for accurate em resolution.
         .em => .{ .px = number * 16.0 },
+        // Convert viewport units to px using default viewport size.
+        // TODO: Use actual viewport dimensions from layout context.
+        .vw => .{ .px = number * 8.0 },  // 800px viewport width / 100
+        .vh => .{ .px = number * 6.0 },  // 600px viewport height / 100
     };
 }
 
@@ -398,6 +402,12 @@ pub fn length(ctx: *Context, comptime Type: type) ?Type {
     const item = ctx.next() orelse return null;
     if (item.tag == .token_dimension) {
         if (genericLength(ctx, Type, item.index)) |result| return result;
+    }
+    // CSS spec: unitless 0 is valid for lengths.
+    if (item.tag == .token_integer) {
+        if (item.index.extra(ctx.ast).integer) |i| {
+            if (i == 0) return .{ .px = 0 };
+        }
     }
 
     ctx.resetPoint(item.index);
