@@ -255,7 +255,8 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId) !void {
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .table, .bfc_depth = box_gen.bfc_stack.top.? });
-    const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }
@@ -276,7 +277,8 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId) !void {
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .row, .bfc_depth = box_gen.bfc_stack.top.? });
-    const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }
@@ -357,7 +359,8 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try table_ctx.block_type_stack.append(alloc, .{ .block_type = .cell, .bfc_depth = box_gen.bfc_stack.top.? });
-    const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }

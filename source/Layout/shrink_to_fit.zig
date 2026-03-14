@@ -269,7 +269,8 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
         .flow => {
             if (sizes.get(.inline_size)) |inline_size| {
                 _ = try box_gen.pushSubtree();
-                const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+                const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };
+                const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
                 try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                 try box_gen.stf_context.appendFlowNormalObject(box_gen.getLayout().allocator, ref, node, inline_size + edge_width);
                 try box_gen.getLayout().pushNode();

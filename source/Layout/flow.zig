@@ -43,7 +43,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             const stacking_context = solveStackingContext(computer, position);
             computer.commitNode(.box_gen);
 
-            try pushBlock(box_gen, node, sizes, stacking_context);
+            try pushBlock(box_gen, node, sizes, stacking_context, position);
         },
     }
 }
@@ -75,10 +75,12 @@ fn pushBlock(
     node: NodeId,
     sizes: BlockUsedSizes,
     stacking_context: SctBuilder.Type,
+    position: BoxStyle.Position,
 ) !void {
     // The operations here must have corresponding reverse operations in `popBlock`.
     box_gen.bfc_stack.top.? += 1;
-    const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+    const box_style = BoxStyle{ .outer = .{ .block = .flow }, .position = position };
+    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }

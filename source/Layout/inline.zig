@@ -193,7 +193,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 layout.computer.commitNode(.box_gen);
 
                 if (sizes.get(.inline_size)) |_| {
-                    const ref = try box_gen.pushFlowBlock(sizes, .normal, stacking_context, node);
+                    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
+                    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
                     try layout.pushNode();
@@ -205,7 +206,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             sizes.padding_inline_start + sizes.padding_inline_end);
                     const available_width = solve.clampSize(available_width_unclamped, sizes.min_inline_size, sizes.max_inline_size);
 
-                    const ref = try box_gen.pushFlowBlock(sizes, .{ .stf = available_width }, stacking_context, node);
+                    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
+                    const ref = try box_gen.pushFlowBlock(box_style, sizes, .{ .stf = available_width }, stacking_context, node);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
                     try layout.pushNode();

@@ -371,7 +371,7 @@ const Block = struct {
 const BlockInfo = struct {
     sizes: BlockUsedSizes,
     stacking_context_id: ?StackingContextTree.Id,
-    // absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
+    absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
     node: NodeId,
 };
 
@@ -416,11 +416,11 @@ pub fn pushInitialContainingBlock(box_gen: *BoxGen, size: math.Size) !BlockRef {
 
     const layout = box_gen.getLayout();
     const stacking_context_id = try box_gen.sct_builder.pushInitial(layout.box_tree.ptr, ref);
-    // const absolute_containing_block_id = try box_gen.absolute.pushInitialContainingBlock(layout.allocator, ref);
+    const absolute_containing_block_id = try box_gen.absolute.pushInitialContainingBlock(layout.allocator, ref);
     box_gen.stacks.block_info.top = .{
         .sizes = BlockUsedSizes.icb(size),
         .stacking_context_id = stacking_context_id,
-        // .absolute_containing_block_id = absolute_containing_block_id,
+        .absolute_containing_block_id = absolute_containing_block_id,
         .node = undefined,
     };
     box_gen.stacks.containing_block_size.top = .{
@@ -462,7 +462,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
 
 pub fn pushFlowBlock(
     box_gen: *BoxGen,
-    // box_style: BoxTree.BoxStyle,
+    box_style: BoxTree.BoxStyle,
     sizes: BlockUsedSizes,
     available_width: union(SizeMode) {
         normal,
@@ -475,11 +475,11 @@ pub fn pushFlowBlock(
 
     const layout = box_gen.getLayout();
     const stacking_context_id = try box_gen.sct_builder.push(layout.allocator, stacking_context, layout.box_tree.ptr, ref);
-    // const absolute_containing_block_id = try box_gen.pushAbsoluteContainingBlock(box_style, ref);
+    const absolute_containing_block_id = try box_gen.pushAbsoluteContainingBlock(box_style, ref);
     try box_gen.stacks.block_info.push(layout.allocator, .{
         .sizes = sizes,
         .stacking_context_id = stacking_context_id,
-        // .absolute_containing_block_id = absolute_containing_block_id,
+        .absolute_containing_block_id = absolute_containing_block_id,
         .node = node,
     });
     try box_gen.stacks.containing_block_size.push(layout.allocator, .{
@@ -502,7 +502,7 @@ pub fn popFlowBlock(
 ) void {
     const layout = box_gen.getLayout();
     box_gen.sct_builder.pop(layout.box_tree.ptr);
-    // box_gen.popAbsoluteContainingBlock();
+    box_gen.popAbsoluteContainingBlock();
     const block = box_gen.popBlock();
     const block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
