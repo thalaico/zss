@@ -151,7 +151,6 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background),
         .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
     };
-    std.debug.print("[GET SPECIFIED] background_color = {}\n", .{specified.background_color});
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
 
