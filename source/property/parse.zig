@@ -455,6 +455,7 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
     ctx.initDecl(declaration_index);
     const value = values.parse.color(ctx) orelse return null;
     if (!ctx.empty()) return null;
+    std.debug.print("[PARSE background-color] Parsed color: {}\n", .{value});
     return .{ .background_color = .{ .color = .{ .declared = value } } };
 }
 
@@ -463,8 +464,15 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
 /// but the single-color case covers the vast majority of real-world usage.
 pub fn background(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.background) {
     ctx.initDecl(declaration_index);
-    const color_value = values.parse.color(ctx) orelse return null;
-    if (!ctx.empty()) return null;
+    const color_value = values.parse.color(ctx) orelse {
+        std.debug.print("[PARSE background] color parsing failed\n", .{});
+        return null;
+    };
+    if (!ctx.empty()) {
+        std.debug.print("[PARSE background] context not empty after color\n", .{});
+        return null;
+    }
+    std.debug.print("[PARSE background] Successfully parsed color: {}\n", .{color_value});
     return .{ .background_color = .{ .color = .{ .declared = color_value } } };
 }
 

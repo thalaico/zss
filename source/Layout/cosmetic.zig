@@ -145,10 +145,13 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .border_colors = layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
         .border_styles = layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
         .background_color = layout.computer.getSpecifiedValue(.cosmetic, .background_color),
+        // DEBUG: Check what we got from getSpecifiedValue
+        // .background_color will be logged below
         .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background),
         .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
     };
+    std.debug.print("[GET SPECIFIED] background_color = {}\n", .{specified.background_color});
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
 
@@ -332,7 +335,9 @@ fn blockBoxBackgrounds(
     },
     background_ptr: *BoxTree.BlockBoxBackground,
 ) !void {
+    std.debug.print("[SOLVE background] specified.background_color.color = {}, current_color = {}\n", .{specified.background_color.color, current_color});
     background_ptr.color = solve.color(specified.background_color.color, current_color);
+    std.debug.print("[SOLVE background] background_ptr.color = rgba({},{},{},{})\n", .{background_ptr.color.r, background_ptr.color.g, background_ptr.color.b, background_ptr.color.a});
 
     const images = specified.background.image;
     const clips = specified.background_clip.clip;
