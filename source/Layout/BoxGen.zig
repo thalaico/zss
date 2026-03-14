@@ -141,7 +141,7 @@ fn dispatch(
         .none => box_gen.getLayout().advanceNode(),
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
-        .absolute => std.debug.panic("TODO: Absolute blocks", .{}),
+        .absolute => box_gen.getLayout().advanceNode(), // TODO: Absolute positioning not yet implemented - skip rendering
     }
 }
 

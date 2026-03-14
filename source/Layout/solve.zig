@@ -78,7 +78,7 @@ pub fn colorProperty(specified: SpecifiedValues(.color)) struct { ComputedValues
     const used: math.Color = switch (computed.color) {
         .rgba => |rgba| .fromRgbaInt(rgba),
         .transparent => .transparent,
-        .current_color => std.debug.panic("TODO: 'currentColor' on the 'color' property", .{}),
+        .current_color => .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // TODO: currentColor on color property should inherit - fallback to black
     };
     return .{ computed, used };
 }
@@ -109,19 +109,31 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
                     };
                     return .{ computed, used };
                 },
-                .fixed => std.debug.panic("TODO: fixed positioning", .{}),
+                .fixed => {
+                    // TODO: fixed positioning not yet implemented - treat as absolute
+                    computed.display = blockify(specified.display);
+                    computed.float = .none;
+                    const used: BoxTree.BoxStyle = .{
+                        .outer = .{ .absolute = innerBlockType(computed.display) },
+                        .position = .absolute,
+                    };
+                    return .{ computed, used };
+                },
                 .static, .relative, .sticky => {},
             }
 
             if (specified.float != .none) {
-                std.debug.panic("TODO: floats", .{});
+                // TODO: float layout not yet implemented - treat as none
+                computed.float = .none;
+            } else {
+                computed.float = .none;
             }
 
             computed.display = specified.display;
             position = switch (computed.position) {
                 .static => .static,
                 .relative => .relative,
-                .sticky => std.debug.panic("TODO: sticky positioning", .{}),
+                .sticky => .static, // TODO: sticky positioning not yet implemented - treat as static
                 .absolute, .fixed => unreachable,
             };
         },
@@ -199,6 +211,7 @@ pub fn borderStyles(border_styles: SpecifiedValues(.border_styles)) void {
         fn solveOne(border_style: types.BorderStyle) void {
             switch (border_style) {
                 .none, .hidden, .solid => {},
+                // TODO: implement proper rendering for these border styles - treat as solid for now
                 .dotted,
                 .dashed,
                 .double,
@@ -206,7 +219,7 @@ pub fn borderStyles(border_styles: SpecifiedValues(.border_styles)) void {
                 .ridge,
                 .inset,
                 .outset,
-                => std.debug.panic("TODO: border-style: {s}", .{@tagName(border_style)}),
+                => {},
             }
         }
     };
