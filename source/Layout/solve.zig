@@ -83,12 +83,17 @@ pub fn colorProperty(specified: SpecifiedValues(.color)) struct { ComputedValues
     return .{ computed, used };
 }
 
+pub fn opacity(specified: SpecifiedValues(.opacity)) f32 {
+    return specified.opacity;
+}
+
 /// Implements the rules specified in section 9.7 of CSS2.2.
 pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.Layout.IsRoot) struct { ComputedValues(.box_style), BoxTree.BoxStyle } {
     var computed: ComputedValues(.box_style) = .{
         .display = undefined,
         .position = specified.position,
         .float = specified.float,
+        .overflow = specified.overflow,
     };
 
     if (specified.display == .none) {

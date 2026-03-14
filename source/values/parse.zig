@@ -596,6 +596,29 @@ pub fn float(ctx: *Context) ?types.Float {
     });
 }
 
+pub fn overflow(ctx: *Context) ?types.Overflow {
+    return keyword(ctx, types.Overflow, &.{
+        .{ "visible", .visible },
+        .{ "hidden", .hidden },
+        .{ "scroll", .scroll },
+        .{ "auto", .auto },
+    });
+}
+
+pub fn opacity(ctx: *Context) ?types.Opacity {
+    const item = ctx.next() orelse return null;
+    const value: f32 = switch (item.tag) {
+        .token_integer => if (item.index.extra(ctx.ast).integer) |i| @as(f32, @floatFromInt(i)) else null,
+        .token_percentage => item.index.extra(ctx.ast).number,
+        else => null,
+    } orelse {
+        ctx.resetPoint(item.index);
+        return null;
+    };
+    // Clamp opacity to 0.0-1.0 range
+    return @max(0.0, @min(1.0, value));
+}
+
 // Spec: CSS 2.2
 // auto | <integer>
 pub fn zIndex(ctx: *Context) ?types.ZIndex {

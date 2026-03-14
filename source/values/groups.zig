@@ -19,6 +19,7 @@ pub const Tag = enum {
     content_height,
     vertical_edges,
     z_index,
+    opacity,
     insets,
     border_colors,
     border_styles,
@@ -37,6 +38,7 @@ pub const Tag = enum {
             .content_height => ContentHeight,
             .vertical_edges => VerticalEdges,
             .z_index => ZIndex,
+            .opacity => Opacity,
             .insets => Insets,
             .border_colors => BorderColors,
             .border_styles => BorderStyles,
@@ -58,6 +60,7 @@ pub const Tag = enum {
             .content_height,
             .vertical_edges,
             .z_index,
+            .opacity,
             .insets,
             .border_colors,
             .border_styles,
@@ -82,6 +85,7 @@ pub const Tag = enum {
             .content_height,
             .vertical_edges,
             .z_index,
+            .opacity,
             .insets,
             .border_colors,
             .border_styles,
@@ -248,11 +252,13 @@ pub const BoxStyle = struct {
     display: types.Display,
     position: types.Position,
     float: types.Float,
+    overflow: types.Overflow,
 
     pub const initial_values = BoxStyle{
         .display = .@"inline",
         .position = .static,
         .float = .none,
+        .overflow = .visible,
     };
 };
 
@@ -340,6 +346,15 @@ pub const ZIndex = struct {
 
     pub const initial_values = ZIndex{
         .z_index = .auto,
+    };
+};
+
+/// opacity -> opacity
+pub const Opacity = struct {
+    opacity: types.Opacity,
+
+    pub const initial_values = Opacity{
+        .opacity = 1.0,
     };
 };
 

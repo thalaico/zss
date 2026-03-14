@@ -150,6 +150,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background),
         .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
+        .opacity = layout.computer.getSpecifiedValue(.cosmetic, .opacity),
     };
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
@@ -204,6 +205,10 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         );
     }
 
+    // Set overflow (from box_style) and opacity
+    subtree.items(.overflow)[ref.index] = computed_box_style.overflow;
+    subtree.items(.opacity)[ref.index] = solve.opacity(specified.opacity);
+
     layout.computer.setComputedValue(.cosmetic, .box_style, computed_box_style);
     layout.computer.setComputedValue(.cosmetic, .insets, computed_insets);
     layout.computer.setComputedValue(.cosmetic, .color, computed_color);
@@ -213,6 +218,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     layout.computer.setComputedValue(.cosmetic, .background_color, specified.background_color);
     layout.computer.setComputedValue(.cosmetic, .background_clip, specified.background_clip);
     layout.computer.setComputedValue(.cosmetic, .background, specified.background);
+    layout.computer.setComputedValue(.cosmetic, .opacity, specified.opacity);
 }
 
 fn solveInsetsStatic(
@@ -398,6 +404,8 @@ fn anonymousBlockBoxCosmeticLayout(box_tree: Layout.BoxTreeManaged, ref: BlockRe
     subtree.items(.border_colors)[ref.index] = .{};
     subtree.items(.background)[ref.index] = .{};
     subtree.items(.insets)[ref.index] = .{ .x = 0, .y = 0 };
+    subtree.items(.overflow)[ref.index] = .visible;
+    subtree.items(.opacity)[ref.index] = 1.0;
 }
 
 fn inlineBoxCosmeticLayout(

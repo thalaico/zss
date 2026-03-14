@@ -9,6 +9,7 @@ const MultiArrayList = std.MultiArrayList;
 
 const zss = @import("zss.zig");
 const math = zss.math;
+const values = zss.values;
 const NodeId = zss.Environment.NodeId;
 
 subtrees: ArrayListUnmanaged(*Subtree) = .{},
@@ -230,6 +231,8 @@ pub const Subtree = struct {
         insets: Insets,
         border_colors: BorderColors,
         background: BlockBoxBackground,
+        overflow: values.types.Overflow,
+        opacity: values.types.Opacity,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

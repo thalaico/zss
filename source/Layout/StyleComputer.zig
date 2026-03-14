@@ -50,6 +50,7 @@ const CosmeticComputedValues = struct {
     background: ?ComputedValues(.background) = null,
     color: ?ComputedValues(.color) = null,
     insets: ?ComputedValues(.insets) = null,
+    opacity: ?ComputedValues(.opacity) = null,
 };
 
 const Current = struct {

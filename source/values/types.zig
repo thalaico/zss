@@ -102,6 +102,13 @@ pub const Float = enum {
     none,
 };
 
+pub const Overflow = enum {
+    visible,
+    hidden,
+    scroll,
+    auto,
+};
+
 pub const Clear = enum {
     left,
     right,
@@ -231,3 +238,5 @@ pub const Font = enum {
     default,
     none,
 };
+
+pub const Opacity = f32;

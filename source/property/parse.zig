@@ -92,6 +92,20 @@ pub fn @"z-index"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"z-
     return .{ .z_index = .{ .z_index = .{ .declared = value } } };
 }
 
+pub fn overflow(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.overflow) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.overflow(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .overflow = .{ .declared = value } } };
+}
+
+pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.opacity(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .opacity = .{ .opacity = .{ .declared = value } } };
+}
+
 pub fn width(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.width) {
     ctx.initDecl(declaration_index);
     const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
