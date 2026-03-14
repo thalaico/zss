@@ -352,6 +352,9 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
     const unit = unit_index.extra(ctx.ast).unit orelse return null;
     return switch (unit) {
         .px => .{ .px = number },
+        // Convert em to px using default font-size (16px).
+        // TODO: Use computed font-size from cascade context for accurate em resolution.
+        .em => .{ .px = number * 16.0 },
     };
 }
 
@@ -605,10 +608,18 @@ pub fn overflow(ctx: *Context) ?types.Overflow {
     });
 }
 
+pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
+    return keyword(ctx, types.BoxSizing, &.{
+        .{ "content-box", .content_box },
+        .{ "border-box", .border_box },
+    });
+}
+
 pub fn opacity(ctx: *Context) ?types.Opacity {
     const item = ctx.next() orelse return null;
     const value: f32 = switch (item.tag) {
         .token_integer => if (item.index.extra(ctx.ast).integer) |i| @as(f32, @floatFromInt(i)) else null,
+        .token_number => item.index.extra(ctx.ast).number,
         .token_percentage => item.index.extra(ctx.ast).number,
         else => null,
     } orelse {

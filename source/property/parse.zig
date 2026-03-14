@@ -106,6 +106,13 @@ pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity
     return .{ .opacity = .{ .opacity = .{ .declared = value } } };
 }
 
+pub fn @"box-sizing"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"box-sizing") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.boxSizing(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .content_width = .{ .box_sizing = .{ .declared = value } } };
+}
+
 pub fn width(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.width) {
     ctx.initDecl(declaration_index);
     const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;

@@ -269,11 +269,13 @@ pub const ContentWidth = struct {
     width: types.Size,
     min_width: types.MinSize,
     max_width: types.MaxSize,
+    box_sizing: types.BoxSizing,
 
     pub const initial_values = ContentWidth{
         .width = .auto,
         .min_width = .{ .px = 0 },
         .max_width = .none,
+        .box_sizing = .content_box,
     };
 };
 

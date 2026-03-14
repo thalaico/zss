@@ -44,7 +44,9 @@ const Tag = enum {
 
 pub fn pushContainingBlock(absolute: *Absolute, allocator: Allocator, box_style: BoxStyle, ref: BlockRef) !?ContainingBlock.Id {
     switch (box_style.position) {
-        .static => {
+        .static, .fixed => {
+            // Static elements don't create containing blocks.
+            // Fixed elements use the initial containing block (viewport), not ancestors.
             try absolute.containing_block_tag.append(allocator, .none);
             return null;
         },

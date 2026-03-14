@@ -850,7 +850,7 @@ fn inlineBlockSolveStackingContext(
             .integer => |integer| return .{ .parentable = integer },
             .auto => return .{ .non_parentable = 0 },
         },
-        .absolute => unreachable,
+        .absolute, .fixed => unreachable,
     }
 }
 

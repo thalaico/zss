@@ -181,8 +181,13 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                 // TODO: Implement proper out-of-flow positioning with containing block resolution
                 solveInsetsAbsolute(specified.insets, containing_block_size, &computed_insets, used_insets);
             },
-            .fixed, .sticky => {
-                // TODO: Implement fixed and sticky positioning
+            .fixed => {
+                // Fixed positioning: insets relative to the initial containing block (viewport)
+                const icb_size = context.containing_block_size.items[0];
+                solveInsetsAbsolute(specified.insets, icb_size, &computed_insets, used_insets);
+            },
+            .sticky => {
+                // TODO: Implement sticky positioning
                 solveInsetsStatic(specified.insets, &computed_insets, used_insets);
             },
         }

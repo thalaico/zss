@@ -96,6 +96,11 @@ pub const ZIndex = union(enum) {
     auto,
 };
 
+pub const BoxSizing = enum {
+    content_box,
+    border_box,
+};
+
 pub const Float = enum {
     left,
     right,

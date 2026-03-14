@@ -115,12 +115,11 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
                     return .{ computed, used };
                 },
                 .fixed => {
-                    // TODO: fixed positioning not yet implemented - treat as absolute
                     computed.display = blockify(specified.display);
                     computed.float = .none;
                     const used: BoxTree.BoxStyle = .{
                         .outer = .{ .absolute = innerBlockType(computed.display) },
-                        .position = .absolute,
+                        .position = .fixed,
                     };
                     return .{ computed, used };
                 },

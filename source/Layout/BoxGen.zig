@@ -490,7 +490,7 @@ pub fn pushFlowBlock(
         .stacking_context_id = stacking_context_id,
         .absolute_containing_block_id = absolute_containing_block_id,
         .node = node,
-        .out_of_flow = box_style.position == .absolute,
+        .out_of_flow = box_style.position == .absolute or box_style.position == .fixed,
     });
     try box_gen.stacks.containing_block_size.push(layout.allocator, .{
         .width = switch (available_width) {

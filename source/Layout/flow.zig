@@ -124,6 +124,20 @@ pub fn solveAllSizes(
     solveHorizontalBorderPadding(specified_sizes.horizontal_edges, percentage_base_unit, border_styles, &computed_sizes.horizontal_edges, &sizes);
     solveHeight(specified_sizes.content_height, containing_block_height, &computed_sizes.content_height, &sizes);
     solveVerticalEdges(specified_sizes.vertical_edges, percentage_base_unit, border_styles, &computed_sizes.vertical_edges, &sizes);
+    // box-sizing: border-box — specified width/height includes padding and border.
+    // Subtract them to get content-box dimensions that the layout engine uses internally.
+    if (specified_sizes.content_width.box_sizing == .border_box) {
+        if (sizes.get(.inline_size)) |w| {
+            const h_adjustment = sizes.border_inline_start + sizes.border_inline_end +
+                sizes.padding_inline_start + sizes.padding_inline_end;
+            sizes.setValue(.inline_size, @max(0, w - h_adjustment));
+        }
+        if (sizes.get(.block_size)) |h| {
+            const v_adjustment = sizes.border_block_start + sizes.border_block_end +
+                sizes.padding_block_start + sizes.padding_block_end;
+            sizes.setValue(.block_size, @max(0, h - v_adjustment));
+        }
+    }
     switch (containing_block_width) {
         .normal => {
             adjustWidthAndMargins(&sizes, percentage_base_unit);
@@ -490,7 +504,7 @@ pub fn solveInsets(
                 }
             }
         },
-        .absolute => {
+        .absolute, .fixed => {
             // Absolute positioning: insets computed during cosmetic layout
             // For now, set all insets to 0 in flow layout
             inline for (.{
@@ -552,7 +566,7 @@ pub fn solveStackingContext(computer: *StyleComputer, position: BoxTree.BoxStyle
             .integer => |integer| return .{ .parentable = integer },
             .auto => return .{ .non_parentable = 0 },
         },
-        .absolute => switch (z_index.z_index) {
+        .absolute, .fixed => switch (z_index.z_index) {
             // Absolute positioning creates stacking context when z-index is specified
             .integer => |integer| return .{ .parentable = integer },
             .auto => return .{ .non_parentable = 0 },
