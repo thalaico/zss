@@ -138,6 +138,9 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             .block => .{ .block = .flow },
             .@"inline" => .{ .@"inline" = .@"inline" },
             .inline_block => .{ .@"inline" = .{ .block = .flow } },
+            .table => .{ .block = .flow },
+            .table_row => .{ .block = .flow },
+            .table_cell => .{ .@"inline" = .{ .block = .flow } },
             .none => unreachable,
         },
         .position = position,
@@ -153,6 +156,9 @@ fn blockify(display: types.Display) types.Display {
     return switch (display) {
         .block => .block,
         .@"inline", .inline_block => .block,
+        .table => .table,
+        .table_row => .table_row,
+        .table_cell => .block,
         .none => unreachable,
     };
 }
@@ -160,6 +166,9 @@ fn blockify(display: types.Display) types.Display {
 fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
     return switch (computed_display) {
         .block => .flow,
+        .table => .flow,
+        .table_row => .flow,
+        .table_cell => .flow,
         .@"inline", .inline_block, .none => unreachable,
     };
 }

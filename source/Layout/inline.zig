@@ -217,15 +217,19 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 }
 
 pub fn blockElement(box_gen: *BoxGen) !Result {
-    // Close nested inline boxes down to depth 1
-    // This handles block elements inside inline elements (e.g., <span><div>...</div></span>)
-    // TODO: Full CSS 2.1 spec requires splitting the IFC, but this minimal implementation
-    // closes inline boxes and continues, which is safe and unblocks rendering.
+    // Close nested inline boxes down to depth 1.
+    // Each inline box was opened with pushInlineBox + pushNode. We must pop
+    // the corresponding node entries. The block element's node sits at the
+    // top of the stack and needs to survive, so we save it, pop the
+    // intermediate entries, then restore it.
+    const layout = box_gen.getLayout();
+    const saved_node = layout.node_stack.pop();
     while (box_gen.inline_context.ifc.top.?.depth > 1) {
         _ = try popInlineBox(box_gen);
-        // Note: popInlineBox() automatically decrements depth
+        layout.popNode();
     }
-    
+    try layout.node_stack.push(layout.allocator, saved_node);
+
     // Now at depth 1, end the IFC normally
     return try endMode(box_gen);
 }
@@ -349,7 +353,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
 
 fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, run_begin: usize, run_end: usize) !void {
     if (run_end > run_begin) {
-        hb.hb_buffer_add_latin1(buffer, text.ptr, @intCast(text.len), @intCast(run_begin), @intCast(run_end - run_begin));
+        hb.hb_buffer_add_utf8(buffer, text.ptr, @intCast(text.len), @intCast(run_begin), @intCast(run_end - run_begin));
         if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
         try ifcAddTextRun(box_tree, ifc, buffer, font);
         assert(hb.hb_buffer_set_length(buffer, 0) != 0);

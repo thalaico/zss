@@ -21,6 +21,7 @@ const initial = @import("initial.zig");
 const @"inline" = @import("inline.zig");
 const solve = @import("solve.zig");
 const stf = @import("shrink_to_fit.zig");
+const table = @import("table.zig");
 pub const Absolute = @import("AbsoluteContainingBlocks.zig");
 pub const StackingContextTreeBuilder = @import("StackingContextTreeBuilder.zig");
 
@@ -38,6 +39,7 @@ const Subtree = BoxTree.Subtree;
 bfc_stack: zss.Stack(usize) = .init(undefined),
 inline_context: @"inline".Context = .{},
 stf_context: stf.Context = .{},
+table_context: table.Context = undefined,
 stacks: Stacks = .{},
 sct_builder: StackingContextTreeBuilder = .{},
 absolute: Absolute = .{},
@@ -69,6 +71,7 @@ pub fn deinit(box_gen: *BoxGen) void {
     box_gen.bfc_stack.deinit(allocator);
     box_gen.inline_context.deinit(allocator);
     box_gen.stf_context.deinit(allocator);
+    box_gen.table_context.deinit(allocator);
     box_gen.stacks.mode.deinit(allocator);
     box_gen.stacks.subtree.deinit(allocator);
     box_gen.stacks.block.deinit(allocator);
@@ -79,6 +82,8 @@ pub fn deinit(box_gen: *BoxGen) void {
 }
 
 pub fn run(box_gen: *BoxGen) !void {
+    const allocator = box_gen.getLayout().allocator;
+    box_gen.table_context = table.Context.init(allocator);
     try analyzeAllNodes(box_gen);
     box_gen.sct_builder.endFrame();
 }
@@ -150,6 +155,21 @@ fn dispatchBlockElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
+    // Check if this is a table element by checking tag name
+    const env = box_gen.getLayout().inputs.env;
+    if (env.getNodeProperty(.category, node) == .element) {
+        const type_info = env.getNodeProperty(.type, node);
+        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+        
+        // Route table elements to table layout mode
+        if (type_iter.eql("table")) {
+            return try table.tableElement(box_gen, node);
+        } else if (type_iter.eql("tr")) {
+            return try table.rowElement(box_gen, node);
+        }
+    }
+    
+    // Regular block element handling
     const inner_box_style = box_style.outer.block;
     switch (is_root) {
         .root => try initial.blockElement(box_gen, node, inner_box_style, box_style.position),
@@ -178,6 +198,18 @@ fn dispatchInlineElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
+    // Check if this is a table-cell element
+    const env = box_gen.getLayout().inputs.env;
+    if (env.getNodeProperty(.category, node) == .element) {
+        const type_info = env.getNodeProperty(.type, node);
+        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+        
+        if (type_iter.eql("td") or type_iter.eql("th")) {
+            return try table.cellElement(box_gen, node);
+        }
+    }
+    
+    // Regular inline element handling
     switch (is_root) {
         .root => {
             const size_mode = initial.beforeInlineMode();
@@ -207,6 +239,19 @@ fn dispatchNullNode(
         .root => initial.nullNode(box_gen),
         .not_root => switch (current_mode) {
             .flow => {
+                // Only pop block_type_stack if the top entry's depth matches
+                // the current bfc_stack depth — this means the block being
+                // closed IS the table element that pushed the entry.
+                const stack = &box_gen.table_context.block_type_stack;
+                if (stack.items.len > 0) {
+                    const top = stack.items[stack.items.len - 1];
+                    if (box_gen.bfc_stack.top != null and top.bfc_depth == box_gen.bfc_stack.top.?) {
+                        _ = stack.pop();
+                        if (top.block_type == .table) {
+                            box_gen.table_context.popTable();
+                        }
+                    }
+                }
                 flow.nullNode(box_gen) orelse return;
                 afterFlowMode(box_gen);
             },

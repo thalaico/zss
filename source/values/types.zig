@@ -11,6 +11,9 @@ pub const Display = enum {
     block,
     @"inline",
     inline_block,
+    table,
+    table_row,
+    table_cell,
     none,
 };
 
