@@ -228,13 +228,13 @@ fn countColumnsFromDom(table_node: NodeId, env: *const Environment) usize {
     return 0;
 }
 
-/// Count <td>/<th> children of a <tr> node.
+/// Count effective columns in a <tr> by summing colspan of each <td>/<th>.
 fn countCellsInRow(tr: NodeId, env: *const Environment) usize {
     var count: usize = 0;
     var child = tr.firstChild(env);
     while (child) |ch| : (child = ch.nextSibling(env)) {
         if (nodeTagEql(env, ch, "td") or nodeTagEql(env, ch, "th")) {
-            count += 1;
+            count += env.getNodeProperty(.colspan, ch);
         }
     }
     return count;
@@ -382,10 +382,17 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
             if (!nodeTagEql(env, cell, "td") and !nodeTagEql(env, cell, "th")) continue;
             if (col_idx >= num_cols) break;
 
+            const colspan: usize = env.getNodeProperty(.colspan, cell);
             const est = estimateCellContentWidth(cell, env, char_width);
-            if (est.min > col_min[col_idx]) col_min[col_idx] = est.min;
-            if (est.max > col_max[col_idx]) col_max[col_idx] = est.max;
-            col_idx += 1;
+            // Distribute content width across spanned columns
+            const span = @min(colspan, num_cols - col_idx);
+            for (col_idx..col_idx + span) |c_idx| {
+                const per_col_min = @divFloor(est.min, @as(Unit, @intCast(span)));
+                const per_col_max = @divFloor(est.max, @as(Unit, @intCast(span)));
+                if (per_col_min > col_min[c_idx]) col_min[c_idx] = per_col_min;
+                if (per_col_max > col_max[c_idx]) col_max[c_idx] = per_col_max;
+            }
+            col_idx += span;
         }
     }
 
@@ -514,6 +521,17 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     // Track cell for column counting
     table_ctx.addCell();
     
+    // Read colspan from the DOM node
+    const env = box_gen.getLayout().inputs.env;
+    const colspan: usize = env.getNodeProperty(.colspan, node);
+    // Advance column counter for spanned columns (addCell already added 1)
+    if (colspan > 1) {
+        table_ctx.current_column += colspan - 1;
+        if (table_ctx.current_column > table_ctx.max_columns) {
+            table_ctx.max_columns = table_ctx.current_column;
+        }
+    }
+    
     // Solve sizes — CSS width (if injected from HTML attr) is picked up here
     var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
     const stacking_context = flow.solveStackingContext(computer, .static);
@@ -531,8 +549,8 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         table_ctx.explicit_width_sum += resolved_width;
     }
 
-    // 0-based column index for auto-layout lookup
-    const col_idx = if (table_ctx.current_column > 0) table_ctx.current_column - 1 else 0;
+    // 0-based column index for auto-layout lookup (points to first spanned column)
+    const col_idx = if (table_ctx.current_column >= colspan) table_ctx.current_column - colspan else 0;
     // Last cell in the row: use cell count from DOM (handles colspan correctly,
     // unlike nextSibling which may return whitespace text nodes).
     const is_last_cell = table_ctx.current_column >= table_ctx.cells_in_current_row;
@@ -543,7 +561,16 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         resolved_width // no table width known — can't distribute
     else if (table_ctx.known_columns == 0)
         resolved_width // no column count available yet
-    else if (is_last_cell) blk: {
+    else if (colspan > 1 and table_ctx.has_auto_widths) blk: {
+        // Sum column widths + internal spacing for spanned cell
+        var total: Unit = 0;
+        var k: usize = 0;
+        while (k < colspan and col_idx + k < table_ctx.known_columns) : (k += 1) {
+            total += table_ctx.getColumnWidth(col_idx + k);
+            if (k > 0) total += table_ctx.border_spacing;
+        }
+        break :blk if (total > 0) total else table_ctx.getDefaultCellWidth();
+    } else if (is_last_cell) blk: {
         // Last cell always gets remaining width (handles colspan and rounding)
         const remaining = table_w - table_ctx.row_x_cursor - table_ctx.border_spacing;
         break :blk if (remaining > 0) remaining else table_ctx.getDefaultCellWidth();
