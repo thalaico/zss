@@ -494,6 +494,7 @@ pub const NodeProperty = struct {
     category: NodeCategory = .text,
     type: ElementType = .{ .namespace = .none, .name = .anonymous },
     text: TextId = .empty_string,
+    colspan: u8 = 1,
 };
 
 const NodeProperties = struct {
