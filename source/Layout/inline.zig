@@ -158,7 +158,9 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // Propagate cascaded font properties to the IFC.
             ifc.ptr.font_family = font.font_family;
             ifc.ptr.font_size = font.font_size;
-            ifc.ptr.font_weight = font.font_weight;
+            // Note: font_weight from inline cascade is NOT propagated here.
+            // The IFC's font_weight is set from the block-level cascade in
+            // cosmetic.zig. Per-run font weight requires FontRun tracking.
             // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
             layout.inputs.fonts.setFontSize(handle, font.font_size);
             if (layout.inputs.fonts.get(handle)) |hb_font| {
