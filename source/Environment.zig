@@ -582,6 +582,14 @@ pub fn addClassNameFromString(env: *Environment, string: []const u8) !ClassName 
     return @enumFromInt(index);
 }
 
+/// Intern an ID name from a raw UTF-8 string (e.g. from a DOM id attribute).
+pub fn addIdNameFromString(env: *Environment, string: []const u8) !IdName {
+    const index = switch (env.id_class_sensitivity) {
+        inline else => |case| try env.id_names.addFromString(case, env.allocator, string),
+    };
+    return @enumFromInt(index);
+}
+
 pub const Testing = struct {
     pub fn expectEqualTypeNames(testing: *const Testing, expected: []const u8, type_name: TypeName) !void {
         const env: *const Environment = @alignCast(@fieldParentPtr("testing", testing));
