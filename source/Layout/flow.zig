@@ -12,6 +12,7 @@ const BlockComputedSizes = BoxGen.BlockComputedSizes;
 const BlockUsedSizes = BoxGen.BlockUsedSizes;
 const SctBuilder = BoxGen.StackingContextTreeBuilder;
 const SizeMode = BoxGen.SizeMode;
+const BlockInfo = BoxGen.BlockInfo;
 
 const solve = @import("./solve.zig");
 const @"inline" = @import("./inline.zig");
@@ -37,13 +38,33 @@ fn endMode(box_gen: *BoxGen) void {
 pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     switch (inner_block) {
-        .flow => {
+        .flow, .flex => {
             const containing_block_size = box_gen.containingBlockSize();
             const sizes = solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
             const stacking_context = solveStackingContext(computer, position);
+            // Read flex properties before commitNode consumes the node state
+            const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
             computer.commitNode(.box_gen);
 
             try pushBlock(box_gen, node, sizes, stacking_context, position);
+            if (inner_block == .flex and box_style_specified.flex_direction == .row) {
+                const info = &box_gen.stacks.block_info.top.?;
+                info.is_flex_container = true;
+                info.flex_justify = switch (box_style_specified.justify_content) {
+                    .flex_start => .flex_start,
+                    .center => .center,
+                    .flex_end => .flex_end,
+                    .space_between => .space_between,
+                    else => .flex_start,
+                };
+                info.flex_align = switch (box_style_specified.align_items) {
+                    .center => .center,
+                    .flex_start => .flex_start,
+                    .flex_end => .flex_end,
+                    .stretch => .stretch,
+                    else => .stretch,
+                };
+            }
         },
     }
 }
@@ -637,6 +658,86 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
             box_offsets.border_size.h = max_height - non_content;
             // Recompute content_size.h from border_size.h
             box_offsets.content_size.h = box_offsets.border_size.h - box_offsets.content_pos.y;
+        }
+        child += skips[child];
+    }
+
+    return max_height;
+}
+
+/// Offset children of a flex container in row direction.
+/// Positions children side-by-side horizontally using offset.x.
+/// Ignores auto-expanded margins (flex items use intrinsic box width only).
+/// Returns the maximum child height (container's auto height).
+pub fn offsetChildBlocksFlex(
+    subtree: Subtree.View,
+    index: Subtree.Size,
+    skip: Subtree.Size,
+    container_width: Unit,
+    container_height: ?Unit,
+    justify: BlockInfo.FlexJustify,
+    align_items: BlockInfo.FlexAlign,
+) Unit {
+    const skips = subtree.items(.skip);
+    const out_of_flow_flags = subtree.items(.out_of_flow);
+    const end = index + skip;
+
+    // Pass 1: measure total children width (box only, no auto margins) and max height
+    var child = index + 1;
+    var total_width: Unit = 0;
+    var max_height: Unit = 0;
+    var child_count: usize = 0;
+    while (child < end) {
+        if (!out_of_flow_flags[child]) {
+            const box_offsets = subtree.items(.box_offsets)[child];
+            total_width += box_offsets.border_pos.x + box_offsets.border_size.w;
+            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h;
+            max_height = @max(max_height, child_height);
+            child_count += 1;
+        }
+        child += skips[child];
+    }
+
+    const used_height = container_height orelse max_height;
+    const free_space = @max(0, container_width - total_width);
+
+    // Compute starting x position based on justify-content
+    var x_cursor: Unit = switch (justify) {
+        .flex_start => 0,
+        .flex_end => free_space,
+        .center => @divFloor(free_space, 2),
+        .space_between => 0,
+    };
+    // Gap between items for space-between
+    const gap: Unit = if (justify == .space_between and child_count > 1)
+        @divFloor(free_space, @as(Unit, @intCast(child_count - 1)))
+    else
+        0;
+
+    // Pass 2: position children
+    child = index + 1;
+    var placed: usize = 0;
+    while (child < end) {
+        if (out_of_flow_flags[child]) {
+            subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+        } else {
+            const box_offsets = subtree.items(.box_offsets)[child];
+            // Vertical alignment
+            const child_outer_height = box_offsets.border_pos.y + box_offsets.border_size.h;
+            const y_offset: Unit = switch (align_items) {
+                .flex_start => 0,
+                .flex_end => @max(0, used_height - child_outer_height),
+                .center => @max(0, @divFloor(used_height - child_outer_height, 2)),
+                .stretch => 0, // TODO: stretch child height to container
+            };
+            subtree.items(.offset)[child] = .{
+                .x = x_cursor,
+                .y = y_offset,
+            };
+            x_cursor += box_offsets.border_pos.x + box_offsets.border_size.w;
+            placed += 1;
+            if (justify == .space_between and placed < child_count)
+                x_cursor += gap;
         }
         child += skips[child];
     }

@@ -232,7 +232,7 @@ pub const Result = struct {
 pub fn beginMode(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, used_sizes: BlockUsedSizes) !void {
     const ctx = &box_gen.stf_context;
     switch (inner_block) {
-        .flow => try ctx.pushMainFlowObject(box_gen.getLayout().allocator, used_sizes),
+        .flow, .flex => try ctx.pushMainFlowObject(box_gen.getLayout().allocator, used_sizes),
     }
 }
 
@@ -266,7 +266,7 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
         sizes.padding_inline_start + sizes.padding_inline_end;
 
     switch (inner_block) {
-        .flow => {
+        .flow, .flex => {
             if (sizes.get(.inline_size)) |inline_size| {
                 _ = try box_gen.pushSubtree();
                 const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };

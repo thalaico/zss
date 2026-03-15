@@ -94,6 +94,9 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .position = specified.position,
         .float = specified.float,
         .overflow = specified.overflow,
+        .flex_direction = specified.flex_direction,
+        .justify_content = specified.justify_content,
+        .align_items = specified.align_items,
     };
 
     if (specified.display == .none) {
@@ -157,6 +160,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             .table => .{ .block = .flow },
             .table_row => .{ .block = .flow },
             .table_cell => .{ .@"inline" = .{ .block = .flow } },
+            .flex => .{ .block = .flex },
             .none => unreachable,
         },
         .position = position,
@@ -175,6 +179,7 @@ fn blockify(display: types.Display) types.Display {
         .table => .table,
         .table_row => .table_row,
         .table_cell => .block,
+        .flex => .flex,
         .none => unreachable,
     };
 }
@@ -185,6 +190,7 @@ fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
         .table => .flow,
         .table_row => .flow,
         .table_cell => .flow,
+        .flex => .flex,
         .@"inline", .inline_block, .none => unreachable,
     };
 }

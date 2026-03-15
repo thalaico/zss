@@ -27,7 +27,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyl
     layout.computer.commitNode(.box_gen);
 
     switch (inner_block) {
-        .flow => {
+        .flow, .flex => {
             const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };
             const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
             try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });

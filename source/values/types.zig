@@ -14,6 +14,7 @@ pub const Display = enum {
     table,
     table_row,
     table_cell,
+    flex,
     none,
 };
 
@@ -112,6 +113,29 @@ pub const Overflow = enum {
     hidden,
     scroll,
     auto,
+};
+
+pub const FlexDirection = enum {
+    row,
+    row_reverse,
+    column,
+    column_reverse,
+};
+
+pub const JustifyContent = enum {
+    flex_start,
+    flex_end,
+    center,
+    space_between,
+    space_around,
+};
+
+pub const AlignItems = enum {
+    stretch,
+    flex_start,
+    flex_end,
+    center,
+    baseline,
 };
 
 pub const Clear = enum {

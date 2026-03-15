@@ -86,8 +86,10 @@ pub const Insets = math.Vector;
 
 pub const BoxStyle = struct {
     pub const InnerBlock = enum {
-        /// display: block
+        /// display: block (normal flow)
         flow,
+        /// display: flex
+        flex,
     };
     pub const InnerInline = union(enum) {
         /// display: inline

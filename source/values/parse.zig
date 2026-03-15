@@ -585,6 +585,7 @@ pub fn display(ctx: *Context) ?types.Display {
         .{ "table-cell", .table_cell },
         // .{ "table-caption", .table_caption },
         .{ "none", .none },
+        .{ "flex", .flex },
     });
 }
 
@@ -615,6 +616,35 @@ pub fn overflow(ctx: *Context) ?types.Overflow {
         .{ "hidden", .hidden },
         .{ "scroll", .scroll },
         .{ "auto", .auto },
+    });
+}
+
+pub fn flexDirection(ctx: *Context) ?types.FlexDirection {
+    return keyword(ctx, types.FlexDirection, &.{
+        .{ "row", .row },
+        .{ "row-reverse", .row_reverse },
+        .{ "column", .column },
+        .{ "column-reverse", .column_reverse },
+    });
+}
+
+pub fn justifyContent(ctx: *Context) ?types.JustifyContent {
+    return keyword(ctx, types.JustifyContent, &.{
+        .{ "flex-start", .flex_start },
+        .{ "flex-end", .flex_end },
+        .{ "center", .center },
+        .{ "space-between", .space_between },
+        .{ "space-around", .space_around },
+    });
+}
+
+pub fn alignItems(ctx: *Context) ?types.AlignItems {
+    return keyword(ctx, types.AlignItems, &.{
+        .{ "stretch", .stretch },
+        .{ "flex-start", .flex_start },
+        .{ "flex-end", .flex_end },
+        .{ "center", .center },
+        .{ "baseline", .baseline },
     });
 }
 

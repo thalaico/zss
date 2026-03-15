@@ -253,12 +253,18 @@ pub const BoxStyle = struct {
     position: types.Position,
     float: types.Float,
     overflow: types.Overflow,
+    flex_direction: types.FlexDirection,
+    justify_content: types.JustifyContent,
+    align_items: types.AlignItems,
 
     pub const initial_values = BoxStyle{
         .display = .@"inline",
         .position = .static,
         .float = .none,
         .overflow = .visible,
+        .flex_direction = .row,
+        .justify_content = .flex_start,
+        .align_items = .stretch,
     };
 };
 

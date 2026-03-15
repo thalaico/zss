@@ -99,6 +99,27 @@ pub fn overflow(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.overfl
     return .{ .box_style = .{ .overflow = .{ .declared = value } } };
 }
 
+pub fn @"flex-direction"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-direction") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.flexDirection(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .flex_direction = .{ .declared = value } } };
+}
+
+pub fn @"justify-content"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"justify-content") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.justifyContent(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .justify_content = .{ .declared = value } } };
+}
+
+pub fn @"align-items"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"align-items") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.alignItems(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .align_items = .{ .declared = value } } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;

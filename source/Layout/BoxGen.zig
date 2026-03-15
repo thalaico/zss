@@ -373,13 +373,21 @@ const Block = struct {
     skip: Subtree.Size,
 };
 
-const BlockInfo = struct {
+pub const BlockInfo = struct {
     sizes: BlockUsedSizes,
     stacking_context_id: ?StackingContextTree.Id,
     absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
     node: NodeId,
     out_of_flow: bool,
     is_table_row: bool = false,
+    is_flex_container: bool = false,
+    /// justify-content for flex containers (default: flex_start)
+    flex_justify: FlexJustify = .flex_start,
+    /// align-items for flex containers (default: stretch)
+    flex_align: FlexAlign = .stretch,
+
+    pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
+    pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
 };
 
 fn newBlock(box_gen: *BoxGen) !BlockRef {
@@ -519,7 +527,11 @@ pub fn popFlowBlock(
     _ = box_gen.stacks.containing_block_size.pop();
 
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
-    const auto_height = if (block_info.is_table_row)
+    const auto_height = if (block_info.is_flex_container) blk: {
+        const container_width = block_info.sizes.get(.inline_size).?;
+        const container_height = block_info.sizes.get(.block_size);
+        break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align);
+    } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else
         flow.offsetChildBlocks(subtree, block.index, block.skip);

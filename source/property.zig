@@ -76,6 +76,9 @@ pub const Property = enum {
     @"background-origin",
     @"background-size",
     background,
+    @"flex-direction",
+    @"justify-content",
+    @"align-items",
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -87,6 +90,9 @@ pub const Property = enum {
             .float                    => &.{.{.box_style       , &.{.float}         }},
             .@"z-index"               => &.{.{.z_index         , &.{.z_index}       }},
             .overflow                 => &.{.{.box_style       , &.{.overflow}      }},
+            .@"flex-direction"         => &.{.{.box_style       , &.{.flex_direction} }},
+            .@"justify-content"        => &.{.{.box_style       , &.{.justify_content}}},
+            .@"align-items"            => &.{.{.box_style       , &.{.align_items}   }},
             .opacity                  => &.{.{.opacity         , &.{.opacity}       }},
             .@"box-sizing"             => &.{.{.content_width   , &.{.box_sizing}    }},
             .width                    => &.{.{.content_width   , &.{.width}         }},
