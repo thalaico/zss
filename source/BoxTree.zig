@@ -343,6 +343,8 @@ pub const InlineFormattingContext = struct {
         background: InlineBoxBackground,
         margins: MarginsInline,
         insets: Insets,
+        /// Text color for content within this inline box (set during cosmetic pass).
+        font_color: math.Color = .transparent,
     });
     pub const Slice = InlineBoxList.Slice;
 

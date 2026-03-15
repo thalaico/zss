@@ -578,6 +578,9 @@ fn inlineBoxCosmeticLayout(
     ifc_slice.items(.inline_end)[inline_box_index].border_color = border_colors.right;
     ifc_slice.items(.block_start)[inline_box_index].border_color = border_colors.top;
     ifc_slice.items(.block_end)[inline_box_index].border_color = border_colors.bottom;
+    // Store text color for per-run rendering — inline elements like <a> override
+    // the block-level font_color (e.g., links are black within gray <td> text).
+    ifc_slice.items(.font_color)[inline_box_index] = used_color;
 
     solve.borderStyles(specified.border_styles);
 
