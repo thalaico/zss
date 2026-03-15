@@ -412,41 +412,66 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
         }
     }
 
-    // CSS 2.1 §17.5.2 distribution:
-    // 1. Each column gets at least its minimum width
-    // 2. Remaining space distributed proportionally to (max - min)
+    // CSS 2.1 §17.5.2.2 width distribution:
+    // 1. Explicit-width columns get their explicit width (clamped to at least col_min)
+    // 2. Remaining space distributes among auto columns proportional to (max - min)
     const total_spacing = ctx.border_spacing * @as(Unit, @intCast(num_cols + 1));
     const available = @max(0, ctx.table_width - total_spacing);
 
-    var sum_min: Unit = 0;
+    // Phase A: Assign explicit-width columns
+    var explicit_total: Unit = 0;
+    var auto_count: usize = 0;
     for (0..num_cols) |i| {
-        // Ensure every column has at least MIN_CELL_WIDTH
         if (col_min[i] == 0) col_min[i] = MIN_CELL_WIDTH;
-        sum_min += col_min[i];
+        if (ctx.col_explicit[i] > 0) {
+            // Explicit column: use explicit width, clamped to at least min content width
+            ctx.column_widths[i] = @max(ctx.col_explicit[i], col_min[i]);
+            explicit_total += ctx.column_widths[i];
+        } else {
+            auto_count += 1;
+        }
     }
 
-    if (sum_min >= available) {
-        // Not enough space — scale down proportionally
-        if (sum_min > 0) {
+    // Phase B: Distribute remaining space to auto columns
+    const auto_available = @max(0, available - explicit_total);
+    var sum_min: Unit = 0;
+    var sum_excess: Unit = 0;
+    for (0..num_cols) |i| {
+        if (ctx.col_explicit[i] == 0) { // auto column
+            sum_min += col_min[i];
+            sum_excess += @max(0, col_max[i] - col_min[i]);
+        }
+    }
+
+    if (auto_count == 0) {
+        // All columns are explicit — if total < available, distribute extra proportionally
+        if (explicit_total < available) {
+            const extra = available - explicit_total;
             for (0..num_cols) |i| {
-                ctx.column_widths[i] = @divFloor(col_min[i] * available, sum_min);
+                ctx.column_widths[i] += @divFloor(extra, @as(Unit, @intCast(num_cols)));
+            }
+        }
+    } else if (sum_min >= auto_available) {
+        // Not enough space for auto columns — scale down proportionally
+        for (0..num_cols) |i| {
+            if (ctx.col_explicit[i] == 0) {
+                ctx.column_widths[i] = if (sum_min > 0)
+                    @divFloor(col_min[i] * auto_available, sum_min)
+                else
+                    @divFloor(auto_available, @as(Unit, @intCast(auto_count)));
             }
         }
     } else {
-        // Distribute remaining space proportional to (max - min)
-        const remaining = available - sum_min;
-        var sum_excess: Unit = 0;
+        // Distribute remaining auto space proportional to (max - min)
+        const remaining = auto_available - sum_min;
         for (0..num_cols) |i| {
-            sum_excess += @max(0, col_max[i] - col_min[i]);
-        }
-
-        for (0..num_cols) |i| {
-            if (sum_excess > 0) {
-                const excess = @max(0, col_max[i] - col_min[i]);
-                ctx.column_widths[i] = col_min[i] + @divFloor(excess * remaining, sum_excess);
-            } else {
-                // All columns at min — distribute remaining equally
-                ctx.column_widths[i] = col_min[i] + @divFloor(remaining, @as(Unit, @intCast(num_cols)));
+            if (ctx.col_explicit[i] == 0) { // auto column
+                if (sum_excess > 0) {
+                    const excess = @max(0, col_max[i] - col_min[i]);
+                    ctx.column_widths[i] = col_min[i] + @divFloor(excess * remaining, sum_excess);
+                } else {
+                    ctx.column_widths[i] = col_min[i] + @divFloor(remaining, @as(Unit, @intCast(auto_count)));
+                }
             }
         }
     }
