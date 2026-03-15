@@ -550,6 +550,9 @@ fn inlineBoxCosmeticLayout(
         .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background), // TODO: Inline boxes don't need background
         .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
+        // Font properties must be read and committed so child text nodes
+        // inherit font-weight (e.g., <b> making children bold).
+        .font = layout.computer.getSpecifiedValue(.cosmetic, .font),
     };
 
     const computed_box_style, _ = solve.boxStyle(specified.box_style, .not_root);
@@ -593,6 +596,8 @@ fn inlineBoxCosmeticLayout(
     layout.computer.setComputedValue(.cosmetic, .background_color, specified.background_color);
     layout.computer.setComputedValue(.cosmetic, .background_clip, specified.background_clip);
     layout.computer.setComputedValue(.cosmetic, .background, specified.background);
+    // Commit font group so child text nodes inherit font-weight, font-size, etc.
+    layout.computer.setComputedValue(.cosmetic, .font, specified.font);
 }
 
 fn rootInlineBoxCosmeticLayout(ifc: *Ifc) void {
