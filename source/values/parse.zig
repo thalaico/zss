@@ -610,6 +610,15 @@ pub fn float(ctx: *Context) ?types.Float {
     });
 }
 
+pub fn clear(ctx: *Context) ?types.Clear {
+    return keyword(ctx, types.Clear, &.{
+        .{ "none", .none },
+        .{ "left", .left },
+        .{ "right", .right },
+        .{ "both", .both },
+    });
+}
+
 pub fn overflow(ctx: *Context) ?types.Overflow {
     return keyword(ctx, types.Overflow, &.{
         .{ "visible", .visible },

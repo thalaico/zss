@@ -158,10 +158,25 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root);
     const computed_color, const used_color = solve.colorProperty(specified.color);
 
-    // TODO: Temporary jank to set the text color for IFCs.
+    // Set text color: root sets default for all IFCs, non-root propagates to descendant IFCs
     if (is_root == .root) {
         for (layout.box_tree.ptr.ifcs.items) |ifc| {
             ifc.font_color = used_color;
+        }
+    } else {
+        // Propagate color to all IFC containers within this block's span
+        const skip = subtree.items(.skip)[ref.index];
+        const block_types = subtree.items(.type);
+        var i = ref.index;
+        const block_end = ref.index + skip;
+        while (i < block_end) : (i += 1) {
+            switch (block_types[i]) {
+                .ifc_container => |ifc_id| {
+                    const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                    ifc.font_color = used_color;
+                },
+                else => {},
+            }
         }
     }
 

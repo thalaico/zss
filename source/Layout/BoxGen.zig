@@ -385,6 +385,10 @@ pub const BlockInfo = struct {
     flex_justify: FlexJustify = .flex_start,
     /// align-items for flex containers (default: stretch)
     flex_align: FlexAlign = .stretch,
+    /// CSS float property for this block
+    float_side: zss.values.types.Float = .none,
+    /// CSS clear property for this block
+    clear_side: zss.values.types.Clear = .none,
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -459,7 +463,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     const box_tree = box_gen.getLayout().box_tree;
     const subtree = box_tree.ptr.getSubtree(box_gen.stacks.subtree.top.?.id).view();
     const index = block.index;
-    _ = flow.offsetChildBlocks(subtree, index, block.skip);
+    _ = flow.offsetChildBlocks(subtree, index, block.skip, block_info.sizes.get(.inline_size).?);
     const width = block_info.sizes.get(.inline_size).?;
     const height = block_info.sizes.get(.block_size).?;
     subtree.items(.skip)[index] = block.skip;
@@ -476,6 +480,8 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.margins)[index] = .{};
     subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
     subtree.items(.out_of_flow)[index] = false;
+    subtree.items(.float_side)[index] = .none;
+    subtree.items(.clear_side)[index] = .none;
 }
 
 pub fn pushFlowBlock(
@@ -533,14 +539,21 @@ pub fn popFlowBlock(
         break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
-    else
-        flow.offsetChildBlocks(subtree, block.index, block.skip);
+    else blk: {
+        const container_width = switch (auto_width) {
+            .normal => block_info.sizes.get(.inline_size).?,
+            .stf => |aw| aw,
+        };
+        break :blk flow.offsetChildBlocks(subtree, block.index, block.skip, container_width);
+    };
     const width = switch (auto_width) {
         .normal => block_info.sizes.get(.inline_size).?,
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
     };
     const height = flow.solveUsedHeight(block_info.sizes, auto_height);
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow);
+    subtree.items(.float_side)[block.index] = block_info.float_side;
+    subtree.items(.clear_side)[block.index] = block_info.clear_side;
 }
 
 pub fn pushStfFlowBlock(
@@ -583,7 +596,8 @@ pub fn popStfFlowBlock2(
     const box_tree = box_gen.getLayout().box_tree;
     const subtree_id = box_gen.stacks.subtree.top.?.id;
     const subtree = box_tree.ptr.getSubtree(subtree_id).view();
-    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip);
+    const container_width = sizes.get(.inline_size) orelse auto_width;
+    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width);
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, auto_height);
     setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false);
@@ -826,6 +840,8 @@ fn setDataBlock(
     // Initialize insets to zero; cosmetic layout pass will set actual values for positioned elements
     subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
     subtree.items(.out_of_flow)[index] = out_of_flow;
+    subtree.items(.float_side)[index] = .none;
+    subtree.items(.clear_side)[index] = .none;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -877,6 +893,8 @@ fn setDataIfcContainer(
     subtree.items(.margins)[index] = .{};
     subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
     subtree.items(.out_of_flow)[index] = false;
+    subtree.items(.float_side)[index] = .none;
+    subtree.items(.clear_side)[index] = .none;
 }
 
 fn setDataSubtreeProxy(
@@ -906,4 +924,6 @@ fn setDataSubtreeProxy(
     subtree.items(.margins)[index] = .{};
     subtree.items(.insets)[index] = .{ .x = 0, .y = 0 };
     subtree.items(.out_of_flow)[index] = false;
+    subtree.items(.float_side)[index] = .none;
+    subtree.items(.clear_side)[index] = .none;
 }

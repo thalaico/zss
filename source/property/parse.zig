@@ -85,6 +85,13 @@ pub fn float(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.float) {
     return .{ .box_style = .{ .float = .{ .declared = value } } };
 }
 
+pub fn clear(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.clear) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.clear(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .clear = .{ .declared = value } } };
+}
+
 pub fn @"z-index"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"z-index") {
     ctx.initDecl(declaration_index);
     const value = values.parse.zIndex(ctx) orelse return null;

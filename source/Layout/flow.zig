@@ -65,6 +65,12 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     else => .stretch,
                 };
             }
+            // Set float and clear properties on the block
+            {
+                const info = &box_gen.stacks.block_info.top.?;
+                info.float_side = box_style_specified.float;
+                info.clear_side = box_style_specified.clear;
+            }
         },
     }
 }
@@ -603,26 +609,61 @@ pub fn solveUsedHeight(sizes: BlockUsedSizes, auto_height: Unit) Unit {
     return sizes.get(.block_size) orelse solve.clampSize(auto_height, sizes.min_block_size, sizes.max_block_size);
 }
 
-pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtree.Size) Unit {
+/// Position children of a block container, handling normal flow, floats, and clears.
+/// Floated children are placed at the left/right edge at the current line position.
+/// Clear children are pushed below the relevant floats.
+/// Returns the auto height of the container.
+pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtree.Size, container_width: Unit) Unit {
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
+    const float_sides = subtree.items(.float_side);
+    const clear_sides = subtree.items(.clear_side);
     var child = index + 1;
     const end = index + skip;
+
     var offset: Unit = 0;
+    var float_left_bottom: Unit = 0;
+    var float_right_bottom: Unit = 0;
+
     while (child < end) {
         if (out_of_flow_flags[child]) {
-            // Absolute/fixed positioned elements don't participate in normal flow.
-            // Give them offset 0 — their position is determined by insets from the cosmetic pass.
             subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
         } else {
-            subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
+            const float_side = float_sides[child];
+            const clear_side = clear_sides[child];
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
-            offset += box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+
+            // Apply clear: push offset below relevant floats
+            switch (clear_side) {
+                .left => offset = @max(offset, float_left_bottom),
+                .right => offset = @max(offset, float_right_bottom),
+                .both => offset = @max(offset, @max(float_left_bottom, float_right_bottom)),
+                .none => {},
+            }
+
+            switch (float_side) {
+                .left => {
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
+                    float_left_bottom = @max(float_left_bottom, offset + child_height);
+                },
+                .right => {
+                    const child_border_width = box_offsets.border_pos.x + box_offsets.border_size.w;
+                    const x = @max(0, container_width - child_border_width);
+                    subtree.items(.offset)[child] = .{ .x = x, .y = offset };
+                    float_right_bottom = @max(float_right_bottom, offset + child_height);
+                },
+                .none => {
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
+                    offset += child_height;
+                },
+            }
         }
         child += skips[child];
     }
-    return offset;
+
+    return @max(offset, @max(float_left_bottom, float_right_bottom));
 }
 
 /// Offset children of a table row: all children at offset {0,0} (horizontal

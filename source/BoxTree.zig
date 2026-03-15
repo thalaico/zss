@@ -244,6 +244,10 @@ pub const Subtree = struct {
         opacity: values.types.Opacity,
         /// True for position:absolute/fixed elements that should not participate in normal flow.
         out_of_flow: bool,
+        /// Float side for this block (none = not floated)
+        float_side: values.types.Float,
+        /// Clear value for this block
+        clear_side: values.types.Clear,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

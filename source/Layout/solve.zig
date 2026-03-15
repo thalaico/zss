@@ -93,6 +93,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .display = undefined,
         .position = specified.position,
         .float = specified.float,
+        .clear = specified.clear,
         .overflow = specified.overflow,
         .flex_direction = specified.flex_direction,
         .justify_content = specified.justify_content,
@@ -129,14 +130,13 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
                 .static, .relative, .sticky => {},
             }
 
+            computed.float = specified.float;
             if (specified.float != .none) {
-                // TODO: float layout not yet implemented - treat as none
-                computed.float = .none;
+                // CSS 2.1 §9.7: floated elements are blockified
+                computed.display = blockify(specified.display);
             } else {
-                computed.float = .none;
+                computed.display = specified.display;
             }
-
-            computed.display = specified.display;
             position = switch (computed.position) {
                 .static => .static,
                 .relative => .relative,
