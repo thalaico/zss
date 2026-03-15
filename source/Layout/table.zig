@@ -279,6 +279,7 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .row, .bfc_depth = box_gen.bfc_stack.top.? });
     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+    box_gen.stacks.block_info.top.?.is_table_row = true;
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }
@@ -304,7 +305,6 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const resolved_width = sizes.inline_size_untagged;
     const table_w = table_ctx.table_width;
     const has_explicit_width = resolved_width < table_w and table_w > 0;
-    const first_row = table_ctx.known_columns == 0;  // fallback: no pre-computed columns
 
     // Track explicit-width cells for auto-width distribution
     if (has_explicit_width) {
@@ -316,20 +316,18 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         resolved_width // explicit CSS width (from HTML attr or inline style)
     else if (table_w == 0)
         resolved_width // no table width known — can't distribute
-    else if (first_row)
-        resolved_width // no column count available — stack vertically
+    else if (table_ctx.known_columns == 0)
+        resolved_width // no column count available yet
     else blk: {
-        // known_columns is available (from DOM pre-scan or row 1 observation).
-        // Last expected column OR actual last cell in the row gets remaining.
         const env = box_gen.getLayout().inputs.env;
         const is_last_expected = table_ctx.current_column >= table_ctx.known_columns;
         const is_actual_last = node.nextSibling(env) == null;
         if (is_last_expected or is_actual_last) {
+            // Last cell gets remaining width
             const remaining = table_w - table_ctx.row_x_cursor;
             break :blk if (remaining > 0) remaining else resolved_width;
         } else if (table_ctx.explicit_cells_in_row > 0) {
-            // Other cells have explicit widths — distribute remaining among auto cells.
-            // This handles tables like HN's header: <td width=18px> <td auto> <td auto>
+            // Some cells have explicit widths — distribute remaining among auto cells
             const auto_cols = table_ctx.known_columns - table_ctx.explicit_cells_in_row;
             const available = table_w - table_ctx.explicit_width_sum;
             if (auto_cols > 0 and available > 0)
@@ -337,15 +335,13 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
             else
                 break :blk resolved_width;
         } else {
-            // No explicit widths — use small default to favor the last column.
-            const small_default: Unit = 20 * 4; // 20px
-            break :blk @min(small_default, table_ctx.getDefaultCellWidth());
+            // No explicit widths — distribute equally
+            break :blk table_ctx.getDefaultCellWidth();
         }
     };
 
-    // Apply horizontal positioning for row 2+ (after column count is known).
-    // First row keeps default layout — cells stack vertically.
-    if (!first_row) {
+    // Apply horizontal positioning whenever column count is known
+    if (table_ctx.known_columns > 0) {
         sizes.inline_size_untagged = cell_width;
         sizes.margin_inline_start_untagged = table_ctx.row_x_cursor;
     }

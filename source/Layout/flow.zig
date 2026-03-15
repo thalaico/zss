@@ -603,3 +603,43 @@ pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtr
     }
     return offset;
 }
+
+/// Offset children of a table row: all children at offset {0,0} (horizontal
+/// positioning is handled by border_pos.x set during cell sizing).
+/// Equalizes all cell heights to the tallest cell (CSS table row behavior).
+/// Returns the maximum child height (the row's auto height).
+pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, skip: Subtree.Size) Unit {
+    const skips = subtree.items(.skip);
+    const out_of_flow_flags = subtree.items(.out_of_flow);
+    const end = index + skip;
+
+    // Pass 1: find max height and zero all offsets
+    var child = index + 1;
+    var max_height: Unit = 0;
+    while (child < end) {
+        subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+        if (!out_of_flow_flags[child]) {
+            const box_offsets = subtree.items(.box_offsets)[child];
+            const margins = subtree.items(.margins)[child];
+            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+            max_height = @max(max_height, child_height);
+        }
+        child += skips[child];
+    }
+
+    // Pass 2: equalize cell content heights to the row height
+    child = index + 1;
+    while (child < end) {
+        if (!out_of_flow_flags[child]) {
+            const box_offsets = &subtree.items(.box_offsets)[child];
+            const margins = subtree.items(.margins)[child];
+            const non_content = box_offsets.border_pos.y + margins.bottom;
+            box_offsets.border_size.h = max_height - non_content;
+            // Recompute content_size.h from border_size.h
+            box_offsets.content_size.h = box_offsets.border_size.h - box_offsets.content_pos.y;
+        }
+        child += skips[child];
+    }
+
+    return max_height;
+}

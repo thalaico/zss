@@ -379,6 +379,7 @@ const BlockInfo = struct {
     absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
     node: NodeId,
     out_of_flow: bool,
+    is_table_row: bool = false,
 };
 
 fn newBlock(box_gen: *BoxGen) !BlockRef {
@@ -518,7 +519,10 @@ pub fn popFlowBlock(
     _ = box_gen.stacks.containing_block_size.pop();
 
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
-    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip);
+    const auto_height = if (block_info.is_table_row)
+        flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
+    else
+        flow.offsetChildBlocks(subtree, block.index, block.skip);
     const width = switch (auto_width) {
         .normal => block_info.sizes.get(.inline_size).?,
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
