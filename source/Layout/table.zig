@@ -75,14 +75,8 @@ pub const Context = struct {
     table_width: Unit = 0,
     /// Cumulative x position within current row (layout units)
     row_x_cursor: Unit = 0,
-    /// Count of cells with explicit widths in the current row
-    explicit_cells_in_row: usize = 0,
-    /// Sum of explicit widths in the current row (layout units)
-    explicit_width_sum: Unit = 0,
     /// Default border-spacing (2px = 8 units, CSS default for border-collapse: separate)
     border_spacing: Unit = 8,
-    /// Number of <td>/<th> cells in the current row (set by rowElement)
-    cells_in_current_row: usize = 0,
     /// Pre-computed column widths from auto-layout algorithm.
     /// Only valid when has_auto_widths is true and index < known_columns.
     column_widths: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
@@ -135,8 +129,6 @@ pub const Context = struct {
         ctx.known_columns = 0;
         ctx.row_x_cursor = ctx.border_spacing;
         ctx.table_width = table_width;
-        ctx.explicit_cells_in_row = 0;
-        ctx.explicit_width_sum = 0;
         ctx.column_widths = [_]Unit{0} ** MAX_COLUMNS;
         ctx.col_explicit = [_]Unit{0} ** MAX_COLUMNS;
         ctx.has_auto_widths = false;
@@ -164,8 +156,6 @@ pub const Context = struct {
         }
         ctx.current_column = 0;
         ctx.row_x_cursor = ctx.border_spacing; // Start with left border-spacing
-        ctx.explicit_cells_in_row = 0;
-        ctx.explicit_width_sum = 0;
         ctx.current_row += 1;
     }
     
@@ -531,9 +521,7 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
     
-    // Count cells in this row and begin tracking
-    const env = box_gen.getLayout().inputs.env;
-    box_gen.table_context.cells_in_current_row = countCellsInRow(node, env);
+    // Begin tracking this row
     box_gen.table_context.beginRow();
     
     // Treat row as a block
@@ -584,11 +572,6 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const table_w = table_ctx.table_width;
     const has_explicit_width = resolved_width < table_w and table_w > 0;
 
-    // Track explicit-width cells for auto-width distribution
-    if (has_explicit_width) {
-        table_ctx.explicit_cells_in_row += 1;
-        table_ctx.explicit_width_sum += resolved_width;
-    }
 
     // 0-based column index for auto-layout lookup (points to first spanned column)
     const col_idx = if (table_ctx.current_column >= colspan) table_ctx.current_column - colspan else 0;
