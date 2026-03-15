@@ -159,7 +159,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root);
     const computed_color, const used_color = solve.colorProperty(specified.color);
 
-    // Propagate text properties to IFCs: color, font-size, font-weight, text-decoration
+    // Propagate text properties to IFCs
+    const font_family = specified.font.font_family;
     const font_size_px: f32 = specified.font.font_size;
     const font_weight = specified.font.font_weight;
     const text_decoration = specified.font.text_decoration;
@@ -169,6 +170,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     if (is_root == .root) {
         for (layout.box_tree.ptr.ifcs.items) |ifc| {
             ifc.font_color = used_color;
+            ifc.font_family = font_family;
             ifc.font_size = font_size_px;
             ifc.font_weight = font_weight;
             ifc.text_decoration = text_decoration;
@@ -186,6 +188,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                 .ifc_container => |ifc_id| {
                     const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                     ifc.font_color = used_color;
+                    ifc.font_family = font_family;
                     ifc.font_size = font_size_px;
                     ifc.font_weight = font_weight;
                     ifc.text_decoration = text_decoration;

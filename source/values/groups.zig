@@ -238,6 +238,7 @@ pub fn MultiValue(comptime T: type) type {
 
 pub const Font = struct {
     font: types.Font,
+    font_family: types.FontFamily,
     font_size: types.FontSize,
     font_weight: types.FontWeight,
     text_decoration: types.TextDecoration,
@@ -249,6 +250,7 @@ pub const Font = struct {
 
     pub const initial_values = Font{
         .font = .default,
+        .font_family = .sans_serif,
         .font_size = 16.0, // 16px default
         .font_weight = .normal,
         .text_decoration = .none,

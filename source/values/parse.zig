@@ -755,6 +755,100 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
     };
 }
 
+/// CSS font-family: comma-separated list of family names / generic keywords.
+/// Scans the list and returns the first recognized generic family.
+/// Named fonts are mapped to their nearest generic category.
+pub fn fontFamily(ctx: *Context) ?types.FontFamily {
+    const font_family_kvs = comptime &[_]SourceCode.KV(types.FontFamily){
+        // Generic CSS families
+        .{ "sans-serif", .sans_serif },
+        .{ "serif", .serif },
+        .{ "monospace", .monospace },
+        // Common sans-serif fonts
+        .{ "verdana", .sans_serif },
+        .{ "arial", .sans_serif },
+        .{ "helvetica", .sans_serif },
+        .{ "tahoma", .sans_serif },
+        .{ "calibri", .sans_serif },
+        .{ "roboto", .sans_serif },
+        .{ "lato", .sans_serif },
+        // Common serif fonts
+        .{ "times", .serif },
+        .{ "georgia", .serif },
+        .{ "garamond", .serif },
+        .{ "palatino", .serif },
+        .{ "cambria", .serif },
+        // Common monospace fonts
+        .{ "courier", .monospace },
+        .{ "consolas", .monospace },
+        .{ "monaco", .monospace },
+        .{ "menlo", .monospace },
+    };
+
+    // Walk through comma-separated values, return first recognized family.
+    while (true) {
+        if (identifier(ctx)) |loc| {
+            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, font_family_kvs)) |family| {
+                return family;
+            }
+            // Unrecognized identifier — skip to next comma-separated entry.
+        } else if (ctx.next()) |item| {
+            // Skip over string tokens and other unrecognized tokens.
+            if (item.tag == .token_comma) continue;
+            if (item.tag == .token_string) {
+                // Quoted font name — match against known families.
+                const loc = item.index.location(ctx.ast);
+                if (matchQuotedFontFamily(ctx.source_code, loc)) |family| {
+                    return family;
+                }
+                // Unrecognized quoted name — continue to next entry.
+            }
+            // Other token type — no more font families.
+            ctx.resetPoint(item.index);
+            break;
+        } else {
+            break;
+        }
+        // Consume the comma separator.
+        const next_item = ctx.next() orelse break;
+        if (next_item.tag != .token_comma) {
+            ctx.resetPoint(next_item.index);
+            break;
+        }
+    }
+    return null;
+}
+
+fn matchQuotedFontFamily(source_code: SourceCode, location: SourceCode.Location) ?types.FontFamily {
+    const names_sans = [_][]const u8{ "verdana", "arial", "helvetica", "tahoma", "calibri", "roboto", "lato" };
+    const names_serif = [_][]const u8{ "times", "georgia", "garamond", "palatino", "cambria" };
+    const names_mono = [_][]const u8{ "courier", "consolas", "monaco", "menlo" };
+
+    // Compare quoted string content against known font names.
+    // Uses stringTokenIterator for character-by-character comparison.
+    inline for (&names_sans) |name| {
+        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .sans_serif;
+    }
+    inline for (&names_serif) |name| {
+        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .serif;
+    }
+    inline for (&names_mono) |name| {
+        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .monospace;
+    }
+    return null;
+}
+
+fn stringEqlIgnoreCaseImpl(source_code: SourceCode, location: SourceCode.Location, ascii_string: []const u8) bool {
+    const toLowercase = zss.unicode.latin1ToLowercase;
+    var it = source_code.stringTokenIterator(location);
+    for (ascii_string) |byte| {
+        const actual = it.next() orelse return false;
+        if (toLowercase(@as(u21, byte)) != toLowercase(actual)) return false;
+    }
+    // String must be fully consumed for exact match.
+    return it.next() == null;
+}
+
 pub fn fontWeight(ctx: *Context) ?types.FontWeight {
     return keyword(ctx, types.FontWeight, &.{
         .{ "normal", .normal },

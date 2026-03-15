@@ -580,6 +580,14 @@ pub fn @"background-size"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba
 }
 
 
+pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-family") {
+    ctx.initDecl(declaration_index);
+    // font-family consumes the entire comma-separated list internally;
+    // don't check ctx.empty() since trailing unrecognized entries are skipped.
+    const value = values.parse.fontFamily(ctx) orelse return null;
+    return .{ .font = .{ .font_family = .{ .declared = value } } };
+}
+
 pub fn @"font-size"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-size") {
     ctx.initDecl(declaration_index);
     const value = values.parse.fontSize(ctx) orelse return null;

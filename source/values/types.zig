@@ -285,6 +285,12 @@ pub const FontWeight = enum {
     bold,
 };
 
+pub const FontFamily = enum {
+    sans_serif,
+    serif,
+    monospace,
+};
+
 pub const TextDecoration = enum {
     none,
     underline,

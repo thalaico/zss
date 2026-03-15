@@ -307,6 +307,7 @@ pub const InlineFormattingContext = struct {
 
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = undefined,
+    font_family: values.types.FontFamily = .sans_serif,
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,
     text_decoration: values.types.TextDecoration = .none,

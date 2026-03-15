@@ -153,15 +153,15 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             const generated_box = GeneratedBox{ .text = ifc.ptr.id };
             try layout.box_tree.setGeneratedBox(node, generated_box);
 
-            // TODO: Do proper font matching.
             const font = layout.computer.getTextFont(.box_gen);
             const handle: Fonts.Handle = switch (font.font) {
-                .default => layout.inputs.fonts.query(),
+                .default => layout.inputs.fonts.queryFamily(font.font_family),
                 .none => .invalid,
             };
             box_gen.inline_context.setFont(handle);
-            // Propagate cascaded font-size to the IFC so layout can scale
-            // glyph metrics and line box heights from 16px shaping resolution.
+            // Propagate cascaded font properties to the IFC so layout
+            // can scale metrics from 16px shaping resolution.
+            ifc.ptr.font_family = font.font_family;
             ifc.ptr.font_size = font.font_size;
             if (layout.inputs.fonts.get(handle)) |hb_font| {
                 const text = layout.computer.getText();
