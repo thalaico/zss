@@ -180,7 +180,7 @@ pub const Tag = enum {
 
     pub fn FieldEnum(comptime tag: Tag) type {
         const Group = tag.Value();
-        @setEvalBranchQuota(@typeInfo(Group).@"struct".fields.len * 2000);
+        @setEvalBranchQuota(@typeInfo(Group).@"struct".fields.len * 3000);
         return std.meta.FieldEnum(Group);
     }
 
