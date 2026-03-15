@@ -592,16 +592,13 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
 
     // 0-based column index for auto-layout lookup (points to first spanned column)
     const col_idx = if (table_ctx.current_column >= colspan) table_ctx.current_column - colspan else 0;
-    // Last cell in the row: use cell count from DOM (handles colspan correctly,
-    // unlike nextSibling which may return whitespace text nodes).
-    const is_last_cell = table_ctx.current_column >= table_ctx.cells_in_current_row;
 
     const cell_width = if (has_explicit_width)
-        resolved_width // explicit CSS width (from HTML attr or inline style)
+        resolved_width
     else if (table_w == 0)
-        resolved_width // no table width known — can't distribute
+        resolved_width
     else if (table_ctx.known_columns == 0)
-        resolved_width // no column count available yet
+        resolved_width
     else if (colspan > 1 and table_ctx.has_auto_widths) blk: {
         // Sum column widths + internal spacing for spanned cell
         var total: Unit = 0;
@@ -611,10 +608,6 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
             if (k > 0) total += table_ctx.border_spacing;
         }
         break :blk if (total > 0) total else table_ctx.getDefaultCellWidth();
-    } else if (is_last_cell) blk: {
-        // Last cell always gets remaining width (handles colspan and rounding)
-        const remaining = table_w - table_ctx.row_x_cursor - table_ctx.border_spacing;
-        break :blk if (remaining > 0) remaining else table_ctx.getDefaultCellWidth();
     } else if (table_ctx.has_auto_widths)
         table_ctx.getColumnWidth(col_idx)
     else
