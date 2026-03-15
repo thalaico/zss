@@ -88,6 +88,8 @@ pub const Context = struct {
     column_widths: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
     /// Whether column_widths has been computed for the current table.
     has_auto_widths: bool = false,
+    /// Per-column explicit width (from HTML width attr, in layout units). 0 = auto.
+    col_explicit: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
     /// Stack of table states for nested tables
     stack: std.ArrayListUnmanaged(State) = .{},
     /// Stack tracking which table element type pushed each flow block.
@@ -103,6 +105,7 @@ pub const Context = struct {
         table_width: Unit,
         column_widths: [MAX_COLUMNS]Unit,
         has_auto_widths: bool,
+        col_explicit: [MAX_COLUMNS]Unit,
     };
     
     pub fn init(_: Allocator) Context {
@@ -123,6 +126,7 @@ pub const Context = struct {
             .table_width = ctx.table_width,
             .column_widths = ctx.column_widths,
             .has_auto_widths = ctx.has_auto_widths,
+            .col_explicit = ctx.col_explicit,
         });
         ctx.table_depth += 1;
         ctx.current_row = 0;
@@ -134,6 +138,7 @@ pub const Context = struct {
         ctx.explicit_cells_in_row = 0;
         ctx.explicit_width_sum = 0;
         ctx.column_widths = [_]Unit{0} ** MAX_COLUMNS;
+        ctx.col_explicit = [_]Unit{0} ** MAX_COLUMNS;
         ctx.has_auto_widths = false;
     }
     
@@ -148,6 +153,7 @@ pub const Context = struct {
         ctx.table_width = state.table_width;
         ctx.column_widths = state.column_widths;
         ctx.has_auto_widths = state.has_auto_widths;
+        ctx.col_explicit = state.col_explicit;
         ctx.row_x_cursor = ctx.border_spacing;
     }
     
@@ -391,6 +397,16 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
                 const per_col_max = @divFloor(est.max, @as(Unit, @intCast(span)));
                 if (per_col_min > col_min[c_idx]) col_min[c_idx] = per_col_min;
                 if (per_col_max > col_max[c_idx]) col_max[c_idx] = per_col_max;
+            }
+
+            // Check if cell has explicit HTML width attribute
+            const explicit_px: u16 = env.getNodeProperty(.explicit_width_px, cell);
+            if (explicit_px > 0) {
+                const explicit_units: Unit = @as(Unit, @intCast(explicit_px)) * units_per_pixel;
+                // Per spec step 1: if specified width W > MCW, W is the minimum
+                if (explicit_units > col_min[col_idx]) col_min[col_idx] = explicit_units;
+                // Record this column has an explicit width
+                if (explicit_units > ctx.col_explicit[col_idx]) ctx.col_explicit[col_idx] = explicit_units;
             }
             col_idx += span;
         }
