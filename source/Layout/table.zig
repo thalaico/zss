@@ -3,10 +3,14 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 const zss = @import("../zss.zig");
+const Fonts = zss.Fonts;
 const Environment = zss.Environment;
 const NodeId = Environment.NodeId;
 const StyleComputer = zss.Layout.StyleComputer;
 const Unit = zss.math.Unit;
+const units_per_pixel = zss.math.units_per_pixel;
+
+const hb = @import("harfbuzz").c;
 
 const BoxGen = zss.Layout.BoxGen;
 const BlockComputedSizes = BoxGen.BlockComputedSizes;
@@ -31,6 +35,20 @@ const AVG_CHAR_WIDTH: Unit = 32;
 /// Minimum cell width in layout units (12px = 48 units).
 /// Applied to cells with no text content (e.g. vote arrow divs).
 const MIN_CELL_WIDTH: Unit = 48;
+
+/// Get average character width from the default (sans-serif) font.
+/// Falls back to AVG_CHAR_WIDTH if no font is available.
+fn getRealCharWidth(fonts: *const Fonts) Unit {
+    const handle = fonts.queryFamily(.sans_serif);
+    const hb_font = fonts.get(handle) orelse return AVG_CHAR_WIDTH;
+    // Get glyph ID for 'x' (U+0078) — representative of average width
+    var glyph: u32 = 0;
+    if (hb.hb_font_get_glyph(hb_font, 'x', 0, &glyph) == 0) return AVG_CHAR_WIDTH;
+    const advance = hb.hb_font_get_glyph_h_advance(hb_font, glyph);
+    // Convert from HarfBuzz 26.6 fixed-point to layout units
+    const width: Unit = @divFloor(advance * units_per_pixel, 64);
+    return if (width > 0) width else AVG_CHAR_WIDTH;
+}
 
 /// Table layout context
 pub const Context = struct {
@@ -286,17 +304,19 @@ const CellWidthEstimate = struct {
 
 /// Estimate the content width of a cell by walking its text nodes.
 /// Returns min (longest word) and max (total text) widths.
-fn estimateCellContentWidth(cell_node: NodeId, env: *const Environment) CellWidthEstimate {
+fn estimateCellContentWidth(cell_node: NodeId, env: *const Environment, char_width: Unit) CellWidthEstimate {
     var stats = TextStats{ .total_len = 0, .max_word_len = 0 };
     collectTextStats(cell_node, env, &stats);
 
     if (stats.total_len == 0) {
         // No text content — use minimum for non-text elements (images, divs)
-        return .{ .min = MIN_CELL_WIDTH, .max = MIN_CELL_WIDTH };
+        const min_cell_w = @max(MIN_CELL_WIDTH, char_width);
+        return .{ .min = min_cell_w, .max = min_cell_w };
     }
 
-    const min_w = @max(MIN_CELL_WIDTH, @as(Unit, @intCast(stats.max_word_len)) * AVG_CHAR_WIDTH);
-    const max_w = @as(Unit, @intCast(stats.total_len)) * AVG_CHAR_WIDTH;
+    const min_cell_w = @max(MIN_CELL_WIDTH, char_width);
+    const min_w = @max(min_cell_w, @as(Unit, @intCast(stats.max_word_len)) * char_width);
+    const max_w = @as(Unit, @intCast(stats.total_len)) * char_width;
     return .{ .min = min_w, .max = @max(min_w, max_w) };
 }
 
@@ -339,7 +359,8 @@ fn collectTextStats(node: NodeId, env: *const Environment, stats: *TextStats) vo
 /// Pre-scan all rows/cells to compute per-column min/max content widths,
 /// then distribute table width per CSS 2.1 §17.5.2 auto-layout.
 /// Writes results into ctx.column_widths and sets ctx.has_auto_widths.
-fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Environment) void {
+fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Environment, fonts: *const Fonts) void {
+    const char_width = getRealCharWidth(fonts);
     const num_cols = ctx.known_columns;
     if (num_cols == 0 or num_cols > MAX_COLUMNS) return;
 
@@ -361,7 +382,7 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
             if (!nodeTagEql(env, cell, "td") and !nodeTagEql(env, cell, "th")) continue;
             if (col_idx >= num_cols) break;
 
-            const est = estimateCellContentWidth(cell, env);
+            const est = estimateCellContentWidth(cell, env, char_width);
             if (est.min > col_min[col_idx]) col_min[col_idx] = est.min;
             if (est.max > col_max[col_idx]) col_max[col_idx] = est.max;
             col_idx += 1;
@@ -445,7 +466,7 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
         box_gen.table_context.max_columns = dom_columns;
 
         // Pre-scan cell content to compute auto-layout column widths
-        computeAutoColumnWidths(&box_gen.table_context, node, env);
+        computeAutoColumnWidths(&box_gen.table_context, node, env, box_gen.getLayout().inputs.fonts);
     }
     
     const alloc = box_gen.getLayout().allocator;
