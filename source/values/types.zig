@@ -15,6 +15,7 @@ pub const Display = enum {
     table_row,
     table_cell,
     flex,
+    grid,
     none,
 };
 

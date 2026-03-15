@@ -586,6 +586,7 @@ pub fn display(ctx: *Context) ?types.Display {
         // .{ "table-caption", .table_caption },
         .{ "none", .none },
         .{ "flex", .flex },
+        .{ "grid", .grid },
     });
 }
 
