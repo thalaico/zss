@@ -147,7 +147,7 @@ pub const Property = enum {
             .@"background-origin"     => &.{.{.background      , &.{.origin}        }},
             .@"background-size"       => &.{.{.background      , &.{.size}          }},
             .background               => &.{
-                .{.background_color, &.{.color}},
+                .{.background_color, &.{.color, .gradient}},
                 .{.background,       &.{.image, .repeat, .attachment, .position, .origin, .size}},
                 .{.background_clip,  &.{.clip}},
             },

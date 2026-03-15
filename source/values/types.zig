@@ -173,6 +173,11 @@ pub const Color = union(enum) {
     pub const black = Color{ .rgba = 0xff };
 };
 
+pub const LinearGradient = union(enum) {
+    gradient: struct { from_rgba: u32, to_rgba: u32 },
+    none,
+};
+
 pub const BackgroundImage = union(enum) {
     image: zss.Images.Handle,
     url: zss.Environment.UrlId,

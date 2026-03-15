@@ -625,6 +625,75 @@ pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     });
 }
 
+/// Parse linear-gradient(color1, color2). Returns the two color stops as RGBA u32.
+pub fn linearGradient(ctx: *Context) ?types.LinearGradient {
+    const item = ctx.next() orelse return null;
+    if (item.tag != .function) {
+        ctx.resetPoint(item.index);
+        return null;
+    }
+    const location = item.index.location(ctx.ast);
+    // Match function name "linear-gradient"
+    _ = ctx.source_code.mapIdentifierValue(location, void, &.{
+        .{ "linear-gradient", {} },
+    }) orelse {
+        ctx.resetPoint(item.index);
+        return null;
+    };
+    // Enter function arguments
+    const state = ctx.enterSequence(item.index);
+    defer ctx.resetState(state);
+    // Parse first color stop
+    const from_color = parseColorRgba(ctx) orelse return null;
+    // Skip comma
+    const comma = ctx.next() orelse return null;
+    if (comma.tag != .token_comma) return null;
+    // Parse second color stop
+    const to_color = parseColorRgba(ctx) orelse return null;
+    return .{ .gradient = .{ .from_rgba = from_color, .to_rgba = to_color } };
+}
+
+/// Parse a color and return its RGBA u32 value.
+fn parseColorRgba(ctx: *Context) ?u32 {
+    // Try named color
+    if (identifier(ctx)) |ident| {
+        if (ctx.source_code.mapIdentifierValue(ident, u32, &namedColorKVs)) |rgba| {
+            return rgba;
+        }
+    }
+    // Try hex color
+    if (hash(ctx)) |loc| blk: {
+        var digits: @Vector(8, u8) = undefined;
+        const len = len: {
+            var iterator = ctx.source_code.hashIdTokenIterator(loc);
+            var index: u4 = 0;
+            while (iterator.next()) |codepoint| : (index += 1) {
+                if (index == 8) break :blk;
+                digits[index] = zss.unicode.hexDigitToNumber(codepoint) catch break :blk;
+            }
+            break :len index;
+        };
+        const rgba_vec: @Vector(4, u8) = sw: switch (len) {
+            3 => { digits[3] = 0xF; continue :sw 4; },
+            4 => {
+                const vec = @shuffle(u8, digits, undefined, @Vector(4, i32){ 0, 1, 2, 3 });
+                break :sw (vec << @splat(4)) | vec;
+            },
+            6 => { digits[6] = 0xF; digits[7] = 0xF; continue :sw 8; },
+            8 => {
+                const vec1 = @shuffle(u8, digits, undefined, @Vector(4, i32){ 0, 2, 4, 6 });
+                const vec2 = @shuffle(u8, digits, undefined, @Vector(4, i32){ 1, 3, 5, 7 });
+                break :sw (vec1 << @splat(4)) | vec2;
+            },
+            else => break :blk,
+        };
+        var rgba = std.mem.bytesToValue(u32, &@as([4]u8, rgba_vec));
+        rgba = std.mem.bigToNative(u32, rgba);
+        return rgba;
+    }
+    return null;
+}
+
 pub fn opacity(ctx: *Context) ?types.Opacity {
     const item = ctx.next() orelse return null;
     const value: f32 = switch (item.tag) {

@@ -427,9 +427,11 @@ pub const BorderStyles = struct {
 /// color -> background-color
 pub const BackgroundColor = struct {
     color: types.Color,
+    gradient: types.LinearGradient,
 
     pub const initial_values = BackgroundColor{
         .color = types.Color.transparent,
+        .gradient = .none,
     };
 };
 

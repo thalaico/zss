@@ -123,10 +123,17 @@ pub const InlineBoxBackground = struct {
     clip: BackgroundClip = .border,
 };
 
+pub const LinearGradient = struct {
+    from: math.Color = .transparent,
+    to: math.Color = .transparent,
+    angle_deg: f32 = 180.0, // default: top-to-bottom
+};
+
 pub const BlockBoxBackground = struct {
     color: math.Color = .transparent,
     color_clip: BackgroundClip = .border,
     images: BackgroundImages.Handle = .invalid,
+    gradient: ?LinearGradient = null,
 };
 
 pub const BackgroundImage = struct {

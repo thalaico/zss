@@ -479,18 +479,25 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
     return .{ .background_color = .{ .color = .{ .declared = value } } };
 }
 
-/// Minimal background shorthand: only handles `background: <color>` case.
-/// Full CSS background shorthand supports image, position, size, repeat, etc.
-/// but the single-color case covers the vast majority of real-world usage.
+/// Background shorthand: handles `background: <color>` and `background: linear-gradient(c1, c2)`.
 pub fn background(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.background) {
     ctx.initDecl(declaration_index);
-    const color_value = values.parse.color(ctx) orelse {
-        return null;
-    };
-    if (!ctx.empty()) {
-        return null;
+    // Try color first
+    if (values.parse.color(ctx)) |color_value| {
+        if (ctx.empty()) {
+            return .{ .background_color = .{ .color = .{ .declared = color_value } } };
+        }
     }
-    return .{ .background_color = .{ .color = .{ .declared = color_value } } };
+    // Reset and try linear-gradient()
+    ctx.initDecl(declaration_index);
+    if (values.parse.linearGradient(ctx)) |grad| {
+        if (ctx.empty()) {
+            return .{ .background_color = .{
+                .gradient = .{ .declared = grad },
+            } };
+        }
+    }
+    return null;
 }
 
 pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.@"background-image") {

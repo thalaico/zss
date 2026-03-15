@@ -420,6 +420,14 @@ fn blockBoxBackgrounds(
     background_ptr: *BoxTree.BlockBoxBackground,
 ) !void {
     background_ptr.color = solve.color(specified.background_color.color, current_color);
+    // Resolve linear gradient if present
+    background_ptr.gradient = switch (specified.background_color.gradient) {
+        .gradient => |g| BoxTree.LinearGradient{
+            .from = Color.fromRgbaInt(g.from_rgba),
+            .to = Color.fromRgbaInt(g.to_rgba),
+        },
+        else => null,
+    };
 
     const images = specified.background.image;
     const clips = specified.background_clip.clip;
