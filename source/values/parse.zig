@@ -535,19 +535,22 @@ pub fn color(ctx: *Context) ?types.Color {
                 .{ "rgba", .rgba },
             });
             if (is_rgb != null) {
-                // Parse rgb(r, g, b) or rgba(r, g, b, a)
-                // Arguments are inside the function block's children
+                // Enter the function's argument sequence so the parser cursor
+                // advances past the closing paren when we're done.
+                const state = ctx.enterSequence(item.index);
+                defer ctx.resetState(state);
+
                 var r_val: ?f32 = null;
                 var g_val: ?f32 = null;
                 var b_val: ?f32 = null;
                 var a_val: f32 = 255.0;
                 var arg_count: u8 = 0;
-                var children = item.index.children(ctx.ast);
-                while (children.nextSkipSpaces(ctx.ast)) |child| {
-                    const tag = child.tag(ctx.ast);
+                while (true) {
+                    const arg = ctx.next() orelse break;
+                    const tag = arg.tag;
                     if (tag == .token_comma) continue;
                     if (tag == .token_integer or tag == .token_number) {
-                        const num = child.extra(ctx.ast).number orelse continue;
+                        const num = arg.index.extra(ctx.ast).number orelse continue;
                         switch (arg_count) {
                             0 => r_val = num,
                             1 => g_val = num,
@@ -557,7 +560,7 @@ pub fn color(ctx: *Context) ?types.Color {
                         }
                         arg_count += 1;
                     } else if (tag == .token_percentage) {
-                        const num = child.extra(ctx.ast).number orelse continue;
+                        const num = arg.index.extra(ctx.ast).number orelse continue;
                         switch (arg_count) {
                             0 => r_val = num * 2.55,
                             1 => g_val = num * 2.55,
@@ -566,7 +569,7 @@ pub fn color(ctx: *Context) ?types.Color {
                             else => {},
                         }
                         arg_count += 1;
-                    }
+                    } else break;
                 }
                 if (r_val != null and g_val != null and b_val != null) {
                     const r: u8 = @intFromFloat(std.math.clamp(r_val.?, 0.0, 255.0));
