@@ -534,8 +534,13 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
     const main_component_tag, const main_component_index = parser.next() orelse return null;
     switch (main_component_tag) {
         .token_ident => {
-            if (pseudo == .class and parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass) == .root) {
-                return .root;
+            if (pseudo == .class) {
+                if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass)) |pc| {
+                    switch (pc) {
+                        .root, .link, .visited, .hover, .active, .focus => return pc,
+                        .unrecognized => {},
+                    }
+                }
             }
             return unrecognizedPseudo(pseudo, parser, main_component_index);
         },

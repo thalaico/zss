@@ -87,7 +87,7 @@ pub const Combinator = enum(u8) { descendant, child, next_sibling, subsequent_si
 
 pub const PseudoElement = enum { unrecognized }; // TODO: Support more pseudo elements
 
-pub const PseudoClass = enum { root, unrecognized }; // TODO: Support more pseudo classes
+pub const PseudoClass = enum { root, link, visited, hover, active, focus, unrecognized };
 
 pub const AttributeOperator = enum { equals, list_contains, equals_or_prefix_dash, starts_with, ends_with, contains };
 
@@ -246,6 +246,16 @@ fn matchCompoundSelector(
                     .root => {
                         if (element != env.root_node) return false;
                     },
+                    .link => {
+                        // :link matches <a> elements (all unvisited; we don't track visited state)
+                        const type_info = env.getNodeProperty(.type, element);
+                        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+                        if (!type_iter.eql("a")) return false;
+                    },
+                    // :visited never matches (we don't track navigation history)
+                    .visited => return false,
+                    // :hover, :active, :focus never match in static rendering
+                    .hover, .active, .focus => return false,
                     .unrecognized => return false,
                 }
             },
