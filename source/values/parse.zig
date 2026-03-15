@@ -550,7 +550,10 @@ pub fn color(ctx: *Context) ?types.Color {
                     const tag = arg.tag;
                     if (tag == .token_comma) continue;
                     if (tag == .token_integer or tag == .token_number) {
-                        const num = arg.index.extra(ctx.ast).number orelse continue;
+                        const num: f32 = if (tag == .token_integer)
+                            if (arg.index.extra(ctx.ast).integer) |i| @floatFromInt(i) else continue
+                        else
+                            arg.index.extra(ctx.ast).number orelse continue;
                         switch (arg_count) {
                             0 => r_val = num,
                             1 => g_val = num,
