@@ -791,6 +791,53 @@ pub fn visibility(ctx: *Context) ?types.Visibility {
     });
 }
 
+/// Parse border-spacing: <length>. Returns layout units (4 units = 1px).
+pub fn borderSpacing(ctx: *Context) ?types.BorderSpacing {
+    return parseLengthToUnits(ctx);
+}
+
+/// Parse line-height: <length> | normal. Returns layout units. 0 = normal.
+pub fn lineHeight(ctx: *Context) ?types.LineHeight {
+    // Check for 'normal' keyword first
+    const save = ctx.savePoint();
+    if (keyword(ctx, enum { normal }, &.{.{ "normal", .normal }})) |_| {
+        return 0; // 0 = normal
+    }
+    ctx.resetPoint(save);
+    return parseLengthToUnits(ctx);
+}
+
+/// Shared helper: parse a <length> token and convert to layout units (4 units = 1px).
+fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_dimension => {
+            const index = item.index;
+            var children = index.children(ctx.ast);
+            const unit_index = children.nextSkipSpaces(ctx.ast).?;
+            const number = index.extra(ctx.ast).number orelse return null;
+            const unit = unit_index.extra(ctx.ast).unit orelse return null;
+            const px: f32 = switch (unit) {
+                .px => number,
+                .em, .rem => number * 16.0,
+                .pt => number * (96.0 / 72.0),
+                .vw => number * 8.0,
+                .vh => number * 6.0,
+            };
+            return @intFromFloat(@round(px * 4.0)); // 4 units per px
+        },
+        .token_integer => {
+            const number = item.index.extra(ctx.ast).number orelse return null;
+            if (number == 0) return 0;
+            return null;
+        },
+        else => {
+            ctx.resetPoint(item.index);
+            return null;
+        },
+    }
+}
+
 /// Parse linear-gradient(color1, color2). Returns the two color stops as RGBA u32.
 pub fn linearGradient(ctx: *Context) ?types.LinearGradient {
     const item = ctx.next() orelse return null;

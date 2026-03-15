@@ -311,3 +311,9 @@ pub const Visibility = enum {
     hidden,
     collapse,
 };
+
+/// CSS border-spacing: stored as layout units (4 units = 1px).
+pub const BorderSpacing = @import("../zss.zig").math.Unit;
+
+/// CSS line-height: stored as layout units (4 units = 1px). 0 = normal.
+pub const LineHeight = @import("../zss.zig").math.Unit;

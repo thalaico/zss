@@ -248,6 +248,8 @@ pub const Subtree = struct {
         float_side: values.types.Float,
         /// Clear value for this block
         clear_side: values.types.Clear,
+        /// CSS visibility (visible/hidden/collapse)
+        visibility: values.types.Visibility,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
@@ -306,6 +308,8 @@ pub const InlineFormattingContext = struct {
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = undefined,
     font_size: f32 = 16.0, // Computed font-size in px
+    font_weight: values.types.FontWeight = .normal,
+    text_decoration: values.types.TextDecoration = .none,
     ascender: math.Unit = undefined,
     /// This is a positive value.
     descender: math.Unit = undefined,

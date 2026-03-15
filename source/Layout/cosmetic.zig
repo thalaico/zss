@@ -159,12 +159,17 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root);
     const computed_color, const used_color = solve.colorProperty(specified.color);
 
-    // Propagate text properties to IFCs: color, font-size
+    // Propagate text properties to IFCs: color, font-size, font-weight, text-decoration
     const font_size_px: f32 = specified.font.font_size;
+    const font_weight = specified.font.font_weight;
+    const text_decoration = specified.font.text_decoration;
+    const block_visibility = specified.font.visibility;
     if (is_root == .root) {
         for (layout.box_tree.ptr.ifcs.items) |ifc| {
             ifc.font_color = used_color;
             ifc.font_size = font_size_px;
+            ifc.font_weight = font_weight;
+            ifc.text_decoration = text_decoration;
         }
     } else {
         // Propagate to all IFC containers within this block's span
@@ -178,11 +183,16 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                     const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                     ifc.font_color = used_color;
                     ifc.font_size = font_size_px;
+                    ifc.font_weight = font_weight;
+                    ifc.text_decoration = text_decoration;
                 },
                 else => {},
             }
         }
     }
+
+    // Store visibility on the block itself (for renderBlock to check)
+    subtree.items(.visibility)[ref.index] = block_visibility;
 
     var computed_insets: ComputedValues(.insets) = undefined;
     {

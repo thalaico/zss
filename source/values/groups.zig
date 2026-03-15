@@ -244,6 +244,8 @@ pub const Font = struct {
     text_align: types.TextAlign,
     vertical_align: types.VerticalAlign,
     visibility: types.Visibility,
+    border_spacing: types.BorderSpacing,
+    line_height: types.LineHeight,
 
     pub const initial_values = Font{
         .font = .default,
@@ -253,6 +255,8 @@ pub const Font = struct {
         .text_align = .left,
         .vertical_align = .baseline,
         .visibility = .visible,
+        .border_spacing = 8, // 2px default (CSS border-collapse: separate)
+        .line_height = 0, // 0 = normal (1.2 * font-size)
     };
 };
 

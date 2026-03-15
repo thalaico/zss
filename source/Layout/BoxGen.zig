@@ -482,6 +482,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.out_of_flow)[index] = false;
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
+    subtree.items(.visibility)[index] = .visible;
 }
 
 pub fn pushFlowBlock(
@@ -554,6 +555,7 @@ pub fn popFlowBlock(
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow);
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
+    subtree.items(.visibility)[block.index] = .visible;
 }
 
 pub fn pushStfFlowBlock(
@@ -842,6 +844,7 @@ fn setDataBlock(
     subtree.items(.out_of_flow)[index] = out_of_flow;
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
+    subtree.items(.visibility)[index] = .visible;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -895,6 +898,7 @@ fn setDataIfcContainer(
     subtree.items(.out_of_flow)[index] = false;
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
+    subtree.items(.visibility)[index] = .visible;
 }
 
 fn setDataSubtreeProxy(
@@ -926,4 +930,5 @@ fn setDataSubtreeProxy(
     subtree.items(.out_of_flow)[index] = false;
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
+    subtree.items(.visibility)[index] = .visible;
 }

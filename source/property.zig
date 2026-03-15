@@ -91,6 +91,8 @@ pub const Property = enum {
     @"border-right",
     @"border-bottom",
     @"border-left",
+    @"border-spacing",
+    @"line-height",
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -202,6 +204,8 @@ pub const Property = enum {
                 .{.border_colors, &.{.left}},
                 .{.border_styles, &.{.left}},
             },
+            .@"border-spacing"        => &.{.{.font           , &.{.border_spacing}}},
+            .@"line-height"           => &.{.{.font           , &.{.line_height}   }},
         };
         // zig fmt: on
     }

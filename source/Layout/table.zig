@@ -186,6 +186,7 @@ fn countCellsInRow(tr: NodeId, env: *const Environment) usize {
     return count;
 }
 
+
 /// Iterates through <tr> elements in a table, descending into <tbody>/<thead>/<tfoot>.
 const TrIterator = struct {
     /// Current child of the table (or section element)
@@ -245,11 +246,17 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
     // Treat table as a block, but track it in table context
     const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
     const stacking_context = flow.solveStackingContext(computer, position);
+
+    // Read border-spacing from cascade (set by cellspacing HTML attr or CSS)
+    const font_specified = computer.getSpecifiedValue(.box_gen, .font);
+    const border_spacing_val: Unit = font_specified.border_spacing;
+
     computer.commitNode(.box_gen);
     
     // Push table state and pre-compute column count from DOM structure.
     // This lets row 1 cells be positioned horizontally (not stacked).
     try box_gen.table_context.pushTable(box_gen.getLayout().allocator, sizes.inline_size_untagged);
+    box_gen.table_context.border_spacing = border_spacing_val;
     const env = box_gen.getLayout().inputs.env;
     const dom_columns = countColumnsFromDom(node, env);
     if (dom_columns > 0) {
@@ -340,7 +347,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
             else
                 break :blk resolved_width;
         } else {
-            // No explicit widths — distribute equally
+            // No content weights available — equal distribution
             break :blk table_ctx.getDefaultCellWidth();
         }
     };

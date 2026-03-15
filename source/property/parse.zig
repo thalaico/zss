@@ -760,3 +760,17 @@ pub fn @"border-left"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
         .border_styles = .{ .left = .{ .declared = parsed.style orelse .none } },
     };
 }
+
+pub fn @"border-spacing"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-spacing") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.borderSpacing(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .border_spacing = .{ .declared = value } } };
+}
+
+pub fn @"line-height"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"line-height") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lineHeight(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .line_height = .{ .declared = value } } };
+}
