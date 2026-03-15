@@ -151,6 +151,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background),
         .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
         .opacity = layout.computer.getSpecifiedValue(.cosmetic, .opacity),
+        .font = layout.computer.getSpecifiedValue(.cosmetic, .font),
     };
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
@@ -158,13 +159,15 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root);
     const computed_color, const used_color = solve.colorProperty(specified.color);
 
-    // Set text color: root sets default for all IFCs, non-root propagates to descendant IFCs
+    // Propagate text properties to IFCs: color, font-size
+    const font_size_px: f32 = specified.font.font_size;
     if (is_root == .root) {
         for (layout.box_tree.ptr.ifcs.items) |ifc| {
             ifc.font_color = used_color;
+            ifc.font_size = font_size_px;
         }
     } else {
-        // Propagate color to all IFC containers within this block's span
+        // Propagate to all IFC containers within this block's span
         const skip = subtree.items(.skip)[ref.index];
         const block_types = subtree.items(.type);
         var i = ref.index;
@@ -174,6 +177,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                 .ifc_container => |ifc_id| {
                     const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                     ifc.font_color = used_color;
+                    ifc.font_size = font_size_px;
                 },
                 else => {},
             }
