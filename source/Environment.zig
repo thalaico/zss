@@ -495,6 +495,7 @@ pub const NodeProperty = struct {
     type: ElementType = .{ .namespace = .none, .name = .anonymous },
     text: TextId = .empty_string,
     colspan: u8 = 1,
+    explicit_width_px: u16 = 0, // HTML width attr in px, 0 = auto
 };
 
 const NodeProperties = struct {
