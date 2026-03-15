@@ -75,10 +75,11 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         _ => return,
     };
     if (fonts.fonts[slot]) |entry| {
-        // FT_Set_Char_Size takes 1/64 points; convert px → pt at 96 DPI.
-        // pt = px * 72/96 = px * 0.75; in 26.6 fixed-point: px * 48.
-        const size_26_6: i32 = @intFromFloat(size_px * 48.0);
-        _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 96, 96);
+        // Match Chrome/Skia convention: treat size_px as point-size at 72 DPI.
+        // FT_Set_Char_Size(face, 0, px*64, 72, 72) gives pixel_size = px*64/64 * 72/72 = px.
+        // This avoids the fractional rounding difference vs the px*48 + 96dpi path.
+        const size_26_6: i32 = @intFromFloat(size_px * 64.0);
+        _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
         // Tell HarfBuzz to re-read metrics from the resized FT face.
         // Required for HarfBuzz < 11.0.0 (no auto-detection).
         hb.hb_ft_font_changed(entry.hb_font);
