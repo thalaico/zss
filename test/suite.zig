@@ -86,7 +86,7 @@ pub fn main() !void {
 
     var fonts = zss.Fonts.init();
     defer fonts.deinit();
-    const font_handle = fonts.setFont(font);
+    const font_handle = fonts.setDefaultFont(font, face);
 
     const tests = try getAllTests(args, &arena, &images, &fonts, font_handle);
 

@@ -176,7 +176,7 @@ pub fn main() !void {
 
     var fonts = zss.Fonts.init();
     defer fonts.deinit();
-    _ = fonts.setFont(font);
+    _ = fonts.setDefaultFont(font, face);
 
     // Load the document.
     const zml_document_source_code = try zss.syntax.SourceCode.init(@embedFile("demo.zml"));

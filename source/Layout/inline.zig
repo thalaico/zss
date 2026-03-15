@@ -58,6 +58,8 @@ fn endMode(box_gen: *BoxGen) !Result {
 
     const layout = box_gen.getLayout();
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
+    // Ensure font is at the cascaded size before solving metrics.
+    layout.inputs.fonts.setFontSize(ifc.ptr.font, ifc.ptr.font_size);
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width);
 
@@ -159,10 +161,11 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 .none => .invalid,
             };
             box_gen.inline_context.setFont(handle);
-            // Propagate cascaded font properties to the IFC so layout
-            // can scale metrics from 16px shaping resolution.
+            // Propagate cascaded font properties to the IFC.
             ifc.ptr.font_family = font.font_family;
             ifc.ptr.font_size = font.font_size;
+            // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
+            layout.inputs.fonts.setFontSize(handle, font.font_size);
             if (layout.inputs.fonts.get(handle)) |hb_font| {
                 const text = layout.computer.getText();
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
@@ -892,33 +895,8 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
         }
     }
 
-    // HarfBuzz shapes at 16px. Scale glyph metrics (advance, offset, width)
-    // to the cascaded font-size so line-breaking and positioning are correct.
-    // Must traverse using the same zero-glyph/special pattern as above —
-    // special entries (odd index after zero-glyph) have uninitialized metrics.
-    if (ifc.font_size != 16.0) {
-        const font_scale: f32 = ifc.font_size / 16.0;
-        var j: usize = 0;
-        while (j < glyphs_slice.len) : (j += 1) {
-            const gi = glyphs_slice.items(.index)[j];
-            if (gi == 0) {
-                // metrics[j] was set by the switch above; scale it.
-                // metrics[j+1] is the special encoding — skip it.
-                const m = &glyphs_slice.items(.metrics)[j];
-                scaleMetrics(m, font_scale);
-                j += 1; // skip special entry
-            } else {
-                const m = &glyphs_slice.items(.metrics)[j];
-                scaleMetrics(m, font_scale);
-            }
-        }
-    }
-}
-
-fn scaleMetrics(m: *Ifc.Metrics, font_scale: f32) void {
-    m.offset = @intFromFloat(@as(f32, @floatFromInt(m.offset)) * font_scale);
-    m.advance = @intFromFloat(@as(f32, @floatFromInt(m.advance)) * font_scale);
-    m.width = @intFromFloat(@as(f32, @floatFromInt(m.width)) * font_scale);
+    // Font is already sized to the cascaded font-size (via setFontSize),
+    // so glyph metrics from HarfBuzz are at the correct scale.
 }
 
 fn setMetricsGlyph(metrics: *Ifc.Metrics, font: *hb.hb_font_t, glyph_index: GlyphIndex) void {
@@ -1054,20 +1032,18 @@ fn splitIntoLineBoxes(
     var top_height: Unit = undefined;
     var bottom_height: Unit = undefined;
     if (layout.inputs.fonts.get(ifc.font)) |font| {
+        // Resize the FreeType face before querying extents, so HarfBuzz
+        // returns metrics at the actual cascaded font-size.
+        layout.inputs.fonts.setFontSize(ifc.font, ifc.font_size);
         // TODO assuming ltr direction
         var font_extents: hb.hb_font_extents_t = undefined;
         assert(hb.hb_font_get_h_extents(font, &font_extents) != 0);
-        // Scale font extents from 16px shaping resolution to cascaded font-size.
-        // This ensures line box heights match the actual font, so block heights
-        // propagate correctly through the layout tree.
-        const font_scale: f32 = ifc.font_size / 16.0;
-        const scaled_ascender: i32 = @intFromFloat(@as(f32, @floatFromInt(font_extents.ascender)) * font_scale);
-        const scaled_descender: i32 = @intFromFloat(@as(f32, @floatFromInt(font_extents.descender)) * font_scale);
-        const scaled_line_gap: i32 = @intFromFloat(@as(f32, @floatFromInt(font_extents.line_gap)) * font_scale);
-        ifc.ascender = @divFloor(scaled_ascender * units_per_pixel, 64);
-        ifc.descender = @divFloor(-scaled_descender * units_per_pixel, 64);
-        top_height = @divFloor((scaled_ascender + @divFloor(scaled_line_gap, 2) + @mod(scaled_line_gap, 2)) * units_per_pixel, 64);
-        bottom_height = @divFloor((-scaled_descender + @divFloor(scaled_line_gap, 2)) * units_per_pixel, 64);
+        // Font extents are already at the correct size — convert from
+        // 1/64 em units to layout units (4 units = 1px).
+        ifc.ascender = @divFloor(font_extents.ascender * units_per_pixel, 64);
+        ifc.descender = @divFloor(-font_extents.descender * units_per_pixel, 64);
+        top_height = @divFloor((font_extents.ascender + @divFloor(font_extents.line_gap, 2) + @mod(font_extents.line_gap, 2)) * units_per_pixel, 64);
+        bottom_height = @divFloor((-font_extents.descender + @divFloor(font_extents.line_gap, 2)) * units_per_pixel, 64);
     } else {
         ifc.ascender = 0;
         ifc.descender = 0;
