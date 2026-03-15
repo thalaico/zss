@@ -821,7 +821,11 @@ fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
             const index = item.index;
             var children = index.children(ctx.ast);
             const unit_index = children.nextSkipSpaces(ctx.ast).?;
-            const number = index.extra(ctx.ast).number orelse return null;
+            // Dimension tokens can have integer or float numeric value
+            const number: f32 = index.extra(ctx.ast).number orelse blk: {
+                const int_val = index.extra(ctx.ast).integer orelse return null;
+                break :blk @floatFromInt(int_val);
+            };
             const unit = unit_index.extra(ctx.ast).unit orelse return null;
             const px: f32 = switch (unit) {
                 .px => number,
@@ -833,8 +837,8 @@ fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
             return @intFromFloat(@round(px * 4.0)); // 4 units per px
         },
         .token_integer => {
-            const number = item.index.extra(ctx.ast).number orelse return null;
-            if (number == 0) return 0;
+            const int_val = item.index.extra(ctx.ast).integer orelse return null;
+            if (int_val == 0) return 0;
             return null;
         },
         else => {

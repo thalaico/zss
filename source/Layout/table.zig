@@ -20,6 +20,18 @@ const flow = @import("./flow.zig");
 const BoxTree = zss.BoxTree;
 const BoxStyle = BoxTree.BoxStyle;
 
+/// Maximum columns supported for auto-layout pre-scan.
+/// Tables with more columns fall back to equal distribution.
+const MAX_COLUMNS: usize = 32;
+
+/// Average character width in layout units (4 units = 1px).
+/// DejaVuSans at 16px averages ~8px per character.
+const AVG_CHAR_WIDTH: Unit = 32;
+
+/// Minimum cell width in layout units (12px = 48 units).
+/// Applied to cells with no text content (e.g. vote arrow divs).
+const MIN_CELL_WIDTH: Unit = 48;
+
 /// Table layout context
 pub const Context = struct {
     pub const BlockType = enum { table, row, cell };
@@ -51,6 +63,13 @@ pub const Context = struct {
     explicit_width_sum: Unit = 0,
     /// Default border-spacing (2px = 8 units, CSS default for border-collapse: separate)
     border_spacing: Unit = 8,
+    /// Number of <td>/<th> cells in the current row (set by rowElement)
+    cells_in_current_row: usize = 0,
+    /// Pre-computed column widths from auto-layout algorithm.
+    /// Only valid when has_auto_widths is true and index < known_columns.
+    column_widths: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
+    /// Whether column_widths has been computed for the current table.
+    has_auto_widths: bool = false,
     /// Stack of table states for nested tables
     stack: std.ArrayListUnmanaged(State) = .{},
     /// Stack tracking which table element type pushed each flow block.
@@ -64,6 +83,8 @@ pub const Context = struct {
         max_columns: usize,
         known_columns: usize,
         table_width: Unit,
+        column_widths: [MAX_COLUMNS]Unit,
+        has_auto_widths: bool,
     };
     
     pub fn init(_: Allocator) Context {
@@ -82,6 +103,8 @@ pub const Context = struct {
             .max_columns = ctx.max_columns,
             .known_columns = ctx.known_columns,
             .table_width = ctx.table_width,
+            .column_widths = ctx.column_widths,
+            .has_auto_widths = ctx.has_auto_widths,
         });
         ctx.table_depth += 1;
         ctx.current_row = 0;
@@ -92,6 +115,8 @@ pub const Context = struct {
         ctx.table_width = table_width;
         ctx.explicit_cells_in_row = 0;
         ctx.explicit_width_sum = 0;
+        ctx.column_widths = [_]Unit{0} ** MAX_COLUMNS;
+        ctx.has_auto_widths = false;
     }
     
     pub fn popTable(ctx: *Context) void {
@@ -103,6 +128,8 @@ pub const Context = struct {
         ctx.max_columns = state.max_columns;
         ctx.known_columns = state.known_columns;
         ctx.table_width = state.table_width;
+        ctx.column_widths = state.column_widths;
+        ctx.has_auto_widths = state.has_auto_widths;
         ctx.row_x_cursor = ctx.border_spacing;
     }
     
@@ -150,6 +177,15 @@ pub const Context = struct {
         const total_spacing = ctx.border_spacing * @as(Unit, @intCast(cols + 1));
         const available = @max(0, ctx.table_width - total_spacing);
         return @divFloor(available, @as(Unit, @intCast(cols)));
+    }
+
+    /// Get the pre-computed width for column `col_idx` (0-based).
+    /// Falls back to equal distribution if auto-layout was not computed.
+    pub fn getColumnWidth(ctx: *const Context, col_idx: usize) Unit {
+        if (ctx.has_auto_widths and col_idx < ctx.known_columns and col_idx < MAX_COLUMNS) {
+            return ctx.column_widths[col_idx];
+        }
+        return ctx.getDefaultCellWidth();
     }
 };
 
@@ -229,6 +265,151 @@ const TrIterator = struct {
     }
 };
 
+// ─── CSS Table Auto-Layout (§17.5.2) ────────────────────────────────────────
+//
+// Pre-scans the table DOM to estimate min/max content width per column,
+// then distributes the table width using the CSS 2.1 automatic layout algorithm:
+//   1. Each column gets at least its minimum content width
+//   2. Remaining space is distributed proportionally to (max - min)
+//
+// Text width is estimated from character count × AVG_CHAR_WIDTH. This is
+// not pixel-accurate but produces correct column proportions for the common
+// case (short labels vs. long text).
+
+/// Min/max content width pair for a single cell.
+const CellWidthEstimate = struct {
+    /// Width of the longest unbreakable word (cannot be narrower than this).
+    min: Unit,
+    /// Width of the entire text on one line (preferred width without wrapping).
+    max: Unit,
+};
+
+/// Estimate the content width of a cell by walking its text nodes.
+/// Returns min (longest word) and max (total text) widths.
+fn estimateCellContentWidth(cell_node: NodeId, env: *const Environment) CellWidthEstimate {
+    var stats = TextStats{ .total_len = 0, .max_word_len = 0 };
+    collectTextStats(cell_node, env, &stats);
+
+    if (stats.total_len == 0) {
+        // No text content — use minimum for non-text elements (images, divs)
+        return .{ .min = MIN_CELL_WIDTH, .max = MIN_CELL_WIDTH };
+    }
+
+    const min_w = @max(MIN_CELL_WIDTH, @as(Unit, @intCast(stats.max_word_len)) * AVG_CHAR_WIDTH);
+    const max_w = @as(Unit, @intCast(stats.total_len)) * AVG_CHAR_WIDTH;
+    return .{ .min = min_w, .max = @max(min_w, max_w) };
+}
+
+const TextStats = struct {
+    total_len: usize,
+    max_word_len: usize,
+};
+
+/// Recursively collect text statistics from a subtree.
+fn collectTextStats(node: NodeId, env: *const Environment, stats: *TextStats) void {
+    var child = node.firstChild(env);
+    while (child) |ch| : (child = ch.nextSibling(env)) {
+        if (env.getNodeProperty(.category, ch) == .text) {
+            const text_id = env.getNodeProperty(.text, ch);
+            const text = env.getText(text_id);
+            if (text.len == 0) continue;
+
+            // Accumulate total non-whitespace-only text length
+            stats.total_len += text.len;
+
+            // Find longest word (split on whitespace)
+            var word_start: usize = 0;
+            for (text, 0..) |byte, i| {
+                if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') {
+                    const word_len = i - word_start;
+                    if (word_len > stats.max_word_len) stats.max_word_len = word_len;
+                    word_start = i + 1;
+                }
+            }
+            // Last word (or only word if no spaces)
+            const last_word = text.len - word_start;
+            if (last_word > stats.max_word_len) stats.max_word_len = last_word;
+        } else {
+            // Recurse into child elements
+            collectTextStats(ch, env, stats);
+        }
+    }
+}
+
+/// Pre-scan all rows/cells to compute per-column min/max content widths,
+/// then distribute table width per CSS 2.1 §17.5.2 auto-layout.
+/// Writes results into ctx.column_widths and sets ctx.has_auto_widths.
+fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Environment) void {
+    const num_cols = ctx.known_columns;
+    if (num_cols == 0 or num_cols > MAX_COLUMNS) return;
+
+    // Accumulate per-column min/max across all rows
+    var col_min: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS;
+    var col_max: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS;
+
+    var tr_iter = TrIterator.init(table_node, env);
+    while (tr_iter.next(env)) |tr| {
+        // Only include rows where cell count matches expected columns.
+        // Rows with colspan produce fewer cells and would misalign
+        // content to the wrong column index.
+        const row_cells = countCellsInRow(tr, env);
+        if (row_cells != num_cols) continue;
+
+        var col_idx: usize = 0;
+        var cell_child = tr.firstChild(env);
+        while (cell_child) |cell| : (cell_child = cell.nextSibling(env)) {
+            if (!nodeTagEql(env, cell, "td") and !nodeTagEql(env, cell, "th")) continue;
+            if (col_idx >= num_cols) break;
+
+            const est = estimateCellContentWidth(cell, env);
+            if (est.min > col_min[col_idx]) col_min[col_idx] = est.min;
+            if (est.max > col_max[col_idx]) col_max[col_idx] = est.max;
+            col_idx += 1;
+        }
+    }
+
+    // CSS 2.1 §17.5.2 distribution:
+    // 1. Each column gets at least its minimum width
+    // 2. Remaining space distributed proportionally to (max - min)
+    const total_spacing = ctx.border_spacing * @as(Unit, @intCast(num_cols + 1));
+    const available = @max(0, ctx.table_width - total_spacing);
+
+    var sum_min: Unit = 0;
+    for (0..num_cols) |i| {
+        // Ensure every column has at least MIN_CELL_WIDTH
+        if (col_min[i] == 0) col_min[i] = MIN_CELL_WIDTH;
+        sum_min += col_min[i];
+    }
+
+    if (sum_min >= available) {
+        // Not enough space — scale down proportionally
+        if (sum_min > 0) {
+            for (0..num_cols) |i| {
+                ctx.column_widths[i] = @divFloor(col_min[i] * available, sum_min);
+            }
+        }
+    } else {
+        // Distribute remaining space proportional to (max - min)
+        const remaining = available - sum_min;
+        var sum_excess: Unit = 0;
+        for (0..num_cols) |i| {
+            sum_excess += @max(0, col_max[i] - col_min[i]);
+        }
+
+        for (0..num_cols) |i| {
+            if (sum_excess > 0) {
+                const excess = @max(0, col_max[i] - col_min[i]);
+                ctx.column_widths[i] = col_min[i] + @divFloor(excess * remaining, sum_excess);
+            } else {
+                // All columns at min — distribute remaining equally
+                ctx.column_widths[i] = col_min[i] + @divFloor(remaining, @as(Unit, @intCast(num_cols)));
+            }
+        }
+    }
+
+    ctx.has_auto_widths = true;
+}
+
 pub fn beginMode(box_gen: *BoxGen) !void {
     _ = box_gen;
     // Table mode initialization happens in tableElement
@@ -262,6 +443,9 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
     if (dom_columns > 0) {
         box_gen.table_context.known_columns = dom_columns;
         box_gen.table_context.max_columns = dom_columns;
+
+        // Pre-scan cell content to compute auto-layout column widths
+        computeAutoColumnWidths(&box_gen.table_context, node, env);
     }
     
     const alloc = box_gen.getLayout().allocator;
@@ -278,7 +462,9 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
     
-    // Begin new row
+    // Count cells in this row and begin tracking
+    const env = box_gen.getLayout().inputs.env;
+    box_gen.table_context.cells_in_current_row = countCellsInRow(node, env);
     box_gen.table_context.beginRow();
     
     // Treat row as a block
@@ -298,7 +484,7 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
 
 /// Handle a table-cell element.
 /// Positions the cell horizontally using row_x_cursor and sizes it
-/// based on CSS width (from HTML width attr injection) or equal distribution.
+/// based on CSS width (from HTML width attr injection) or auto-layout widths.
 pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
@@ -313,7 +499,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     
     // Determine the cell's actual width:
     // If solveAllSizes produced full containing-block width, the cell has
-    // no explicit CSS width — use heuristic sizing.
+    // no explicit CSS width — use auto-layout or heuristic sizing.
     const resolved_width = sizes.inline_size_untagged;
     const table_w = table_ctx.table_width;
     const has_explicit_width = resolved_width < table_w and table_w > 0;
@@ -324,33 +510,26 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         table_ctx.explicit_width_sum += resolved_width;
     }
 
+    // 0-based column index for auto-layout lookup
+    const col_idx = if (table_ctx.current_column > 0) table_ctx.current_column - 1 else 0;
+    // Last cell in the row: use cell count from DOM (handles colspan correctly,
+    // unlike nextSibling which may return whitespace text nodes).
+    const is_last_cell = table_ctx.current_column >= table_ctx.cells_in_current_row;
+
     const cell_width = if (has_explicit_width)
         resolved_width // explicit CSS width (from HTML attr or inline style)
     else if (table_w == 0)
         resolved_width // no table width known — can't distribute
     else if (table_ctx.known_columns == 0)
         resolved_width // no column count available yet
-    else blk: {
-        const env = box_gen.getLayout().inputs.env;
-        const is_last_expected = table_ctx.current_column >= table_ctx.known_columns;
-        const is_actual_last = node.nextSibling(env) == null;
-        if (is_last_expected or is_actual_last) {
-            // Last cell gets remaining width (minus right-edge border-spacing)
-            const remaining = table_w - table_ctx.row_x_cursor - table_ctx.border_spacing;
-            break :blk if (remaining > 0) remaining else resolved_width;
-        } else if (table_ctx.explicit_cells_in_row > 0) {
-            // Some cells have explicit widths — distribute remaining among auto cells
-            const auto_cols = table_ctx.known_columns - table_ctx.explicit_cells_in_row;
-            const available = table_w - table_ctx.explicit_width_sum;
-            if (auto_cols > 0 and available > 0)
-                break :blk @divFloor(available, @as(Unit, @intCast(auto_cols)))
-            else
-                break :blk resolved_width;
-        } else {
-            // No content weights available — equal distribution
-            break :blk table_ctx.getDefaultCellWidth();
-        }
-    };
+    else if (is_last_cell) blk: {
+        // Last cell always gets remaining width (handles colspan and rounding)
+        const remaining = table_w - table_ctx.row_x_cursor - table_ctx.border_spacing;
+        break :blk if (remaining > 0) remaining else table_ctx.getDefaultCellWidth();
+    } else if (table_ctx.has_auto_widths)
+        table_ctx.getColumnWidth(col_idx)
+    else
+        table_ctx.getDefaultCellWidth();
 
     // Apply horizontal positioning whenever column count is known
     if (table_ctx.known_columns > 0) {

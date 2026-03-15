@@ -163,6 +163,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const font_size_px: f32 = specified.font.font_size;
     const font_weight = specified.font.font_weight;
     const text_decoration = specified.font.text_decoration;
+    const text_align = specified.font.text_align;
+    const line_height = specified.font.line_height;
     const block_visibility = specified.font.visibility;
     if (is_root == .root) {
         for (layout.box_tree.ptr.ifcs.items) |ifc| {
@@ -170,6 +172,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
             ifc.font_size = font_size_px;
             ifc.font_weight = font_weight;
             ifc.text_decoration = text_decoration;
+            ifc.text_align = text_align;
+            ifc.line_height = line_height;
         }
     } else {
         // Propagate to all IFC containers within this block's span
@@ -185,6 +189,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                     ifc.font_size = font_size_px;
                     ifc.font_weight = font_weight;
                     ifc.text_decoration = text_decoration;
+                    ifc.text_align = text_align;
+                    ifc.line_height = line_height;
                 },
                 else => {},
             }

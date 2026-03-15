@@ -310,6 +310,8 @@ pub const InlineFormattingContext = struct {
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,
     text_decoration: values.types.TextDecoration = .none,
+    text_align: values.types.TextAlign = .left,
+    line_height: math.Unit = 0, // 0 = normal (1.2 * font-size)
     ascender: math.Unit = undefined,
     /// This is a positive value.
     descender: math.Unit = undefined,
