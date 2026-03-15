@@ -310,6 +310,10 @@ pub const InlineFormattingContext = struct {
     font_family: values.types.FontFamily = .sans_serif,
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,
+    /// Per-run font properties for mixed-weight/style inline content.
+    /// Each run records a glyph index range and the font weight for that range.
+    /// When empty, the IFC-level font_weight applies to all glyphs.
+    font_runs: ArrayListUnmanaged(FontRun) = .{},
     text_decoration: values.types.TextDecoration = .none,
     text_align: values.types.TextAlign = .left,
     line_height: math.Unit = 0, // 0 = normal (1.2 * font-size)
@@ -318,6 +322,13 @@ pub const InlineFormattingContext = struct {
     descender: math.Unit = undefined,
 
     inline_boxes: InlineBoxList = .{},
+
+    pub const FontRun = struct {
+        /// Glyph index range [start, end) in the IFC glyph list.
+        glyph_start: u32,
+        glyph_end: u32,
+        font_weight: values.types.FontWeight,
+    };
 
     pub const Size = u16;
     pub const Id = enum(u16) { _ };

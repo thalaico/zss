@@ -158,14 +158,30 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // Propagate cascaded font properties to the IFC.
             ifc.ptr.font_family = font.font_family;
             ifc.ptr.font_size = font.font_size;
-            // Note: font_weight from inline cascade is NOT propagated here.
-            // The IFC's font_weight is set from the block-level cascade in
-            // cosmetic.zig. Per-run font weight requires FontRun tracking.
             // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
             layout.inputs.fonts.setFontSize(handle, font.font_size);
             if (layout.inputs.fonts.get(handle)) |hb_font| {
+                // Record glyph range for this text node's font run.
+                const glyph_start: u32 = @intCast(ifc.ptr.glyphs.len);
                 const text = layout.computer.getText();
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
+                const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
+                if (glyph_end > glyph_start) {
+                    // Extend the last run if same weight, otherwise start a new one.
+                    const runs = &ifc.ptr.font_runs;
+                    if (runs.items.len > 0 and
+                        runs.items[runs.items.len - 1].font_weight == font.font_weight and
+                        runs.items[runs.items.len - 1].glyph_end == glyph_start)
+                    {
+                        runs.items[runs.items.len - 1].glyph_end = glyph_end;
+                    } else {
+                        try runs.append(layout.allocator, .{
+                            .glyph_start = glyph_start,
+                            .glyph_end = glyph_end,
+                            .font_weight = font.font_weight,
+                        });
+                    }
+                }
             }
 
             layout.advanceNode();
