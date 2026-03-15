@@ -525,6 +525,62 @@ pub fn color(ctx: *Context) ?types.Color {
         return .{ .rgba = rgba };
     }
 
+    // Check for rgb()/rgba() function notation
+    {
+        const item = ctx.next() orelse return null;
+        if (item.tag == .function) {
+            const fn_loc = item.index.location(ctx.ast);
+            const is_rgb = ctx.source_code.mapIdentifierValue(fn_loc, enum { rgb, rgba }, &.{
+                .{ "rgb", .rgb },
+                .{ "rgba", .rgba },
+            });
+            if (is_rgb != null) {
+                // Parse rgb(r, g, b) or rgba(r, g, b, a)
+                // Arguments are inside the function block's children
+                var r_val: ?f32 = null;
+                var g_val: ?f32 = null;
+                var b_val: ?f32 = null;
+                var a_val: f32 = 255.0;
+                var arg_count: u8 = 0;
+                var children = item.index.children(ctx.ast);
+                while (children.nextSkipSpaces(ctx.ast)) |child| {
+                    const tag = child.tag(ctx.ast);
+                    if (tag == .token_comma) continue;
+                    if (tag == .token_integer or tag == .token_number) {
+                        const num = child.extra(ctx.ast).number orelse continue;
+                        switch (arg_count) {
+                            0 => r_val = num,
+                            1 => g_val = num,
+                            2 => b_val = num,
+                            3 => a_val = if (num <= 1.0) num * 255.0 else num,
+                            else => {},
+                        }
+                        arg_count += 1;
+                    } else if (tag == .token_percentage) {
+                        const num = child.extra(ctx.ast).number orelse continue;
+                        switch (arg_count) {
+                            0 => r_val = num * 2.55,
+                            1 => g_val = num * 2.55,
+                            2 => b_val = num * 2.55,
+                            3 => a_val = num * 2.55,
+                            else => {},
+                        }
+                        arg_count += 1;
+                    }
+                }
+                if (r_val != null and g_val != null and b_val != null) {
+                    const r: u8 = @intFromFloat(std.math.clamp(r_val.?, 0.0, 255.0));
+                    const g: u8 = @intFromFloat(std.math.clamp(g_val.?, 0.0, 255.0));
+                    const b: u8 = @intFromFloat(std.math.clamp(b_val.?, 0.0, 255.0));
+                    const a: u8 = @intFromFloat(std.math.clamp(a_val, 0.0, 255.0));
+                    const rgba: u32 = (@as(u32, r) << 24) | (@as(u32, g) << 16) | (@as(u32, b) << 8) | @as(u32, a);
+                    return .{ .rgba = rgba };
+                }
+            }
+        }
+        ctx.resetPoint(item.index);
+    }
+
     return null;
 }
 
