@@ -180,7 +180,7 @@ pub const Tag = enum {
 
     pub fn FieldEnum(comptime tag: Tag) type {
         const Group = tag.Value();
-        @setEvalBranchQuota(@typeInfo(Group).@"struct".fields.len * 800);
+        @setEvalBranchQuota(@typeInfo(Group).@"struct".fields.len * 2000);
         return std.meta.FieldEnum(Group);
     }
 
@@ -236,12 +236,23 @@ pub fn MultiValue(comptime T: type) type {
     };
 }
 
-// TODO: font does not correspond to any CSS property
 pub const Font = struct {
     font: types.Font,
+    font_size: types.FontSize,
+    font_weight: types.FontWeight,
+    text_decoration: types.TextDecoration,
+    text_align: types.TextAlign,
+    vertical_align: types.VerticalAlign,
+    visibility: types.Visibility,
 
     pub const initial_values = Font{
         .font = .default,
+        .font_size = 16.0, // 16px default
+        .font_weight = .normal,
+        .text_decoration = .none,
+        .text_align = .left,
+        .vertical_align = .baseline,
+        .visibility = .visible,
     };
 };
 

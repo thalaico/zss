@@ -275,3 +275,39 @@ pub const Font = enum {
 };
 
 pub const Opacity = f32;
+
+
+/// Computed font-size in px (after unit conversion).
+pub const FontSize = f32;
+
+pub const FontWeight = enum {
+    normal,
+    bold,
+};
+
+pub const TextDecoration = enum {
+    none,
+    underline,
+    overline,
+    line_through,
+};
+
+pub const TextAlign = enum {
+    left,
+    right,
+    center,
+    justify,
+};
+
+pub const VerticalAlign = enum {
+    baseline,
+    top,
+    middle,
+    bottom,
+};
+
+pub const Visibility = enum {
+    visible,
+    hidden,
+    collapse,
+};

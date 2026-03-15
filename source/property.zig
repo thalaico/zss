@@ -80,6 +80,17 @@ pub const Property = enum {
     @"flex-direction",
     @"justify-content",
     @"align-items",
+    @"font-size",
+    @"font-weight",
+    @"text-decoration",
+    @"text-align",
+    @"vertical-align",
+    visibility,
+    border,
+    @"border-top",
+    @"border-right",
+    @"border-bottom",
+    @"border-left",
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -158,6 +169,38 @@ pub const Property = enum {
                 .{.background_color, &.{.color, .gradient}},
                 .{.background,       &.{.image, .repeat, .attachment, .position, .origin, .size}},
                 .{.background_clip,  &.{.clip}},
+            },
+            .@"font-size"             => &.{.{.font           , &.{.font_size}     }},
+            .@"font-weight"           => &.{.{.font           , &.{.font_weight}   }},
+            .@"text-decoration"       => &.{.{.font           , &.{.text_decoration}}},
+            .@"text-align"            => &.{.{.font           , &.{.text_align}    }},
+            .@"vertical-align"        => &.{.{.font           , &.{.vertical_align}}},
+            .visibility               => &.{.{.font           , &.{.visibility}    }},
+            .border                   => &.{
+                .{.horizontal_edges, &.{.border_left, .border_right}},
+                .{.vertical_edges,   &.{.border_top, .border_bottom}},
+                .{.border_colors, &.{.top, .right, .bottom, .left}},
+                .{.border_styles, &.{.top, .right, .bottom, .left}},
+            },
+            .@"border-top"            => &.{
+                .{.vertical_edges, &.{.border_top}},
+                .{.border_colors, &.{.top}},
+                .{.border_styles, &.{.top}},
+            },
+            .@"border-right"          => &.{
+                .{.horizontal_edges, &.{.border_right}},
+                .{.border_colors, &.{.right}},
+                .{.border_styles, &.{.right}},
+            },
+            .@"border-bottom"         => &.{
+                .{.vertical_edges, &.{.border_bottom}},
+                .{.border_colors, &.{.bottom}},
+                .{.border_styles, &.{.bottom}},
+            },
+            .@"border-left"           => &.{
+                .{.horizontal_edges, &.{.border_left}},
+                .{.border_colors, &.{.left}},
+                .{.border_styles, &.{.left}},
             },
         };
         // zig fmt: on

@@ -578,3 +578,185 @@ pub fn @"background-size"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba
     const list = (try parseList(ctx, declaration_index, fba, values.parse.background.size)) orelse return null;
     return .{ .background = .{ .size = .{ .declared = list } } };
 }
+
+
+pub fn @"font-size"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-size") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.fontSize(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .font_size = .{ .declared = value } } };
+}
+
+pub fn @"font-weight"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-weight") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.fontWeight(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .font_weight = .{ .declared = value } } };
+}
+
+pub fn @"text-decoration"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"text-decoration") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.textDecoration(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .text_decoration = .{ .declared = value } } };
+}
+
+pub fn @"text-align"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"text-align") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.textAlign(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .text_align = .{ .declared = value } } };
+}
+
+pub fn @"vertical-align"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"vertical-align") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.verticalAlign(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .vertical_align = .{ .declared = value } } };
+}
+
+pub fn visibility(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.visibility) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.visibility(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .visibility = .{ .declared = value } } };
+}
+
+/// Parse `border: <width> <style> <color>` shorthand.
+/// Any of the three values may be omitted; order doesn't matter.
+pub fn border(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.border) {
+    ctx.initDecl(declaration_index);
+    var bw: ?types.BorderWidth = null;
+    var style: ?types.BorderStyle = null;
+    var border_color: ?types.Color = null;
+    // Parse up to 3 values in any order
+    var i: u8 = 0;
+    while (i < 3) : (i += 1) {
+        if (ctx.empty()) break;
+        if (bw == null) {
+            if (values.parse.borderWidth(ctx)) |w| {
+                bw = w;
+                continue;
+            }
+        }
+        if (style == null) {
+            if (values.parse.borderStyle(ctx)) |s| {
+                style = s;
+                continue;
+            }
+        }
+        if (border_color == null) {
+            if (values.parse.color(ctx)) |col| {
+                border_color = col;
+                continue;
+            }
+        }
+        break; // Unknown token
+    }
+    if (bw == null and style == null and border_color == null) return null;
+    // Apply defaults for omitted values
+    const w = bw orelse .medium;
+    const s = style orelse .none;
+    const col = border_color orelse types.Color.black;
+    return .{
+        .horizontal_edges = .{
+            .border_left = .{ .declared = w },
+            .border_right = .{ .declared = w },
+        },
+        .vertical_edges = .{
+            .border_top = .{ .declared = w },
+            .border_bottom = .{ .declared = w },
+        },
+        .border_colors = .{
+            .top = .{ .declared = col },
+            .right = .{ .declared = col },
+            .bottom = .{ .declared = col },
+            .left = .{ .declared = col },
+        },
+        .border_styles = .{
+            .top = .{ .declared = s },
+            .right = .{ .declared = s },
+            .bottom = .{ .declared = s },
+            .left = .{ .declared = s },
+        },
+    };
+}
+
+/// Parse `border-top: <width> <style> <color>` (single-side border shorthand).
+fn parseSingleBorder(ctx: *Context) struct {
+    bw: ?types.BorderWidth,
+    style: ?types.BorderStyle,
+    border_color: ?types.Color,
+} {
+    var bw: ?types.BorderWidth = null;
+    var style: ?types.BorderStyle = null;
+    var border_color: ?types.Color = null;
+    var i: u8 = 0;
+    while (i < 3) : (i += 1) {
+        if (ctx.empty()) break;
+        if (bw == null) {
+            if (values.parse.borderWidth(ctx)) |w| {
+                bw = w;
+                continue;
+            }
+        }
+        if (style == null) {
+            if (values.parse.borderStyle(ctx)) |s| {
+                style = s;
+                continue;
+            }
+        }
+        if (border_color == null) {
+            if (values.parse.color(ctx)) |col| {
+                border_color = col;
+                continue;
+            }
+        }
+        break;
+    }
+    return .{ .bw = bw, .style = style, .border_color = border_color };
+}
+
+pub fn @"border-top"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-top") {
+    ctx.initDecl(declaration_index);
+    const parsed = parseSingleBorder(ctx);
+    if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
+    return .{
+        .vertical_edges = .{ .border_top = .{ .declared = parsed.bw orelse .medium } },
+        .border_colors = .{ .top = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_styles = .{ .top = .{ .declared = parsed.style orelse .none } },
+    };
+}
+
+pub fn @"border-right"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-right") {
+    ctx.initDecl(declaration_index);
+    const parsed = parseSingleBorder(ctx);
+    if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
+    return .{
+        .horizontal_edges = .{ .border_right = .{ .declared = parsed.bw orelse .medium } },
+        .border_colors = .{ .right = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_styles = .{ .right = .{ .declared = parsed.style orelse .none } },
+    };
+}
+
+pub fn @"border-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-bottom") {
+    ctx.initDecl(declaration_index);
+    const parsed = parseSingleBorder(ctx);
+    if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
+    return .{
+        .vertical_edges = .{ .border_bottom = .{ .declared = parsed.bw orelse .medium } },
+        .border_colors = .{ .bottom = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_styles = .{ .bottom = .{ .declared = parsed.style orelse .none } },
+    };
+}
+
+pub fn @"border-left"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-left") {
+    ctx.initDecl(declaration_index);
+    const parsed = parseSingleBorder(ctx);
+    if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
+    return .{
+        .horizontal_edges = .{ .border_left = .{ .declared = parsed.bw orelse .medium } },
+        .border_colors = .{ .left = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_styles = .{ .left = .{ .declared = parsed.style orelse .none } },
+    };
+}

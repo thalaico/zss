@@ -352,9 +352,11 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
     const unit = unit_index.extra(ctx.ast).unit orelse return null;
     return switch (unit) {
         .px => .{ .px = number },
-        // Convert em to px using default font-size (16px).
-        // TODO: Use computed font-size from cascade context for accurate em resolution.
-        .em => .{ .px = number * 16.0 },
+        // Convert em/rem to px using default font-size (16px).
+        // TODO: Use computed font-size from cascade context for accurate resolution.
+        .em, .rem => .{ .px = number * 16.0 },
+        // 1pt = 1/72 inch = 96/72 px = 1.333px
+        .pt => .{ .px = number * (96.0 / 72.0) },
         // Convert viewport units to px using default viewport size.
         // TODO: Use actual viewport dimensions from layout context.
         .vw => .{ .px = number * 8.0 },  // 800px viewport width / 100
@@ -662,6 +664,74 @@ pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     return keyword(ctx, types.BoxSizing, &.{
         .{ "content-box", .content_box },
         .{ "border-box", .border_box },
+    });
+}
+
+pub fn fontSize(ctx: *Context) ?types.FontSize {
+    const item = ctx.next() orelse return null;
+    return switch (item.tag) {
+        .token_dimension => blk: {
+            const index = item.index;
+            var children = index.children(ctx.ast);
+            const unit_index = children.nextSkipSpaces(ctx.ast).?;
+            const number = index.extra(ctx.ast).number orelse break :blk null;
+            const unit = unit_index.extra(ctx.ast).unit orelse break :blk null;
+            break :blk switch (unit) {
+                .px => number,
+                .em, .rem => number * 16.0,
+                .pt => number * (96.0 / 72.0),
+                .vw => number * 8.0,
+                .vh => number * 6.0,
+            };
+        },
+        .token_integer => blk: {
+            const number = item.index.extra(ctx.ast).number orelse break :blk null;
+            if (number == 0) break :blk @as(types.FontSize, 0);
+            break :blk null;
+        },
+        else => null,
+    };
+}
+
+pub fn fontWeight(ctx: *Context) ?types.FontWeight {
+    return keyword(ctx, types.FontWeight, &.{
+        .{ "normal", .normal },
+        .{ "bold", .bold },
+    });
+}
+
+pub fn textDecoration(ctx: *Context) ?types.TextDecoration {
+    return keyword(ctx, types.TextDecoration, &.{
+        .{ "none", .none },
+        .{ "underline", .underline },
+        .{ "overline", .overline },
+        .{ "line-through", .line_through },
+    });
+}
+
+pub fn textAlign(ctx: *Context) ?types.TextAlign {
+    return keyword(ctx, types.TextAlign, &.{
+        .{ "left", .left },
+        .{ "right", .right },
+        .{ "center", .center },
+        .{ "justify", .justify },
+    });
+}
+
+pub fn verticalAlign(ctx: *Context) ?types.VerticalAlign {
+    return keyword(ctx, types.VerticalAlign, &.{
+        .{ "baseline", .baseline },
+        .{ "top", .top },
+        .{ "middle", .middle },
+        .{ "bottom", .bottom },
+    });
+}
+
+pub fn visibility(ctx: *Context) ?types.Visibility {
+    return keyword(ctx, types.Visibility, &.{
+        .{ "visible", .visible },
+        .{ "hidden", .hidden },
+        .{ "collapse", .collapse },
     });
 }
 

@@ -52,6 +52,8 @@ pub const Token = union(enum) {
     pub const Unit = enum {
         px,
         em,
+        rem,
+        pt,
         vw,
         vh,
     };
