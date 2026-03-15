@@ -44,6 +44,10 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             const stacking_context = solveStackingContext(computer, position);
             // Read flex properties before commitNode consumes the node state
             const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
+            // Read and commit font group so child text nodes inherit font-size
+            // during layout (getTextFont uses InheritedValue from box_gen stage).
+            const font_specified = computer.getSpecifiedValue(.box_gen, .font);
+            computer.setComputedValue(.box_gen, .font, font_specified);
             computer.commitNode(.box_gen);
 
             try pushBlock(box_gen, node, sizes, stacking_context, position);

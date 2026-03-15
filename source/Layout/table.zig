@@ -503,6 +503,8 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
     const font_specified = computer.getSpecifiedValue(.box_gen, .font);
     const border_spacing_val: Unit = font_specified.border_spacing;
 
+    // Commit font group so descendant text nodes inherit font-size during layout.
+    computer.setComputedValue(.box_gen, .font, font_specified);
     computer.commitNode(.box_gen);
     
     // Push table state and pre-compute column count from DOM structure.
@@ -539,6 +541,9 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     // Treat row as a block
     const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
     const stacking_context = flow.solveStackingContext(computer, position);
+    // Commit font group for child text inheritance.
+    const font_specified = computer.getSpecifiedValue(.box_gen, .font);
+    computer.setComputedValue(.box_gen, .font, font_specified);
     computer.commitNode(.box_gen);
     
     const alloc = box_gen.getLayout().allocator;
@@ -618,6 +623,9 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const cell_border_box = cell_width + sizes.padding_inline_start + sizes.padding_inline_end + sizes.border_inline_start + sizes.border_inline_end;
     table_ctx.advanceCursor(cell_border_box);
     
+    // Commit font group for child text inheritance.
+    const cell_font = computer.getSpecifiedValue(.box_gen, .font);
+    computer.setComputedValue(.box_gen, .font, cell_font);
     computer.commitNode(.box_gen);
     
     const alloc = box_gen.getLayout().allocator;
