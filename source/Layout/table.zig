@@ -49,6 +49,8 @@ pub const Context = struct {
     explicit_cells_in_row: usize = 0,
     /// Sum of explicit widths in the current row (layout units)
     explicit_width_sum: Unit = 0,
+    /// Default border-spacing (2px = 8 units, CSS default for border-collapse: separate)
+    border_spacing: Unit = 8,
     /// Stack of table states for nested tables
     stack: std.ArrayListUnmanaged(State) = .{},
     /// Stack tracking which table element type pushed each flow block.
@@ -86,7 +88,7 @@ pub const Context = struct {
         ctx.current_column = 0;
         ctx.max_columns = 0;
         ctx.known_columns = 0;
-        ctx.row_x_cursor = 0;
+        ctx.row_x_cursor = ctx.border_spacing;
         ctx.table_width = table_width;
         ctx.explicit_cells_in_row = 0;
         ctx.explicit_width_sum = 0;
@@ -101,7 +103,7 @@ pub const Context = struct {
         ctx.max_columns = state.max_columns;
         ctx.known_columns = state.known_columns;
         ctx.table_width = state.table_width;
-        ctx.row_x_cursor = 0;
+        ctx.row_x_cursor = ctx.border_spacing;
     }
     
     pub fn beginRow(ctx: *Context) void {
@@ -110,7 +112,7 @@ pub const Context = struct {
             ctx.known_columns = ctx.max_columns;
         }
         ctx.current_column = 0;
-        ctx.row_x_cursor = 0;
+        ctx.row_x_cursor = ctx.border_spacing; // Start with left border-spacing
         ctx.explicit_cells_in_row = 0;
         ctx.explicit_width_sum = 0;
         ctx.current_row += 1;
@@ -120,7 +122,7 @@ pub const Context = struct {
         // Auto-wrap to new row if we've exceeded finalized column count
         if (ctx.known_columns > 0 and ctx.current_column >= ctx.known_columns) {
             ctx.current_column = 0;
-            ctx.row_x_cursor = 0;
+            ctx.row_x_cursor = ctx.border_spacing;
             ctx.current_row += 1;
         }
         
@@ -132,7 +134,7 @@ pub const Context = struct {
     
     /// Advance the row cursor by the given cell width.
     pub fn advanceCursor(ctx: *Context, cell_width: Unit) void {
-        ctx.row_x_cursor += cell_width;
+        ctx.row_x_cursor += cell_width + ctx.border_spacing; // Add spacing between cells
     }
     
     /// Get the default cell width for auto-width cells.
@@ -144,7 +146,10 @@ pub const Context = struct {
             ctx.max_columns
         else
             1;
-        return @divFloor(ctx.table_width, @as(Unit, @intCast(cols)));
+        // Available width = table width minus spacing on edges and between cells
+        const total_spacing = ctx.border_spacing * @as(Unit, @intCast(cols + 1));
+        const available = @max(0, ctx.table_width - total_spacing);
+        return @divFloor(available, @as(Unit, @intCast(cols)));
     }
 };
 
@@ -323,8 +328,8 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         const is_last_expected = table_ctx.current_column >= table_ctx.known_columns;
         const is_actual_last = node.nextSibling(env) == null;
         if (is_last_expected or is_actual_last) {
-            // Last cell gets remaining width
-            const remaining = table_w - table_ctx.row_x_cursor;
+            // Last cell gets remaining width (minus right-edge border-spacing)
+            const remaining = table_w - table_ctx.row_x_cursor - table_ctx.border_spacing;
             break :blk if (remaining > 0) remaining else resolved_width;
         } else if (table_ctx.explicit_cells_in_row > 0) {
             // Some cells have explicit widths — distribute remaining among auto cells
