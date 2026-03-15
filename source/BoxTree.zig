@@ -418,6 +418,7 @@ pub const InlineFormattingContext = struct {
     fn deinit(ifc: *InlineFormattingContext, allocator: Allocator) void {
         ifc.glyphs.deinit(allocator);
         ifc.line_boxes.deinit(allocator);
+        ifc.font_runs.deinit(allocator);
         ifc.inline_boxes.deinit(allocator);
     }
 

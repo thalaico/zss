@@ -380,23 +380,35 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
 
             const colspan: usize = env.getNodeProperty(.colspan, cell);
             const est = estimateCellContentWidth(cell, env, char_width);
-            // Distribute content width across spanned columns
             const span = @min(colspan, num_cols - col_idx);
-            for (col_idx..col_idx + span) |c_idx| {
-                const per_col_min = @divFloor(est.min, @as(Unit, @intCast(span)));
-                const per_col_max = @divFloor(est.max, @as(Unit, @intCast(span)));
-                if (per_col_min > col_min[c_idx]) col_min[c_idx] = per_col_min;
-                if (per_col_max > col_max[c_idx]) col_max[c_idx] = per_col_max;
-            }
 
-            // Check if cell has explicit HTML width attribute
-            const explicit_px: u16 = env.getNodeProperty(.explicit_width_px, cell);
-            if (explicit_px > 0) {
-                const explicit_units: Unit = @as(Unit, @intCast(explicit_px)) * units_per_pixel;
-                // Per spec step 1: if specified width W > MCW, W is the minimum
-                if (explicit_units > col_min[col_idx]) col_min[col_idx] = explicit_units;
-                // Record this column has an explicit width
-                if (explicit_units > ctx.col_explicit[col_idx]) ctx.col_explicit[col_idx] = explicit_units;
+            if (span == 1) {
+                // CSS 2.1 step 3: single-column cells determine column intrinsic widths.
+                if (est.min > col_min[col_idx]) col_min[col_idx] = est.min;
+                if (est.max > col_max[col_idx]) col_max[col_idx] = est.max;
+
+                // Check if cell has explicit HTML width attribute
+                const explicit_px: u16 = env.getNodeProperty(.explicit_width_px, cell);
+                if (explicit_px > 0) {
+                    const explicit_units: Unit = @as(Unit, @intCast(explicit_px)) * units_per_pixel;
+                    if (explicit_units > col_min[col_idx]) col_min[col_idx] = explicit_units;
+                    if (explicit_units > ctx.col_explicit[col_idx]) ctx.col_explicit[col_idx] = explicit_units;
+                }
+            } else {
+                // CSS 2.1 step 4: multi-column cells — increase spanned columns so
+                // together they are at least as wide as the cell. Only increase the
+                // deficit, don't inflate narrow columns' max (which would distort
+                // the proportional distribution).
+                var spanned_min: Unit = 0;
+                for (col_idx..col_idx + span) |c_idx| {
+                    spanned_min += col_min[c_idx];
+                }
+                if (est.min > spanned_min) {
+                    const deficit = est.min - spanned_min;
+                    for (col_idx..col_idx + span) |c_idx| {
+                        col_min[c_idx] += @divFloor(deficit, @as(Unit, @intCast(span)));
+                    }
+                }
             }
             col_idx += span;
         }
