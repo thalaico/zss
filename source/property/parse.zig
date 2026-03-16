@@ -508,15 +508,26 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
 }
 
 /// Background shorthand: handles `background: <color>` and `background: linear-gradient(c1, c2)`.
-pub fn background(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.background) {
+pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.background) {
+    // Try url(...) as a background-image layer first.
+    // The `background` shorthand can start with a <bg-image> such as url(...).
+    // We capture the URL here so it participates in the zss image pipeline.
     ctx.initDecl(declaration_index);
-    // Try color first
+    if (try values.parse.background.image(ctx, urls)) |img| {
+        // Allocate a single-element list for this background-image.
+        fba.reset();
+        const list = try fba.allocator().create([1]types.BackgroundImage);
+        list[0] = img;
+        return .{ .background = .{ .image = .{ .declared = list[0..1] } } };
+    }
+    // Try color.
+    ctx.initDecl(declaration_index);
     if (values.parse.color(ctx)) |color_value| {
         if (ctx.empty()) {
             return .{ .background_color = .{ .color = .{ .declared = color_value } } };
         }
     }
-    // Reset and try linear-gradient()
+    // Try linear-gradient().
     ctx.initDecl(declaration_index);
     if (values.parse.linearGradient(ctx)) |grad| {
         if (ctx.empty()) {
