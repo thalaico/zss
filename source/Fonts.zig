@@ -82,7 +82,7 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
         // Tell HarfBuzz to re-read glyph metrics (advances, positions) from the resized FT face.
         // NOTE: hb_ft_font_changed does NOT invalidate font-level extents (ascender/descender).
-        // Use getFtSizeMetrics() to read those correctly after resize.
+        // Use getDesignMetrics() + manual scaling for line-height computation.
         hb.hb_ft_font_changed(entry.hb_font);
     }
 }
@@ -95,32 +95,31 @@ fn familyToHandle(family: types.FontFamily) Handle {
     };
 }
 
-// FreeType size metrics at the current face size (valid after setFontSize).
-// Values are in 26.6 fixed-point (64 units = 1 pixel).
-// hb_font_get_h_extents caches the initial size and does NOT update after resize;
-// read FT size->metrics directly instead.
-pub const FtSizeMetrics = struct {
-    // Distance from baseline to top of em box, positive (26.6 FP pixels).
-    ascender: i32,
-    // Distance from baseline to bottom of em box, positive (26.6 FP pixels).
-    descender: i32,
+// Raw font design metrics from the hhea table (size-independent).
+// Use these to compute line-height at any font size without FreeType's
+// ceil/floor pixel-boundary rounding (which overshoots Chrome by ~0.8px/line).
+pub const DesignMetrics = struct {
+    ascender: i16, // hhea ascent (font units, positive above baseline)
+    descender: i16, // |hhea descent| (font units, positive magnitude)
+    units_per_em: u16,
 };
 
-pub fn getFtSizeMetrics(fonts: *const Fonts, handle: Handle) FtSizeMetrics {
+pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
     const slot: usize = switch (handle) {
         .sans_serif => 0,
         .serif => 1,
         .monospace => 2,
-        .invalid => return .{ .ascender = 0, .descender = 0 },
-        _ => return .{ .ascender = 0, .descender = 0 },
+        .invalid => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
+        _ => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
     };
     if (fonts.fonts[slot]) |entry| {
-        const m = entry.ft_face[0].size[0].metrics;
+        const face = entry.ft_face[0];
         return .{
-            .ascender  = @intCast(m.ascender),
-            // FT descender is negative (below baseline); store as positive magnitude.
-            .descender = @intCast(-m.descender),
+            .ascender = face.ascender,
+            // FT face.descender is negative (below baseline); store as positive.
+            .descender = -face.descender,
+            .units_per_em = face.units_per_EM,
         };
     }
-    return .{ .ascender = 0, .descender = 0 };
+    return .{ .ascender = 0, .descender = 0, .units_per_em = 0 };
 }

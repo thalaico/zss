@@ -1048,17 +1048,26 @@ fn splitIntoLineBoxes(
         _ = font; // HarfBuzz font still used for glyph shaping (advances/positions) below
         // Resize the FreeType face before querying metrics.
         layout.inputs.fonts.setFontSize(ifc.font, ifc.font_size);
-        // Read line metrics directly from FreeType size->metrics.
-        // hb_font_get_h_extents is intentionally NOT used here: it caches the
-        // initial face size at hb_font creation and does not update after
-        // FT_Set_Char_Size + hb_ft_font_changed (HarfBuzz 10.x bug/limitation).
-        // FT size->metrics.ascender is updated correctly by FT_Set_Char_Size.
-        const ft_m = layout.inputs.fonts.getFtSizeMetrics(ifc.font);
-        ifc.ascender  = @divFloor(ft_m.ascender  * units_per_pixel, 64);
-        ifc.descender = @divFloor(ft_m.descender * units_per_pixel, 64);
-        // CSS line-height:normal = ascender + descender (no font line_gap).
-        // FT size->metrics has no line_gap field; the natural line height is
-        // already encoded in ascender (ceiling) + descender (floor) values.
+        // Compute line metrics from font design units (hhea table) to avoid
+        // FreeType's size->metrics ceil/floor pixel-boundary rounding, which
+        // overshoots Chrome's unrounded computation by ~0.8px per line box.
+        const dm = layout.inputs.fonts.getDesignMetrics(ifc.font);
+        if (dm.units_per_em > 0) {
+            const upem: f32 = @floatFromInt(dm.units_per_em);
+            const asc_design: f32 = @floatFromInt(dm.ascender);
+            const desc_design: f32 = @floatFromInt(dm.descender);
+            const total_design = asc_design + desc_design;
+            // Compute total line height in layout units, rounding once at the end
+            // (Chrome keeps fractional px and only rounds at paint time).
+            const scale = ifc.font_size * @as(f32, @floatFromInt(units_per_pixel)) / upem;
+            const total_lu: i32 = @intFromFloat(@round(total_design * scale));
+            // Split into ascender/descender proportionally to preserve baseline position.
+            ifc.ascender = @intFromFloat(@round(@as(f32, @floatFromInt(total_lu)) * asc_design / total_design));
+            ifc.descender = total_lu - ifc.ascender;
+        } else {
+            ifc.ascender = 0;
+            ifc.descender = 0;
+        }
         top_height    = ifc.ascender;
         bottom_height = ifc.descender;
     } else {
