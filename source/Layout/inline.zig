@@ -339,33 +339,29 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
     hb.hb_buffer_set_script(buffer, hb.HB_SCRIPT_LATIN);
     hb.hb_buffer_set_language(buffer, hb.hb_language_from_string("en", -1));
 
+    // CSS white-space: normal — collapse whitespace sequences to a single space.
+    // \n, \r, \t are treated as spaces; consecutive whitespace collapses.
     var run_begin: usize = 0;
     var run_end: usize = 0;
+    var in_whitespace: bool = false;
     while (run_end < text.len) : (run_end += 1) {
-        const codepoint = text[run_end];
-        switch (codepoint) {
-            '\n' => {
+        const ch = text[run_end];
+        const is_ws = (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t');
+        if (is_ws) {
+            if (!in_whitespace) {
+                // End non-whitespace run before this first whitespace char.
                 try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
-                try ifcAddLineBreak(box_tree, ifc);
-                run_begin = run_end + 1;
-            },
-            '\r' => {
-                try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
-                try ifcAddLineBreak(box_tree, ifc);
-                run_end += @intFromBool(run_end + 1 < text.len and text[run_end + 1] == '\n');
-                run_begin = run_end + 1;
-            },
-            '\t' => {
-                try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
-                run_begin = run_end + 1;
-                // TODO tab size should be determined by the 'tab-size' property
-                const tab_size = 8;
-                hb.hb_buffer_add_latin1(buffer, " " ** tab_size, tab_size, 0, tab_size);
+                // Emit a single collapsed space.
+                hb.hb_buffer_add_latin1(buffer, " ", 1, 0, 1);
                 if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
                 try ifcAddTextRun(box_tree, ifc, buffer, font);
                 assert(hb.hb_buffer_set_length(buffer, 0) != 0);
-            },
-            else => {},
+                in_whitespace = true;
+            }
+            // Skip this whitespace char (already collapsed).
+            run_begin = run_end + 1;
+        } else {
+            in_whitespace = false;
         }
     }
 
