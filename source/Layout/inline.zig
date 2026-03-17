@@ -1045,22 +1045,26 @@ fn splitIntoLineBoxes(
     var top_height: Unit = undefined;
     var bottom_height: Unit = undefined;
     if (layout.inputs.fonts.get(ifc.font)) |font| {
-        // Resize the FreeType face before querying extents, so HarfBuzz
-        // returns metrics at the actual cascaded font-size.
+        _ = font; // HarfBuzz font still used for glyph shaping (advances/positions) below
+        // Resize the FreeType face before querying metrics.
         layout.inputs.fonts.setFontSize(ifc.font, ifc.font_size);
-        // TODO assuming ltr direction
-        var font_extents: hb.hb_font_extents_t = undefined;
-        assert(hb.hb_font_get_h_extents(font, &font_extents) != 0);
-        // Font extents are already at the correct size — convert from
-        // 1/64 em units to layout units (4 units = 1px).
-        ifc.ascender = @divFloor(font_extents.ascender * units_per_pixel, 64);
-        ifc.descender = @divFloor(-font_extents.descender * units_per_pixel, 64);
-        top_height = @divFloor((font_extents.ascender + @divFloor(font_extents.line_gap, 2) + @mod(font_extents.line_gap, 2)) * units_per_pixel, 64);
-        bottom_height = @divFloor((-font_extents.descender + @divFloor(font_extents.line_gap, 2)) * units_per_pixel, 64);
+        // Read line metrics directly from FreeType size->metrics.
+        // hb_font_get_h_extents is intentionally NOT used here: it caches the
+        // initial face size at hb_font creation and does not update after
+        // FT_Set_Char_Size + hb_ft_font_changed (HarfBuzz 10.x bug/limitation).
+        // FT size->metrics.ascender is updated correctly by FT_Set_Char_Size.
+        const ft_m = layout.inputs.fonts.getFtSizeMetrics(ifc.font);
+        ifc.ascender  = @divFloor(ft_m.ascender  * units_per_pixel, 64);
+        ifc.descender = @divFloor(ft_m.descender * units_per_pixel, 64);
+        // CSS line-height:normal = ascender + descender (no font line_gap).
+        // FT size->metrics has no line_gap field; the natural line height is
+        // already encoded in ascender (ceiling) + descender (floor) values.
+        top_height    = ifc.ascender;
+        bottom_height = ifc.descender;
     } else {
-        ifc.ascender = 0;
+        ifc.ascender  = 0;
         ifc.descender = 0;
-        top_height = 0;
+        top_height    = 0;
         bottom_height = 0;
     }
 

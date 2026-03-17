@@ -80,8 +80,9 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         // This avoids the fractional rounding difference vs the px*48 + 96dpi path.
         const size_26_6: i32 = @intFromFloat(size_px * 64.0);
         _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
-        // Tell HarfBuzz to re-read metrics from the resized FT face.
-        // Required for HarfBuzz < 11.0.0 (no auto-detection).
+        // Tell HarfBuzz to re-read glyph metrics (advances, positions) from the resized FT face.
+        // NOTE: hb_ft_font_changed does NOT invalidate font-level extents (ascender/descender).
+        // Use getFtSizeMetrics() to read those correctly after resize.
         hb.hb_ft_font_changed(entry.hb_font);
     }
 }
@@ -92,4 +93,34 @@ fn familyToHandle(family: types.FontFamily) Handle {
         .serif => .serif,
         .monospace => .monospace,
     };
+}
+
+// FreeType size metrics at the current face size (valid after setFontSize).
+// Values are in 26.6 fixed-point (64 units = 1 pixel).
+// hb_font_get_h_extents caches the initial size and does NOT update after resize;
+// read FT size->metrics directly instead.
+pub const FtSizeMetrics = struct {
+    // Distance from baseline to top of em box, positive (26.6 FP pixels).
+    ascender: i32,
+    // Distance from baseline to bottom of em box, positive (26.6 FP pixels).
+    descender: i32,
+};
+
+pub fn getFtSizeMetrics(fonts: *const Fonts, handle: Handle) FtSizeMetrics {
+    const slot: usize = switch (handle) {
+        .sans_serif => 0,
+        .serif => 1,
+        .monospace => 2,
+        .invalid => return .{ .ascender = 0, .descender = 0 },
+        _ => return .{ .ascender = 0, .descender = 0 },
+    };
+    if (fonts.fonts[slot]) |entry| {
+        const m = entry.ft_face[0].size[0].metrics;
+        return .{
+            .ascender  = @intCast(m.ascender),
+            // FT descender is negative (below baseline); store as positive magnitude.
+            .descender = @intCast(-m.descender),
+        };
+    }
+    return .{ .ascender = 0, .descender = 0 };
 }
