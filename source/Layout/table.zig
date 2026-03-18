@@ -479,6 +479,7 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
     }
 
     ctx.has_auto_widths = true;
+
 }
 
 pub fn beginMode(box_gen: *BoxGen) !void {
