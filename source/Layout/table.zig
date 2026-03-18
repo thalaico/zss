@@ -578,16 +578,19 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
         }
     }
     
+    // Check whether the cell has an explicit CSS width BEFORE solveAllSizes
+    // consumes the specified value. The old heuristic (resolved_width < table_w)
+    // was wrong: auto-resolved widths are reduced by padding, making them look
+    // "explicit" and bypassing the auto-layout column width.
+    const specified_width = computer.getSpecifiedValue(.box_gen, .content_width);
+    const has_explicit_width = specified_width.width != .auto;
+
     // Solve sizes — CSS width (if injected from HTML attr) is picked up here
     var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
     const stacking_context = flow.solveStackingContext(computer, .static);
-    
-    // Determine the cell's actual width:
-    // If solveAllSizes produced full containing-block width, the cell has
-    // no explicit CSS width — use auto-layout or heuristic sizing.
+
     const resolved_width = sizes.inline_size_untagged;
     const table_w = table_ctx.table_width;
-    const has_explicit_width = resolved_width < table_w and table_w > 0;
 
 
     // 0-based column index for auto-layout lookup (points to first spanned column)
