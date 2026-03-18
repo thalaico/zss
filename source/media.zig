@@ -41,11 +41,38 @@ pub fn evaluate(condition: []const u8, viewport: Viewport) bool {
 }
 
 /// Evaluate one media query (no commas). Compound conditions joined by `and`.
+/// Handles multi-line conditions like `@media only screen\nand (min-width: 300px)`.
 fn evaluateSingleQuery(query: []const u8, viewport: Viewport) bool {
     if (query.len == 0) return true;
 
+    // Normalize whitespace: collapse runs of spaces/tabs/newlines to single space.
+    // CSS media queries can span multiple lines (e.g., HN news.css).
+    var normalized: [512]u8 = undefined;
+    var norm_len: usize = 0;
+    var in_ws = false;
+    for (query) |ch| {
+        if (ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r') {
+            if (!in_ws and norm_len > 0) {
+                if (norm_len < normalized.len) {
+                    normalized[norm_len] = ' ';
+                    norm_len += 1;
+                }
+            }
+            in_ws = true;
+        } else {
+            if (norm_len < normalized.len) {
+                normalized[norm_len] = ch;
+                norm_len += 1;
+            }
+            in_ws = false;
+        }
+    }
+    // Trim trailing space
+    if (norm_len > 0 and normalized[norm_len - 1] == ' ') norm_len -= 1;
+    const q = normalized[0..norm_len];
+
     // Split on " and " for compound conditions.
-    var it = std.mem.splitSequence(u8, query, " and ");
+    var it = std.mem.splitSequence(u8, q, " and ");
     while (it.next()) |part| {
         const p = trim(part);
         if (p.len == 0) continue;
@@ -250,4 +277,13 @@ test "HN news.css critical rules" {
     try std.testing.expect(evaluate("only screen and (min-width : 300px) and (max-width : 750px)", vp800) == false);
     // Comment max-width range that includes 800px:
     try std.testing.expect(evaluate("only screen and (min-width : 690px) and (max-width : 809px)", vp800) == true);
+}
+
+test "multi-line media queries (HN news.css pattern)" {
+    const vp800: Viewport = .{ .width_px = 800, .height_px = 600 };
+    // HN news.css has: @media only screen\nand (min-width : 300px)\nand (max-width : 750px)
+    try std.testing.expect(evaluate("only screen\nand (min-width : 300px)\nand (max-width : 750px)", vp800) == false);
+    try std.testing.expect(evaluate("only screen\nand (min-width : 300px)", vp800) == true);
+    // Tab/CRLF variants
+    try std.testing.expect(evaluate("only screen\r\nand (min-width : 300px)\r\nand (max-width : 750px)", vp800) == false);
 }
