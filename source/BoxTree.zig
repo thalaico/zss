@@ -328,6 +328,8 @@ pub const InlineFormattingContext = struct {
         glyph_start: u32,
         glyph_end: u32,
         font_weight: values.types.FontWeight,
+        /// Cascaded font-size in px for this run (for per-run metrics and rendering).
+        font_size: f32,
     };
 
     pub const Size = u16;

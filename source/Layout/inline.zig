@@ -157,7 +157,12 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             box_gen.inline_context.setFont(handle);
             // Propagate cascaded font properties to the IFC.
             ifc.ptr.font_family = font.font_family;
-            ifc.ptr.font_size = font.font_size;
+            // Set IFC font_size from first text node only (block element's cascaded size).
+            // Later text nodes (e.g. comhead at 8pt) must not overwrite this —
+            // ifc.font_size is used for line-height and as the default rendering size.
+            if (ifc.ptr.font_runs.items.len == 0) {
+                ifc.ptr.font_size = font.font_size;
+            }
             // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
             layout.inputs.fonts.setFontSize(handle, font.font_size);
             if (layout.inputs.fonts.get(handle)) |hb_font| {
@@ -167,10 +172,11 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
                 const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
                 if (glyph_end > glyph_start) {
-                    // Extend the last run if same weight, otherwise start a new one.
+                    // Extend the last run if same weight and font size, otherwise start a new one.
                     const runs = &ifc.ptr.font_runs;
                     if (runs.items.len > 0 and
                         runs.items[runs.items.len - 1].font_weight == font.font_weight and
+                        runs.items[runs.items.len - 1].font_size == font.font_size and
                         runs.items[runs.items.len - 1].glyph_end == glyph_start)
                     {
                         runs.items[runs.items.len - 1].glyph_end = glyph_end;
@@ -179,6 +185,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             .glyph_start = glyph_start,
                             .glyph_end = glyph_end,
                             .font_weight = font.font_weight,
+                            .font_size = font.font_size,
                         });
                     }
                 }
@@ -379,18 +386,37 @@ fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: 
 
 fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t) !void {
     hb.hb_shape(font, buffer, null, 0);
-    const glyph_infos = blk: {
-        var n: c_uint = 0;
-        const p = hb.hb_buffer_get_glyph_infos(buffer, &n);
-        break :blk p[0..n];
-    };
+    var glyph_count: c_uint = 0;
+    const glyph_infos = hb.hb_buffer_get_glyph_infos(buffer, &glyph_count);
+    var pos_count: c_uint = 0;
+    const glyph_positions = hb.hb_buffer_get_glyph_positions(buffer, &pos_count);
+    assert(glyph_count == pos_count);
 
-    for (glyph_infos) |info| {
-        const glyph_index: GlyphIndex = info.codepoint;
+    var i: c_uint = 0;
+    while (i < glyph_count) : (i += 1) {
+        const glyph_index: GlyphIndex = glyph_infos[i].codepoint;
+        // Convert shaped advance from HarfBuzz 26.6 fixed-point to internal units.
+        // This preserves kerning and GPOS positioning from hb_shape.
+        const shaped_advance: Unit = @divFloor(glyph_positions[i].x_advance * units_per_pixel, 64);
         if (glyph_index == 0) {
-            try box_tree.appendSpecialGlyph(ifc, .ZeroGlyphIndex, {});
+            // ZeroGlyphIndex (missing glyph): store shaped advance in marker entry.
+            const special: Ifc.Special = .{
+                .kind = .ZeroGlyphIndex,
+                .data = undefined,
+            };
+            try ifc.glyphs.append(box_tree.ptr.allocator, .{
+                .index = 0,
+                .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
+            });
+            try ifc.glyphs.append(box_tree.ptr.allocator, .{
+                .index = @bitCast(special),
+                .metrics = undefined,
+            });
         } else {
-            try box_tree.appendGlyph(ifc, glyph_index);
+            try ifc.glyphs.append(box_tree.ptr.allocator, .{
+                .index = glyph_index,
+                .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
+            });
         }
     }
 }
@@ -873,6 +899,12 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
     const font = fonts.get(ifc.font);
     const ifc_slice = ifc.slice();
     const glyphs_slice = ifc.glyphs.slice();
+    const runs = ifc.font_runs.items;
+
+    // Track current font run for per-run font sizing.
+    // Runs cover text glyphs only; special glyphs (BoxStart, etc.) fall between runs.
+    var run_idx: usize = 0;
+    var current_font_size: f32 = ifc.font_size;
 
     var i: usize = 0;
     while (i < glyphs_slice.len) : (i += 1) {
@@ -884,7 +916,10 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
             const special = Ifc.Special.decode(glyphs_slice.items(.index)[i]);
             const kind = @as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)));
             switch (kind) {
-                .ZeroGlyphIndex => setMetricsGlyph(metrics, font.?, 0),
+                .ZeroGlyphIndex => {
+                    // Advance already stored from hb_shape; fill extents only.
+                    setMetricsGlyphExtents(metrics, font.?, 0);
+                },
                 .BoxStart => {
                     const inline_box_index = @as(Ifc.Size, special.data);
                     setMetricsBoxStart(metrics, ifc_slice, inline_box_index);
@@ -900,26 +935,33 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                 .LineBreak => setMetricsLineBreak(metrics),
             }
         } else {
-            setMetricsGlyph(metrics, font.?, glyph_index);
+            // Advance to the font run covering this glyph and set its font size.
+            while (run_idx < runs.len and runs[run_idx].glyph_end <= i) {
+                run_idx += 1;
+            }
+            if (run_idx < runs.len and i >= runs[run_idx].glyph_start and
+                runs[run_idx].font_size != current_font_size)
+            {
+                current_font_size = runs[run_idx].font_size;
+                fonts.setFontSize(ifc.font, current_font_size);
+            }
+            // Advance already stored from hb_shape; fill extents only.
+            setMetricsGlyphExtents(metrics, font.?, glyph_index);
         }
     }
-
-    // Font is already sized to the cascaded font-size (via setFontSize),
-    // so glyph metrics from HarfBuzz are at the correct scale.
 }
 
-fn setMetricsGlyph(metrics: *Ifc.Metrics, font: *hb.hb_font_t, glyph_index: GlyphIndex) void {
+/// Fill only offset (x_bearing) and width (ink width) from glyph extents.
+/// Advance is already stored from HarfBuzz shaped output — do not overwrite.
+fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font: *hb.hb_font_t, glyph_index: GlyphIndex) void {
     var extents: hb.hb_glyph_extents_t = undefined;
     const extents_result = hb.hb_font_get_glyph_extents(font, glyph_index, &extents);
     if (extents_result == 0) {
         extents.width = 0;
         extents.x_bearing = 0;
     }
-    metrics.* = .{
-        .offset = @divFloor(extents.x_bearing * units_per_pixel, 64),
-        .advance = @divFloor(hb.hb_font_get_glyph_h_advance(font, glyph_index) * units_per_pixel, 64),
-        .width = @divFloor(extents.width * units_per_pixel, 64),
-    };
+    metrics.offset = @divFloor(extents.x_bearing * units_per_pixel, 64);
+    metrics.width = @divFloor(extents.width * units_per_pixel, 64);
 }
 
 fn setMetricsBoxStart(metrics: *Ifc.Metrics, ifc_slice: Ifc.Slice, inline_box_index: Ifc.Size) void {

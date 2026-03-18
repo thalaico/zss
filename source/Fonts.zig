@@ -80,9 +80,14 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         // This avoids the fractional rounding difference vs the px*48 + 96dpi path.
         const size_26_6: i32 = @intFromFloat(size_px * 64.0);
         _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
-        // Tell HarfBuzz to re-read glyph metrics (advances, positions) from the resized FT face.
-        // NOTE: hb_ft_font_changed does NOT invalidate font-level extents (ascender/descender).
-        // Use getDesignMetrics() + manual scaling for line-height computation.
+        // Re-initialize HarfBuzz FT font functions after resizing.
+        // hb_ft_font_changed alone doesn't invalidate the cached scale
+        // when hb_ft_font_set_funcs was previously called. Re-calling
+        // hb_ft_font_set_funcs forces HarfBuzz to re-read the FT face
+        // at the new size. Load flags must be re-applied since
+        // hb_ft_font_set_funcs resets them.
+        hb.hb_ft_font_set_funcs(entry.hb_font);
+        hb.hb_ft_font_set_load_flags(entry.hb_font, 1 << 1); // FT_LOAD_NO_HINTING
         hb.hb_ft_font_changed(entry.hb_font);
     }
 }
