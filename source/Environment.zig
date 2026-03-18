@@ -43,6 +43,11 @@ nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
+
+/// Viewport dimensions in CSS pixels, used for @media query evaluation.
+/// Set to 0 to disable media query filtering (all @media blocks included).
+viewport_width_px: u32 = 0,
+viewport_height_px: u32 = 0,
 testing: Testing,
 
 pub const CaseOptions = struct {

@@ -67,6 +67,7 @@ pub const Token = union(enum) {
     pub const AtRule = enum {
         import,
         namespace,
+        media,
     };
 
     pub fn cast(token: Token, comptime Derived: type) Derived {

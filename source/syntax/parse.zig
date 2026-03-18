@@ -485,13 +485,48 @@ fn consumeAtRule(parser: *Parser, ast: *AstManaged, main_location: Location, at_
                 break;
             },
             .token_left_curly => {
-                _ = try consumeComponentValue(parser, ast, .token_left_curly, location, .css);
+                // @media blocks contain nested rules — parse as a rule list.
+                // Other at-rules get their block parsed as raw component values.
+                if (at_rule == .media) {
+                    try consumeBlockRuleList(parser, ast, location);
+                } else {
+                    _ = try consumeComponentValue(parser, ast, .token_left_curly, location, .css);
+                }
                 break;
             },
             else => _ = try consumeComponentValue(parser, ast, token, location, .css),
         }
     }
     ast.finishComplexComponentExtra(index, .{ .at_rule = at_rule });
+}
+
+/// Parse the contents of a {}-block as a list of rules (for @media, @supports, etc.).
+/// The opening '{' has already been consumed. Consumes rules until '}' or EOF.
+fn consumeBlockRuleList(parser: *Parser, ast: *AstManaged, brace_location: Location) Parser.Error!void {
+    const index = try ast.addComplexComponent(.rule_list, brace_location);
+
+    while (true) {
+        const token, const location = try parser.nextTokenAllowEof();
+        sw: switch (token) {
+            .token_whitespace, .token_comments => {},
+            .token_eof, .token_right_curly => break,
+            .token_cdo, .token_cdc => {
+                // Inside a block, CDO/CDC are not special — treat as qualified rule start.
+                continue :sw .token_ident;
+            },
+            .token_at_keyword => |nested_at_rule| try consumeAtRule(parser, ast, location, nested_at_rule),
+            else => {
+                parser.setLocation(location);
+                const rule_index = try ast.addComplexComponent(.qualified_rule, location);
+                try parser.increaseDepth(location);
+                // Nested rules in @media are style rules (same as top-level).
+                parser.rule_stack.top = .{ .index = rule_index, .is_style_rule = true };
+                try consumeQualifiedRule(parser, ast);
+            },
+        }
+    }
+
+    ast.finishComplexComponent(index);
 }
 
 fn consumeQualifiedRule(parser: *Parser, ast: *AstManaged) !void {
