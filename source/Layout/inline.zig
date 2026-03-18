@@ -399,7 +399,6 @@ fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, f
         // This preserves kerning and GPOS positioning from hb_shape.
         const shaped_advance: Unit = @divFloor(glyph_positions[i].x_advance * units_per_pixel, 64);
         if (glyph_index == 0) {
-            // ZeroGlyphIndex (missing glyph): store shaped advance in marker entry.
             const special: Ifc.Special = .{
                 .kind = .ZeroGlyphIndex,
                 .data = undefined,

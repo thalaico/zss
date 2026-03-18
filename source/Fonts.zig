@@ -16,6 +16,54 @@ pub const FontEntry = struct {
     ft_face: hb.FT_Face,
 };
 
+/// Opaque handle to the vendored FreeType library instance.
+/// All font loading and HarfBuzz shaping must go through the same
+/// FreeType instance — mixing system and vendored FreeType causes
+/// FT_Set_Char_Size to silently fail (different library state).
+pub const FT_Library = hb.FT_Library;
+pub const FT_Face = hb.FT_Face;
+pub const HbFont = hb.hb_font_t;
+
+/// Initialize the vendored FreeType library. Returns null on failure.
+/// The caller must call doneFreeType() when finished.
+pub fn initFreeType() ?FT_Library {
+    var lib: hb.FT_Library = undefined;
+    if (hb.FT_Init_FreeType(&lib) != 0) return null;
+    return lib;
+}
+
+/// Release the vendored FreeType library.
+pub fn doneFreeType(lib: FT_Library) void {
+    _ = hb.FT_Done_FreeType(lib);
+}
+
+/// Load a font face from a file path using the vendored FreeType.
+/// Returns null if the file cannot be opened or parsed.
+pub fn loadFace(lib: FT_Library, path: [*:0]const u8) ?FT_Face {
+    var face: hb.FT_Face = undefined;
+    if (hb.FT_New_Face(lib, path, 0, &face) != 0) return null;
+    return face;
+}
+
+/// Release a font face loaded with loadFace().
+pub fn doneFace(face: FT_Face) void {
+    _ = hb.FT_Done_Face(face);
+}
+
+/// Create a HarfBuzz font from a vendored FT_Face.
+/// hb_ft_font_create_referenced sets up FT-backed font functions internally.
+/// We set NO_HINTING load flags for fractional advance accuracy.
+pub fn createHbFont(face: FT_Face) ?*hb.hb_font_t {
+    const font = hb.hb_ft_font_create_referenced(face) orelse return null;
+    hb.hb_ft_font_set_load_flags(font, 1 << 1); // FT_LOAD_NO_HINTING
+    return font;
+}
+
+/// Destroy a HarfBuzz font created with createHbFont().
+pub fn destroyHbFont(font: *hb.hb_font_t) void {
+    hb.hb_font_destroy(font);
+}
+
 /// Per-family font slots. Externally managed (caller owns the hb_font_t).
 fonts: [3]?FontEntry = .{ null, null, null },
 
@@ -44,7 +92,6 @@ pub fn setDefaultFont(fonts: *Fonts, font: *hb.hb_font_t, ft_face: hb.FT_Face) H
 pub fn queryFamily(fonts: Fonts, family: types.FontFamily) Handle {
     const slot = @intFromEnum(family);
     if (fonts.fonts[slot] != null) return familyToHandle(family);
-    // Fallback: sans-serif is always the default
     if (fonts.fonts[0] != null) return .sans_serif;
     return .invalid;
 }
@@ -75,19 +122,12 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         _ => return,
     };
     if (fonts.fonts[slot]) |entry| {
-        // Match Chrome/Skia convention: treat size_px as point-size at 72 DPI.
-        // FT_Set_Char_Size(face, 0, px*64, 72, 72) gives pixel_size = px*64/64 * 72/72 = px.
-        // This avoids the fractional rounding difference vs the px*48 + 96dpi path.
         const size_26_6: i32 = @intFromFloat(size_px * 64.0);
         _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
-        // Re-initialize HarfBuzz FT font functions after resizing.
-        // hb_ft_font_changed alone doesn't invalidate the cached scale
-        // when hb_ft_font_set_funcs was previously called. Re-calling
-        // hb_ft_font_set_funcs forces HarfBuzz to re-read the FT face
-        // at the new size. Load flags must be re-applied since
-        // hb_ft_font_set_funcs resets them.
-        hb.hb_ft_font_set_funcs(entry.hb_font);
-        hb.hb_ft_font_set_load_flags(entry.hb_font, 1 << 1); // FT_LOAD_NO_HINTING
+        // Signal HarfBuzz to re-read FT face metrics at the new size.
+        // Do NOT call hb_ft_font_set_funcs here — it resets internal caches
+        // and breaks advance scaling. hb_ft_font_changed is sufficient when
+        // the FT-backed functions were set at font creation time.
         hb.hb_ft_font_changed(entry.hb_font);
     }
 }
@@ -121,7 +161,6 @@ pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
         const face = entry.ft_face[0];
         return .{
             .ascender = face.ascender,
-            // FT face.descender is negative (below baseline); store as positive.
             .descender = -face.descender,
             .units_per_em = face.units_per_EM,
         };
