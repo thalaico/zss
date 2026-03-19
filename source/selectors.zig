@@ -160,7 +160,7 @@ fn matchComplexSelector(
         trailing = data[trailing_index].trailing;
         switch (trailing.combinator) {
             .descendant => {
-                element = element.?.parent(env);
+                element = (element orelse return false).parent(env);
                 while (element) |e| : (element = e.parent(env)) {
                     switch (env.getNodeProperty(.category, e)) {
                         .element => {},
@@ -170,7 +170,7 @@ fn matchComplexSelector(
                 } else return false;
             },
             .child => {
-                element = element.?.parent(env);
+                element = (element orelse return false).parent(env);
                 while (element) |e| : (element = e.parent(env)) {
                     switch (env.getNodeProperty(.category, e)) {
                         .element => break,
@@ -181,7 +181,7 @@ fn matchComplexSelector(
                 return false;
             },
             .subsequent_sibling => {
-                element = element.?.previousSibling(env);
+                element = (element orelse return false).previousSibling(env);
                 while (element) |e| : (element = e.previousSibling(env)) {
                     switch (env.getNodeProperty(.category, e)) {
                         .element => {
@@ -192,7 +192,7 @@ fn matchComplexSelector(
                 }
             },
             .next_sibling => {
-                element = element.?.previousSibling(env);
+                element = (element orelse return false).previousSibling(env);
                 while (element) |e| : (element = e.previousSibling(env)) {
                     switch (env.getNodeProperty(.category, e)) {
                         .element => break,
