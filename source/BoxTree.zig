@@ -306,7 +306,7 @@ pub const InlineFormattingContext = struct {
     line_boxes: ArrayListUnmanaged(LineBox) = .{},
 
     font: zss.Fonts.Handle = .invalid,
-    font_color: math.Color = undefined,
+    font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black
     font_family: values.types.FontFamily = .sans_serif,
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,

@@ -613,4 +613,7 @@ fn rootInlineBoxCosmeticLayout(ifc: *Ifc) void {
 
     ifc_slice.items(.background)[0] = .{};
     ifc_slice.items(.insets)[0] = .{ .x = 0, .y = 0 };
+    // Root inline box inherits color from the IFC (block-level cascade).
+    // Set to transparent so the BoxStart handler doesn't override.
+    ifc_slice.items(.font_color)[0] = .transparent;
 }
