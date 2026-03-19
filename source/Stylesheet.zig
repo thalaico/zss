@@ -108,7 +108,7 @@ pub fn create(
 
                 const a_block = sort_ctx.blocks[a_index];
                 const b_block = sort_ctx.blocks[b_index];
-                return !a_block.earlierThan(b_block);
+                return b_block.earlierThan(a_block);
             }
         };
         list.sortUnstable(SortContext{
