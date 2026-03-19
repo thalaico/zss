@@ -70,6 +70,12 @@ pub const Context = struct {
     ast: Ast,
     source_code: SourceCode,
     state: State,
+    /// Viewport width in CSS px (for vw units). 0 = unknown.
+    viewport_width_px: f32 = 800.0,
+    /// Viewport height in CSS px (for vh units). 0 = unknown.
+    viewport_height_px: f32 = 600.0,
+    /// Computed font-size in px for em resolution. Defaults to initial (16px).
+    font_size_px: f32 = 16.0,
 
     pub const State = struct {
         mode: Mode,
@@ -92,6 +98,7 @@ pub const Context = struct {
             .state = undefined,
         };
     }
+
 
     /// Sets `sequence` as the current node sequence to iterate over.
     pub fn initSequence(ctx: *Context, sequence: Ast.Sequence) void {
@@ -352,15 +359,14 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
     const unit = unit_index.extra(ctx.ast).unit orelse return null;
     return switch (unit) {
         .px => .{ .px = number },
-        // Convert em/rem to px using default font-size (16px).
-        // TODO: Use computed font-size from cascade context for accurate resolution.
-        .em, .rem => .{ .px = number * 16.0 },
+        // em resolves against the element's computed font-size;
+        // rem resolves against the root element's font-size (initial 16px).
+        .em => .{ .px = number * ctx.font_size_px },
+        .rem => .{ .px = number * 16.0 },
         // 1pt = 1/72 inch = 96/72 px = 1.333px
         .pt => .{ .px = number * (96.0 / 72.0) },
-        // Convert viewport units to px using default viewport size.
-        // TODO: Use actual viewport dimensions from layout context.
-        .vw => .{ .px = number * 8.0 },  // 800px viewport width / 100
-        .vh => .{ .px = number * 6.0 },  // 600px viewport height / 100
+        .vw => .{ .px = number * ctx.viewport_width_px / 100.0 },
+        .vh => .{ .px = number * ctx.viewport_height_px / 100.0 },
     };
 }
 
@@ -740,10 +746,11 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
             const unit = unit_index.extra(ctx.ast).unit orelse break :blk null;
             break :blk switch (unit) {
                 .px => number,
-                .em, .rem => number * 16.0,
+                .em => number * ctx.font_size_px,
+                .rem => number * 16.0,
                 .pt => number * (96.0 / 72.0),
-                .vw => number * 8.0,
-                .vh => number * 6.0,
+                .vw => number * ctx.viewport_width_px / 100.0,
+                .vh => number * ctx.viewport_height_px / 100.0,
             };
         },
         .token_integer => blk: {
@@ -923,10 +930,11 @@ fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
             const unit = unit_index.extra(ctx.ast).unit orelse return null;
             const px: f32 = switch (unit) {
                 .px => number,
-                .em, .rem => number * 16.0,
+                .em => number * ctx.font_size_px,
+                .rem => number * 16.0,
                 .pt => number * (96.0 / 72.0),
-                .vw => number * 8.0,
-                .vh => number * 6.0,
+                .vw => number * ctx.viewport_width_px / 100.0,
+                .vh => number * ctx.viewport_height_px / 100.0,
             };
             return @intFromFloat(@round(px * 4.0)); // 4 units per px
         },
