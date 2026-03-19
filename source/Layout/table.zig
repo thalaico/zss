@@ -590,6 +590,19 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
     const stacking_context = flow.solveStackingContext(computer, .static);
 
+    // CSS table cell height model: `height` on <td> sets a minimum total cell
+    // height (border-box-like), not a content-box height. Convert specified
+    // height into min_block_size and let auto layout determine content height.
+    // See CSS 2.1 Section 17.5.3: "the height of a cell is the minimum height
+    // required by the content."
+    if (sizes.get(.block_size)) |specified_block_size| {
+        // Convert border-box minimum to content-box minimum by subtracting padding.
+        const v_padding = sizes.padding_block_start + sizes.padding_block_end;
+        const content_min = @max(0, specified_block_size - v_padding);
+        sizes.min_block_size = @max(sizes.min_block_size, content_min);
+        sizes.setAuto(.block_size);
+    }
+
     const resolved_width = sizes.inline_size_untagged;
     const table_w = table_ctx.table_width;
 
