@@ -638,6 +638,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     try table_ctx.block_type_stack.append(alloc, .{ .block_type = .cell, .bfc_depth = box_gen.bfc_stack.top.? });
     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+    box_gen.stacks.block_info.top.?.is_bfc = true;
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }

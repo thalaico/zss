@@ -51,9 +51,10 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             computer.commitNode(.box_gen);
 
             try pushBlock(box_gen, node, sizes, stacking_context, position);
-            if (inner_block == .flex and box_style_specified.flex_direction == .row) {
+            if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_flex_container = true;
+                info.flex_is_column = (box_style_specified.flex_direction == .column);
                 info.flex_justify = switch (box_style_specified.justify_content) {
                     .flex_start => .flex_start,
                     .center => .center,
@@ -70,11 +71,17 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 };
                 info.flex_gap = box_style_specified.gap;
             }
-            // Set float and clear properties on the block
+            // Set float, clear, and BFC properties on the block
             {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.float_side = box_style_specified.float;
                 info.clear_side = box_style_specified.clear;
+                if (box_style_specified.float != .none) {
+                    info.is_bfc = true;
+                }
+                if (box_style_specified.overflow != .visible) {
+                    info.is_bfc = true;
+                }
             }
         },
     }
@@ -758,10 +765,9 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
     return max_height;
 }
 
-/// Offset children of a flex container in row direction.
-/// Positions children side-by-side horizontally using offset.x.
-/// Ignores auto-expanded margins (flex items use intrinsic box width only).
-/// Returns the maximum child height (container's auto height).
+/// Offset children of a flex container along the main axis.
+/// For row: children are placed horizontally; for column: vertically.
+/// Returns auto height: max child height (row) or total height + gaps (column).
 pub fn offsetChildBlocksFlex(
     subtree: Subtree.View,
     index: Subtree.Size,
@@ -771,34 +777,40 @@ pub fn offsetChildBlocksFlex(
     justify: BlockInfo.FlexJustify,
     align_items: BlockInfo.FlexAlign,
     flex_gap: Unit,
+    flex_is_column: bool,
 ) Unit {
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const end = index + skip;
 
-    // Pass 1: measure total children width (box only, no auto margins) and max height
+    // Pass 1: measure total main-axis extent and max cross-axis extent
     var child = index + 1;
-    var total_width: Unit = 0;
-    var max_height: Unit = 0;
+    var total_main: Unit = 0;
+    var max_cross: Unit = 0;
     var child_count: usize = 0;
     while (child < end) {
         if (!out_of_flow_flags[child]) {
             const box_offsets = subtree.items(.box_offsets)[child];
-            total_width += box_offsets.border_pos.x + box_offsets.border_size.w;
-            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h;
-            max_height = @max(max_height, child_height);
+            if (flex_is_column) {
+                total_main += box_offsets.border_pos.y + box_offsets.border_size.h;
+                max_cross = @max(max_cross, box_offsets.border_pos.x + box_offsets.border_size.w);
+            } else {
+                total_main += box_offsets.border_pos.x + box_offsets.border_size.w;
+                max_cross = @max(max_cross, box_offsets.border_pos.y + box_offsets.border_size.h);
+            }
             child_count += 1;
         }
         child += skips[child];
     }
     // Add gap spacing between children
-    if (child_count > 1) total_width += flex_gap * @as(Unit, @intCast(child_count - 1));
+    if (child_count > 1) total_main += flex_gap * @as(Unit, @intCast(child_count - 1));
 
-    const used_height = container_height orelse max_height;
-    const free_space = @max(0, container_width - total_width);
+    const container_main = if (flex_is_column) (container_height orelse 0) else container_width;
+    const container_cross = if (flex_is_column) container_width else (container_height orelse max_cross);
+    const free_space = @max(0, container_main - total_main);
 
-    // Compute starting x position based on justify-content
-    var x_cursor: Unit = switch (justify) {
+    // Compute starting main-axis position based on justify-content
+    var main_cursor: Unit = switch (justify) {
         .flex_start => 0,
         .flex_end => free_space,
         .center => @divFloor(free_space, 2),
@@ -819,25 +831,38 @@ pub fn offsetChildBlocksFlex(
             subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
         } else {
             const box_offsets = subtree.items(.box_offsets)[child];
-            // Vertical alignment
-            const child_outer_height = box_offsets.border_pos.y + box_offsets.border_size.h;
-            const y_offset: Unit = switch (align_items) {
+            // Cross-axis alignment
+            const child_cross = if (flex_is_column)
+                box_offsets.border_pos.x + box_offsets.border_size.w
+            else
+                box_offsets.border_pos.y + box_offsets.border_size.h;
+            const cross_offset: Unit = switch (align_items) {
                 .flex_start => 0,
-                .flex_end => @max(0, used_height - child_outer_height),
-                .center => @max(0, @divFloor(used_height - child_outer_height, 2)),
-                .stretch => 0, // TODO: stretch child height to container
+                .flex_end => @max(0, container_cross - child_cross),
+                .center => @max(0, @divFloor(container_cross - child_cross, 2)),
+                .stretch => 0, // TODO: stretch child to container cross size
             };
-            subtree.items(.offset)[child] = .{
-                .x = x_cursor,
-                .y = y_offset,
-            };
-            x_cursor += box_offsets.border_pos.x + box_offsets.border_size.w;
+            if (flex_is_column) {
+                subtree.items(.offset)[child] = .{
+                    .x = cross_offset,
+                    .y = main_cursor,
+                };
+                main_cursor += box_offsets.border_pos.y + box_offsets.border_size.h;
+            } else {
+                subtree.items(.offset)[child] = .{
+                    .x = main_cursor,
+                    .y = cross_offset,
+                };
+                main_cursor += box_offsets.border_pos.x + box_offsets.border_size.w;
+            }
             placed += 1;
             if (placed < child_count)
-                x_cursor += total_gap;
+                main_cursor += total_gap;
         }
         child += skips[child];
     }
 
-    return max_height;
+    // For row: auto height is max cross (tallest child)
+    // For column: auto height is total main extent (sum of children + gaps)
+    return if (flex_is_column) total_main else max_cross;
 }

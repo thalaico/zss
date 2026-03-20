@@ -160,6 +160,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             .inline_block => .{ .@"inline" = .{ .block = .flow } },
             .table => .{ .block = .flow },
             .table_row => .{ .block = .flow },
+            .table_row_group, .table_header_group, .table_footer_group => .{ .block = .flow },
             .table_cell => .{ .@"inline" = .{ .block = .flow } },
             .flex => .{ .block = .flex },
             .grid => .{ .block = .flow }, // Grid falls back to block flow
@@ -181,6 +182,7 @@ fn blockify(display: types.Display) types.Display {
         .table => .table,
         .table_row => .table_row,
         .table_cell => .block,
+            .table_row_group, .table_header_group, .table_footer_group => .block,
         .flex => .flex,
         .grid => .grid,
         .none => unreachable,
@@ -196,6 +198,7 @@ fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
         .flex => .flex,
         .grid => .flow, // Grid falls back to block flow
         .@"inline", .inline_block, .none => unreachable,
+            .table_row_group, .table_header_group, .table_footer_group => .flow,
     };
 }
 
