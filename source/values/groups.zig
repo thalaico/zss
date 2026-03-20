@@ -274,6 +274,7 @@ pub const BoxStyle = struct {
     flex_direction: types.FlexDirection,
     justify_content: types.JustifyContent,
     align_items: types.AlignItems,
+    gap: zss.math.Unit,
 
     pub const initial_values = BoxStyle{
         .display = .@"inline",
@@ -284,6 +285,7 @@ pub const BoxStyle = struct {
         .flex_direction = .row,
         .justify_content = .flex_start,
         .align_items = .stretch,
+        .gap = 0,
     };
 };
 

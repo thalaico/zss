@@ -903,6 +903,11 @@ pub fn borderSpacing(ctx: *Context) ?types.BorderSpacing {
     return parseLengthToUnits(ctx);
 }
 
+/// Parse gap: <length>. Returns layout units (4 units = 1px).
+pub fn gap(ctx: *Context) ?zss.math.Unit {
+    return parseLengthToUnits(ctx);
+}
+
 /// Parse line-height: <length> | normal. Returns layout units. 0 = normal.
 pub fn lineHeight(ctx: *Context) ?types.LineHeight {
     // Check for 'normal' keyword first

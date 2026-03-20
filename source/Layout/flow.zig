@@ -68,6 +68,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     .stretch => .stretch,
                     else => .stretch,
                 };
+                info.flex_gap = box_style_specified.gap;
             }
             // Set float and clear properties on the block
             {
@@ -769,6 +770,7 @@ pub fn offsetChildBlocksFlex(
     container_height: ?Unit,
     justify: BlockInfo.FlexJustify,
     align_items: BlockInfo.FlexAlign,
+    flex_gap: Unit,
 ) Unit {
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
@@ -789,6 +791,8 @@ pub fn offsetChildBlocksFlex(
         }
         child += skips[child];
     }
+    // Add gap spacing between children
+    if (child_count > 1) total_width += flex_gap * @as(Unit, @intCast(child_count - 1));
 
     const used_height = container_height orelse max_height;
     const free_space = @max(0, container_width - total_width);
@@ -800,11 +804,12 @@ pub fn offsetChildBlocksFlex(
         .center => @divFloor(free_space, 2),
         .space_between => 0,
     };
-    // Gap between items for space-between
-    const gap: Unit = if (justify == .space_between and child_count > 1)
+    // Gap: CSS gap + additional space-between gap
+    const sb_gap: Unit = if (justify == .space_between and child_count > 1)
         @divFloor(free_space, @as(Unit, @intCast(child_count - 1)))
     else
         0;
+    const total_gap = flex_gap + sb_gap;
 
     // Pass 2: position children
     child = index + 1;
@@ -828,8 +833,8 @@ pub fn offsetChildBlocksFlex(
             };
             x_cursor += box_offsets.border_pos.x + box_offsets.border_size.w;
             placed += 1;
-            if (justify == .space_between and placed < child_count)
-                x_cursor += gap;
+            if (placed < child_count)
+                x_cursor += total_gap;
         }
         child += skips[child];
     }

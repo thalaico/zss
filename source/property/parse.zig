@@ -127,6 +127,13 @@ pub fn @"align-items"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     return .{ .box_style = .{ .align_items = .{ .declared = value } } };
 }
 
+pub fn gap(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.gap) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;

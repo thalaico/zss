@@ -385,6 +385,8 @@ pub const BlockInfo = struct {
     flex_justify: FlexJustify = .flex_start,
     /// align-items for flex containers (default: stretch)
     flex_align: FlexAlign = .stretch,
+    /// CSS gap property for flex containers (in layout units, 4 units = 1px)
+    flex_gap: zss.math.Unit = 0,
     /// CSS float property for this block
     float_side: zss.values.types.Float = .none,
     /// CSS clear property for this block
@@ -540,7 +542,7 @@ pub fn popFlowBlock(
     const auto_height = if (block_info.is_flex_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
-        break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align);
+        break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else blk: {
