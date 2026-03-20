@@ -639,6 +639,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
     box_gen.stacks.block_info.top.?.is_bfc = true;
+    box_gen.stacks.block_info.top.?.vertical_align = cell_font.vertical_align;
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }
