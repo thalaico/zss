@@ -307,7 +307,7 @@ pub const InlineFormattingContext = struct {
 
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black
-    font_family: values.types.FontFamily = .sans_serif,
+    font_family: values.types.FontFamily = .serif, // CSS initial: depends on UA; Chrome uses serif
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,
     /// Per-run font properties for mixed-weight/style inline content.

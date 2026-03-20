@@ -463,7 +463,10 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     const box_tree = box_gen.getLayout().box_tree;
     const subtree = box_tree.ptr.getSubtree(box_gen.stacks.subtree.top.?.id).view();
     const index = block.index;
-    _ = flow.offsetChildBlocks(subtree, index, block.skip, block_info.sizes.get(.inline_size).?);
+    // CSS 2.1 Section 8.3.1: The margins of the root element's box do not collapse.
+    // Treat the ICB as having a non-zero edge to prevent margin escape through it.
+    const parent_edge: @TypeOf(block_info.sizes.border_block_start) = 1;
+    _ = flow.offsetChildBlocks(subtree, index, block.skip, block_info.sizes.get(.inline_size).?, parent_edge);
     const width = block_info.sizes.get(.inline_size).?;
     const height = block_info.sizes.get(.block_size).?;
     subtree.items(.skip)[index] = block.skip;
@@ -530,7 +533,7 @@ pub fn popFlowBlock(
     box_gen.sct_builder.pop(layout.box_tree.ptr);
     box_gen.popAbsoluteContainingBlock();
     const block = box_gen.popBlock();
-    const block_info = box_gen.stacks.block_info.pop();
+    var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
 
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
@@ -545,7 +548,14 @@ pub fn popFlowBlock(
             .normal => block_info.sizes.get(.inline_size).?,
             .stf => |aw| aw,
         };
-        break :blk flow.offsetChildBlocks(subtree, block.index, block.skip, container_width);
+        const parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
+        const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge);
+        // Parent-child margin collapsing: adjust parent's margin to absorb
+        // the first child's escaped margin (CSS 2.1 Section 8.3.1).
+        if (result.escaped_margin_top > block_info.sizes.margin_block_start) {
+            block_info.sizes.margin_block_start = result.escaped_margin_top;
+        }
+        break :blk result.auto_height;
     };
     const width = switch (auto_width) {
         .normal => block_info.sizes.get(.inline_size).?,
@@ -599,7 +609,8 @@ pub fn popStfFlowBlock2(
     const subtree_id = box_gen.stacks.subtree.top.?.id;
     const subtree = box_tree.ptr.getSubtree(subtree_id).view();
     const container_width = sizes.get(.inline_size) orelse auto_width;
-    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width);
+    const parent_edge = sizes.border_block_start + sizes.padding_block_start;
+    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, auto_height);
     setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false);

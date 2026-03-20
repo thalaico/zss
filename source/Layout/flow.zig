@@ -617,7 +617,24 @@ pub fn solveUsedHeight(sizes: BlockUsedSizes, auto_height: Unit) Unit {
 /// Floated children are placed at the left/right edge at the current line position.
 /// Clear children are pushed below the relevant floats.
 /// Returns the auto height of the container.
-pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtree.Size, container_width: Unit) Unit {
+/// Result of offsetChildBlocks: auto_height plus first-child's escaped margin
+/// (for parent-child margin collapsing, CSS 2.1 Section 8.3.1).
+pub const OffsetResult = struct {
+    auto_height: Unit,
+    /// Margin that escapes through the parent's top edge when the parent has
+    /// no border-top or padding-top. Caller must adjust parent's margin.
+    escaped_margin_top: Unit,
+};
+
+pub fn offsetChildBlocks(
+    subtree: Subtree.View,
+    index: Subtree.Size,
+    skip: Subtree.Size,
+    container_width: Unit,
+    /// border_block_start + padding_block_start of the parent. 0 means the
+    /// first child's top margin can escape (parent-child collapsing).
+    parent_block_start_edge: Unit,
+) OffsetResult {
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const float_sides = subtree.items(.float_side);
@@ -625,7 +642,13 @@ pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtr
     var child = index + 1;
     const end = index + skip;
 
-    var offset: Unit = 0;
+    // CSS 2.1 Section 8.3.1: Collapsing margins.
+    // `cursor` tracks the bottom of the last border box; `prev_margin`
+    // holds the previous sibling's bottom margin for collapsing.
+    var cursor: Unit = 0;
+    var prev_margin: Unit = 0;
+    var first_normal_child = true;
+    var escaped_margin_top: Unit = 0;
     var float_left_bottom: Unit = 0;
     var float_right_bottom: Unit = 0;
 
@@ -637,37 +660,61 @@ pub fn offsetChildBlocks(subtree: Subtree.View, index: Subtree.Size, skip: Subtr
             const clear_side = clear_sides[child];
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
-            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+            const margin_top = box_offsets.border_pos.y; // = margin_block_start
+            const border_box_h = box_offsets.border_size.h;
+            const margin_bottom = margins.bottom;
 
-            // Apply clear: push offset below relevant floats
+            // Apply clear: push cursor below relevant floats
             switch (clear_side) {
-                .left => offset = @max(offset, float_left_bottom),
-                .right => offset = @max(offset, float_right_bottom),
-                .both => offset = @max(offset, @max(float_left_bottom, float_right_bottom)),
+                .left => cursor = @max(cursor, float_left_bottom),
+                .right => cursor = @max(cursor, float_right_bottom),
+                .both => cursor = @max(cursor, @max(float_left_bottom, float_right_bottom)),
                 .none => {},
             }
 
             switch (float_side) {
                 .left => {
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
-                    float_left_bottom = @max(float_left_bottom, offset + child_height);
+                    const child_height = margin_top + border_box_h + margin_bottom;
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = cursor };
+                    float_left_bottom = @max(float_left_bottom, cursor + child_height);
                 },
                 .right => {
+                    const child_height = margin_top + border_box_h + margin_bottom;
                     const child_border_width = box_offsets.border_pos.x + box_offsets.border_size.w;
                     const x = @max(0, container_width - child_border_width);
-                    subtree.items(.offset)[child] = .{ .x = x, .y = offset };
-                    float_right_bottom = @max(float_right_bottom, offset + child_height);
+                    subtree.items(.offset)[child] = .{ .x = x, .y = cursor };
+                    float_right_bottom = @max(float_right_bottom, cursor + child_height);
                 },
                 .none => {
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = offset };
-                    offset += child_height;
+                    if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
+                        // Parent-child margin collapsing: first child's top margin
+                        // escapes through the parent (which has no border/padding-top,
+                        // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
+                        escaped_margin_top = margin_top;
+                        subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                        cursor = border_box_h;
+                        prev_margin = margin_bottom;
+                    } else {
+                        // Collapse this child's top margin with previous sibling's bottom margin.
+                        const collapsed = @max(prev_margin, margin_top);
+                        const border_box_y = cursor + collapsed;
+                        subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
+                        cursor = border_box_y + border_box_h;
+                        prev_margin = margin_bottom;
+                    }
+                    first_normal_child = false;
                 },
             }
         }
         child += skips[child];
     }
 
-    return @max(offset, @max(float_left_bottom, float_right_bottom));
+    // Include the last normal-flow child's bottom margin in auto height.
+    const normal_height = cursor + prev_margin;
+    return .{
+        .auto_height = @max(normal_height, @max(float_left_bottom, float_right_bottom)),
+        .escaped_margin_top = escaped_margin_top,
+    };
 }
 
 /// Offset children of a table row: all children at offset {0,0} (horizontal
