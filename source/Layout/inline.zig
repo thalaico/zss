@@ -1173,8 +1173,8 @@ fn splitIntoLineBoxes(
                         .{
                             .offset = offset,
                             .cursor = s.cursor,
-                            // TODO: Why subtract `margins.top`?
-                            .height = margin_box_height - margins.top,
+                            // Remove margins.top subtraction - border_pos.y already accounts for it during rendering
+                            .height = margin_box_height,
                         },
                     );
                 },
