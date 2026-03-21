@@ -134,6 +134,74 @@ pub fn gap(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.gap) {
     return .{ .box_style = .{ .gap = .{ .declared = value } } };
 }
 
+pub fn @"flex-grow"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-grow") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.flexFactor(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .flex_grow = .{ .declared = value } } };
+}
+
+pub fn @"flex-shrink"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-shrink") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.flexFactor(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .flex_shrink = .{ .declared = value } } };
+}
+
+pub fn @"flex-basis"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-basis") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.flexBasis(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .flex_basis = .{ .declared = value } } };
+}
+
+/// flex shorthand: flex: <grow> [<shrink>] [<basis>]
+/// Common forms:
+///   flex: 1      => flex-grow:1, flex-shrink:1, flex-basis:0%
+///   flex: auto   => flex-grow:1, flex-shrink:1, flex-basis:auto
+///   flex: none   => flex-grow:0, flex-shrink:0, flex-basis:auto
+///   flex: 0 1 auto => explicit longhand values
+pub fn flex(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.flex) {
+    ctx.initDecl(declaration_index);
+    // Try 'none' keyword: flex-grow:0, flex-shrink:0, flex-basis:auto
+    if (values.parse.keyword(ctx, enum { none }, &.{.{ "none", .none }})) |_| {
+        if (!ctx.empty()) return null;
+        return .{ .box_style = .{
+            .flex_grow = .{ .declared = 0.0 },
+            .flex_shrink = .{ .declared = 0.0 },
+            .flex_basis = .{ .declared = .auto },
+        } };
+    }
+    // Try 'auto' keyword: flex-grow:1, flex-shrink:1, flex-basis:auto
+    if (values.parse.keyword(ctx, enum { auto }, &.{.{ "auto", .auto }})) |_| {
+        if (!ctx.empty()) return null;
+        return .{ .box_style = .{
+            .flex_grow = .{ .declared = 1.0 },
+            .flex_shrink = .{ .declared = 1.0 },
+            .flex_basis = .{ .declared = .auto },
+        } };
+    }
+    // Try <number> [<number>] [<basis>]
+    // When flex specifies a number, flex-basis defaults to 0% (not auto)
+    const grow = values.parse.flexFactor(ctx) orelse return null;
+    var shrink: f32 = 1.0;
+    var basis: values.types.FlexBasis = .{ .percentage = 0.0 };
+    // Optional second number (flex-shrink)
+    if (values.parse.flexFactor(ctx)) |s| {
+        shrink = s;
+    }
+    // Optional flex-basis
+    if (values.parse.flexBasis(ctx)) |b| {
+        basis = b;
+    }
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{
+        .flex_grow = .{ .declared = grow },
+        .flex_shrink = .{ .declared = shrink },
+        .flex_basis = .{ .declared = basis },
+    } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;

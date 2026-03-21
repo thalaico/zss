@@ -250,6 +250,8 @@ pub const Subtree = struct {
         clear_side: values.types.Clear,
         /// CSS visibility (visible/hidden/collapse)
         visibility: values.types.Visibility,
+        /// flex-grow factor for this block when inside a flex container
+        flex_grow: f32,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

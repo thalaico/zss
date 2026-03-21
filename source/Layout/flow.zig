@@ -40,7 +40,36 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
     switch (inner_block) {
         .flow, .flex => {
             const containing_block_size = box_gen.containingBlockSize();
-            const sizes = solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
+            // Check if parent is a flex row container — flex children should use
+            // a reduced width to allow proper text reflow at the correct column width.
+            const parent_is_flex_row = if (box_gen.stacks.block_info.top) |parent_info|
+                parent_info.is_flex_container and !parent_info.flex_is_column
+            else
+                false;
+            const flex_grow_val: f32 = if (parent_is_flex_row)
+                computer.getSpecifiedValue(.box_gen, .box_style).flex_grow
+            else
+                0.0;
+            const layout_width: ContainingBlockWidth = if (parent_is_flex_row and flex_grow_val > 0.0) blk: {
+                // For flex-grow items, estimate width by counting flex children.
+                // Count DOM children of the parent node to estimate sibling count.
+                const env = box_gen.getLayout().inputs.env;
+                const parent_node = box_gen.stacks.block_info.top.?.node;
+                var flex_child_count: u32 = 0;
+                if (parent_node.firstChild(env)) |first| {
+                    var sib: ?NodeId = first;
+                    while (sib) |s| {
+                        flex_child_count += 1;
+                        sib = s.nextSibling(env);
+                    }
+                }
+                if (flex_child_count < 1) flex_child_count = 1;
+                const gap = box_gen.stacks.block_info.top.?.flex_gap;
+                const total_gaps = gap * @as(Unit, @intCast(flex_child_count - 1));
+                const per_child = @divFloor(@max(0, containing_block_size.width - total_gaps), @as(Unit, @intCast(flex_child_count)));
+                break :blk .{ .normal = per_child };
+            } else .{ .normal = containing_block_size.width };
+            const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height);
             const stacking_context = solveStackingContext(computer, position);
             // Read flex properties before commitNode consumes the node state
             const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
@@ -71,9 +100,10 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 };
                 info.flex_gap = box_style_specified.gap;
             }
-            // Set float, clear, and BFC properties on the block
+            // Store per-block flex item properties and float/clear/BFC state
             {
                 const info = &box_gen.stacks.block_info.top.?;
+                info.flex_grow = box_style_specified.flex_grow;
                 info.float_side = box_style_specified.float;
                 info.clear_side = box_style_specified.clear;
                 if (box_style_specified.float != .none) {
@@ -828,31 +858,108 @@ pub fn offsetChildBlocksFlex(
     const container_main = if (flex_is_column) (container_height orelse 0) else container_width;
     const container_cross = if (flex_is_column) container_width else (container_height orelse max_cross);
 
-    // Pass 1.5: if children overflow main axis in row flex, redistribute equally.
-    // Handles the common flex:1 equal-distribution case without needing
-    // flex-grow/shrink/basis properties (which ZSS doesn't parse yet).
-    if (!flex_is_column and child_count > 1 and total_main > container_main) {
-        const total_gaps_space = flex_gap * @as(Unit, @intCast(child_count - 1));
-        const available_for_children = @max(0, container_main - total_gaps_space);
-        const per_child_main = @divFloor(available_for_children, @as(Unit, @intCast(child_count)));
+    // Pass 1.5: Flex item sizing for row containers.
+    // - flex-grow:0 items: shrink to content only when children overflow container
+    // - flex-grow>0 items: were laid out at estimated width in blockElement,
+    //   now redistribute remaining space proportionally
+    if (!flex_is_column and child_count >= 1) {
+        const flex_grows = subtree.items(.flex_grow);
 
-        // Resize children and recalculate totals
-        child = index + 1;
-        total_main = 0;
-        max_cross = 0;
-        var resized: usize = 0;
-        while (child < end) {
-            if (!out_of_flow_flags[child]) {
-                const margin = subtree.items(.box_offsets)[child].border_pos.x;
-                subtree.items(.box_offsets)[child].border_size.w = @max(0, per_child_main - margin);
-                const bo = subtree.items(.box_offsets)[child];
-                total_main += bo.border_pos.x + bo.border_size.w;
-                max_cross = @max(max_cross, bo.border_pos.y + bo.border_size.h);
-                resized += 1;
+        // Compute total flex-grow and check overflow
+        var total_flex_grow: f32 = 0.0;
+        {
+            child = index + 1;
+            while (child < end) {
+                if (!out_of_flow_flags[child]) {
+                    total_flex_grow += flex_grows[child];
+                }
+                child += skips[child];
             }
-            child += skips[child];
         }
-        if (resized > 1) total_main += flex_gap * @as(Unit, @intCast(resized - 1));
+        const overflows = total_main > container_main;
+
+        // Shrink flex-grow:0 children to content extent ONLY when they overflow
+        if (overflows and total_flex_grow == 0.0) {
+            child = index + 1;
+            total_main = 0;
+            max_cross = 0;
+            var cnt: usize = 0;
+            while (child < end) {
+                if (!out_of_flow_flags[child]) {
+                    const bo = subtree.items(.box_offsets)[child];
+                    const child_skip = skips[child];
+                    var max_content_right: Unit = 0;
+                    var grandchild = child + 1;
+                    const child_end = child + child_skip;
+                    while (grandchild < child_end) {
+                        if (!subtree.items(.out_of_flow)[grandchild]) {
+                            const gbo = subtree.items(.box_offsets)[grandchild];
+                            const goff = subtree.items(.offset)[grandchild];
+                            max_content_right = @max(max_content_right, goff.x + gbo.border_pos.x + gbo.border_size.w);
+                        }
+                        grandchild += subtree.items(.skip)[grandchild];
+                    }
+                    const left_edge = bo.content_pos.x;
+                    const content_width = max_content_right + left_edge + left_edge;
+                    const new_w = @min(bo.border_size.w, @max(left_edge * 2, content_width));
+                    subtree.items(.box_offsets)[child].border_size.w = new_w;
+                    subtree.items(.box_offsets)[child].content_size.w = new_w - left_edge * 2;
+                    const ub = subtree.items(.box_offsets)[child];
+                    total_main += ub.border_pos.x + ub.border_size.w;
+                    max_cross = @max(max_cross, ub.border_pos.y + ub.border_size.h);
+                    cnt += 1;
+                }
+                child += skips[child];
+            }
+            if (cnt > 1) total_main += flex_gap * @as(Unit, @intCast(cnt - 1));
+        }
+
+        // For flex-grow>0 items: redistribute container space proportionally.
+        // Children were laid out at estimated width in blockElement; now
+        // set their border_size to the exact flex-grow distribution.
+        if (total_flex_grow > 0.0) {
+            // Compute space taken by non-grow items
+            var non_grow_main: Unit = 0;
+            var grow_count: usize = 0;
+            var non_grow_count: usize = 0;
+            child = index + 1;
+            while (child < end) {
+                if (!out_of_flow_flags[child]) {
+                    if (flex_grows[child] > 0.0) {
+                        grow_count += 1;
+                    } else {
+                        const ub = subtree.items(.box_offsets)[child];
+                        non_grow_main += ub.border_pos.x + ub.border_size.w;
+                        non_grow_count += 1;
+                    }
+                }
+                child += skips[child];
+            }
+            const total_gaps = flex_gap * @as(Unit, @intCast(@max(1, child_count) - 1));
+            const avail_for_grow = @max(0, container_main - non_grow_main - total_gaps);
+            // Distribute proportionally
+            child = index + 1;
+            total_main = 0;
+            max_cross = 0;
+            var placed: usize = 0;
+            while (child < end) {
+                if (!out_of_flow_flags[child]) {
+                    const grow = flex_grows[child];
+                    if (grow > 0.0) {
+                        const target_w = @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(avail_for_grow)) * grow / total_flex_grow)));
+                        const left_edge = subtree.items(.box_offsets)[child].content_pos.x;
+                        subtree.items(.box_offsets)[child].border_size.w = target_w;
+                        subtree.items(.box_offsets)[child].content_size.w = @max(0, target_w - left_edge * 2);
+                    }
+                    const ub = subtree.items(.box_offsets)[child];
+                    total_main += ub.border_pos.x + ub.border_size.w;
+                    max_cross = @max(max_cross, ub.border_pos.y + ub.border_size.h);
+                    placed += 1;
+                }
+                child += skips[child];
+            }
+            if (placed > 1) total_main += flex_gap * @as(Unit, @intCast(placed - 1));
+        }
     }
 
     const free_space = @max(0, container_main - total_main);

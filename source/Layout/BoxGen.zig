@@ -398,6 +398,8 @@ pub const BlockInfo = struct {
     is_bfc: bool = false,
     /// Vertical alignment for table cell content (CSS vertical-align on td/th)
     vertical_align: zss.values.types.VerticalAlign = .baseline,
+    /// flex-grow factor for this block (used when parent is a flex container)
+    flex_grow: f32 = 0.0,
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -495,6 +497,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
+    subtree.items(.flex_grow)[index] = 0.0;
 }
 
 pub fn pushFlowBlock(
@@ -594,6 +597,7 @@ pub fn popFlowBlock(
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
     subtree.items(.visibility)[block.index] = .visible;
+    subtree.items(.flex_grow)[block.index] = block_info.flex_grow;
 }
 
 pub fn pushStfFlowBlock(
@@ -884,6 +888,7 @@ fn setDataBlock(
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
+    subtree.items(.flex_grow)[index] = 0.0;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -938,6 +943,7 @@ fn setDataIfcContainer(
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
+    subtree.items(.flex_grow)[index] = 0.0;
 }
 
 fn setDataSubtreeProxy(
@@ -970,4 +976,5 @@ fn setDataSubtreeProxy(
     subtree.items(.float_side)[index] = .none;
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
+    subtree.items(.flex_grow)[index] = 0.0;
 }

@@ -728,6 +728,53 @@ pub fn alignItems(ctx: *Context) ?types.AlignItems {
     });
 }
 
+/// Parse a non-negative number (flex-grow or flex-shrink).
+pub fn flexFactor(ctx: *Context) ?types.FlexFactor {
+    const item = ctx.next() orelse return null;
+    const value: f32 = switch (item.tag) {
+        .token_integer => if (item.index.extra(ctx.ast).integer) |i|
+            if (i >= 0) @as(f32, @floatFromInt(i)) else null
+        else
+            null,
+        .token_number => if (item.index.extra(ctx.ast).number) |n|
+            if (n >= 0.0) n else null
+        else
+            null,
+        else => null,
+    } orelse {
+        ctx.resetPoint(item.index);
+        return null;
+    };
+    return value;
+}
+
+/// Parse flex-basis: auto | <length> | <percentage>
+pub fn flexBasis(ctx: *Context) ?types.FlexBasis {
+    // Check 'auto' keyword first
+    if (keyword(ctx, enum { auto }, &.{.{ "auto", .auto }})) |_| {
+        return .auto;
+    }
+    // Try <length>
+    if (parseLengthToUnits(ctx)) |value| {
+        return .{ .px = @as(f32, @floatFromInt(value)) / 4.0 };
+    }
+    // Try <percentage>
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_percentage => {
+            const value = item.index.extra(ctx.ast).number orelse {
+                ctx.resetPoint(item.index);
+                return null;
+            };
+            return .{ .percentage = value };
+        },
+        else => {
+            ctx.resetPoint(item.index);
+            return null;
+        },
+    }
+}
+
 pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     return keyword(ctx, types.BoxSizing, &.{
         .{ "content-box", .content_box },

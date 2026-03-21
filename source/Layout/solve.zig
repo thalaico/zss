@@ -99,6 +99,9 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .justify_content = specified.justify_content,
         .align_items = specified.align_items,
         .gap = specified.gap,
+        .flex_grow = specified.flex_grow,
+        .flex_shrink = specified.flex_shrink,
+        .flex_basis = specified.flex_basis,
     };
 
     if (specified.display == .none) {

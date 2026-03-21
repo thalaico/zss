@@ -81,6 +81,10 @@ pub const Property = enum {
     @"justify-content",
     @"align-items",
     gap,
+    @"flex-grow",
+    @"flex-shrink",
+    @"flex-basis",
+    flex,
     @"font-family",
     @"font-size",
     @"font-weight",
@@ -111,6 +115,10 @@ pub const Property = enum {
             .@"justify-content"        => &.{.{.box_style       , &.{.justify_content}}},
             .@"align-items"            => &.{.{.box_style       , &.{.align_items}   }},
             .gap                       => &.{.{.box_style       , &.{.gap}           }},
+            .@"flex-grow"              => &.{.{.box_style       , &.{.flex_grow}     }},
+            .@"flex-shrink"            => &.{.{.box_style       , &.{.flex_shrink}   }},
+            .@"flex-basis"             => &.{.{.box_style       , &.{.flex_basis}    }},
+            .flex                      => &.{.{.box_style       , &.{.flex_grow, .flex_shrink, .flex_basis} }},
             .opacity                  => &.{.{.opacity         , &.{.opacity}       }},
             .@"box-sizing"             => &.{.{.content_width   , &.{.box_sizing}    }},
             .width                    => &.{.{.content_width   , &.{.width}         }},
@@ -326,11 +334,8 @@ fn parseDeclaration(
     // TODO: If this property has already been declared, skip parsing a value entirely.
     const location = declaration_index.location(ctx.ast);
     const property = ctx.source_code.mapIdentifierEnum(location, Property) orelse {
-        zss.log.warn("Ignoring unsupported declaration: {f}", .{ctx.source_code.formatIdentToken(location)});
         return;
     };
-    // zss.log.debug("Parsing declaration '{s}'", .{@tagName(property)});
-
     switch (property) {
         .all => {
             const cwk = parse.all(ctx, declaration_index) orelse return;

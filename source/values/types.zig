@@ -142,6 +142,16 @@ pub const AlignItems = enum {
     baseline,
 };
 
+/// flex-grow / flex-shrink: non-negative number (default grow=0, shrink=1)
+pub const FlexFactor = f32;
+
+/// flex-basis: auto | <length> | <percentage>
+pub const FlexBasis = union(enum) {
+    auto,
+    px: f32,
+    percentage: f32,
+};
+
 pub const Clear = enum {
     left,
     right,
