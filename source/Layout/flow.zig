@@ -827,6 +827,34 @@ pub fn offsetChildBlocksFlex(
 
     const container_main = if (flex_is_column) (container_height orelse 0) else container_width;
     const container_cross = if (flex_is_column) container_width else (container_height orelse max_cross);
+
+    // Pass 1.5: if children overflow main axis in row flex, redistribute equally.
+    // Handles the common flex:1 equal-distribution case without needing
+    // flex-grow/shrink/basis properties (which ZSS doesn't parse yet).
+    if (!flex_is_column and child_count > 1 and total_main > container_main) {
+        const total_gaps_space = flex_gap * @as(Unit, @intCast(child_count - 1));
+        const available_for_children = @max(0, container_main - total_gaps_space);
+        const per_child_main = @divFloor(available_for_children, @as(Unit, @intCast(child_count)));
+
+        // Resize children and recalculate totals
+        child = index + 1;
+        total_main = 0;
+        max_cross = 0;
+        var resized: usize = 0;
+        while (child < end) {
+            if (!out_of_flow_flags[child]) {
+                const margin = subtree.items(.box_offsets)[child].border_pos.x;
+                subtree.items(.box_offsets)[child].border_size.w = @max(0, per_child_main - margin);
+                const bo = subtree.items(.box_offsets)[child];
+                total_main += bo.border_pos.x + bo.border_size.w;
+                max_cross = @max(max_cross, bo.border_pos.y + bo.border_size.h);
+                resized += 1;
+            }
+            child += skips[child];
+        }
+        if (resized > 1) total_main += flex_gap * @as(Unit, @intCast(resized - 1));
+    }
+
     const free_space = @max(0, container_main - total_main);
 
     // Compute starting main-axis position based on justify-content

@@ -215,6 +215,12 @@ const RuleProcessor = struct {
             .media => {
                 try ctx.handleMediaRule(at_rule_index);
             },
+            .supports => {
+                // Treat @supports as always-true: process contained rules.
+                // We don't evaluate the @supports condition since we want all
+                // rules to apply (missing features fail gracefully at render time).
+                try ctx.handleSupportsRule(at_rule_index);
+            },
         }
     }
 
@@ -268,6 +274,19 @@ const RuleProcessor = struct {
 
         // Condition matches — process the contained rules.
         try ctx.processRuleList(nested_rule_list);
+    }
+
+    /// Handle @supports: always process contained rules (we treat all @supports
+    /// conditions as true since unsupported CSS properties fail gracefully).
+    fn handleSupportsRule(ctx: *RuleProcessor, at_rule_index: Ast.Index) !void {
+        var children = at_rule_index.children(ctx.ast);
+        while (children.nextKeepSpaces(ctx.ast)) |child_idx| {
+            if (child_idx.tag(ctx.ast) == .rule_list) {
+                try ctx.processRuleList(child_idx);
+                return;
+            }
+        }
+        // @supports without a block — skip silently.
     }
 };
 

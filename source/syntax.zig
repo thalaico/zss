@@ -68,6 +68,7 @@ pub const Token = union(enum) {
         import,
         namespace,
         media,
+        supports,
     };
 
     pub fn cast(token: Token, comptime Derived: type) Derived {

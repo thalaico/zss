@@ -538,15 +538,19 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass)) |pc| {
                     switch (pc) {
                         .root, .link, .visited, .hover, .active, .focus => return pc,
-                        .unrecognized => {},
+                        .unrecognized, .ignored => {},
                     }
                 }
             }
             return unrecognizedPseudo(pseudo, parser, main_component_index);
         },
         .function => {
+            // Functional pseudo-classes like :not(), :is(), :where(), :nth-child().
+            // Consume arguments and treat as always-matching (.ignored) rather
+            // than .unrecognized, which would cause the entire rule to be dropped.
             var function_values = main_component_index.children(parser.ast);
             if (anyValue(parser.ast, &function_values)) {
+                if (pseudo == .class) return .ignored;
                 return unrecognizedPseudo(pseudo, parser, main_component_index);
             }
         },

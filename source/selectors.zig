@@ -71,6 +71,12 @@ pub const Data = union {
         pseudo_class,
         /// The next Data is a `pseudo_element_selector`
         pseudo_element,
+        /// :not() negation: next Data is a `class_selector` to negate
+        not_class,
+        /// :not() negation: next Data is a `id_selector` to negate
+        not_id,
+        /// :not() negation: next Data is a `type_selector` to negate
+        not_type,
     };
 
     pub const AttributeOperatorCase = struct {
@@ -87,7 +93,7 @@ pub const Combinator = enum(u8) { descendant, child, next_sibling, subsequent_si
 
 pub const PseudoElement = enum { unrecognized }; // TODO: Support more pseudo elements
 
-pub const PseudoClass = enum { root, link, visited, hover, active, focus, unrecognized };
+pub const PseudoClass = enum { root, link, visited, hover, active, focus, unrecognized, ignored };
 
 pub const AttributeOperator = enum { equals, list_contains, equals_or_prefix_dash, starts_with, ends_with, contains };
 
@@ -239,6 +245,23 @@ fn matchCompoundSelector(
                 // Skip attribute selectors for now (not implemented)
                 return false;
             },
+            .not_class => {
+                index += 1;
+                const class_name = data[index].class_selector;
+                if (env.nodeHasClass(element, class_name)) return false;
+            },
+            .not_id => {
+                index += 1;
+                const id = data[index].id_selector;
+                const element_with_id = env.getElementById(id);
+                if (element_with_id != null and element == element_with_id.?) return false;
+            },
+            .not_type => {
+                index += 1;
+                const selector_type = data[index].type_selector;
+                const element_type = env.getNodeProperty(.type, element);
+                if (matchTypeSelector(selector_type, element_type)) return false;
+            },
             .pseudo_class => {
                 index += 1;
                 const pseudo_class = data[index].pseudo_class_selector;
@@ -257,6 +280,9 @@ fn matchCompoundSelector(
                     // :hover, :active, :focus never match in static rendering
                     .hover, .active, .focus => return false,
                     .unrecognized => return false,
+                    // Functional pseudo-classes (:not(), :is(), :where(), etc.)
+                    // treated as always-matching until properly implemented.
+                    .ignored => {},
                 }
             },
             .pseudo_element => {
