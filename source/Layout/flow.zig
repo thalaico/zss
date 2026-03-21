@@ -182,6 +182,24 @@ pub fn solveAllSizes(
             adjustWidthAndMargins(&sizes, percentage_base_unit);
             // TODO: Do this in adjustWidthAndMargins
             sizes.inline_size_untagged = solve.clampSize(sizes.get(.inline_size).?, sizes.min_inline_size, sizes.max_inline_size);
+            // CSS2.2§10.4: when max-width constrains an auto width,
+            // re-compute auto margins as if width were a fixed value.
+            if (sizes.isAuto(.inline_size)) {
+                const auto_margins = .{
+                    .start = sizes.isAuto(.margin_inline_start),
+                    .end = sizes.isAuto(.margin_inline_end),
+                };
+                if (auto_margins.start or auto_margins.end) {
+                    const width_margin_space = percentage_base_unit -
+                        (sizes.border_inline_start + sizes.border_inline_end +
+                         sizes.padding_inline_start + sizes.padding_inline_end);
+                    const shr_amount = @intFromBool(auto_margins.start and auto_margins.end);
+                    const leftover_margin = @max(0, width_margin_space -
+                        (sizes.inline_size_untagged + sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged));
+                    if (auto_margins.start) sizes.setValue(.margin_inline_start, leftover_margin >> shr_amount);
+                    if (auto_margins.end) sizes.setValue(.margin_inline_end, (leftover_margin >> shr_amount) + @mod(leftover_margin, 2));
+                }
+            }
         },
         .stf => {},
     }
