@@ -87,6 +87,7 @@ pub fn fixupContainingBlock(absolute: *Absolute, id: ContainingBlock.Id, ref: Bl
 
 pub fn addBlock(absolute: *Absolute, allocator: Allocator, node: NodeId, inner_box_style: BoxStyle.InnerBlock) !void {
     const index = absolute.current_containing_block_index;
-    const id = absolute.containing_blocks.items[index].id;
+    const slice = absolute.containing_blocks.slice();
+    const id = slice.items(.id)[index];
     try absolute.blocks.append(allocator, .{ .containing_block = id, .node = node, .inner_box_style = inner_box_style });
 }

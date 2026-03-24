@@ -142,9 +142,12 @@ fn dispatch(
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
         .absolute => {
-            // Simplified absolute positioning: render as block in normal flow
-            // TODO: Implement proper out-of-flow positioning with containing blocks
-            try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style);
+            // Add to absolute positioning list for out-of-flow layout
+            const inner_box_style = box_style.outer.absolute;
+            const allocator = box_gen.getLayout().allocator;
+            try box_gen.absolute.addBlock(allocator, node, inner_box_style);
+            // Advance to next node without laying out in normal flow
+            box_gen.getLayout().advanceNode();
         },
     }
 }
