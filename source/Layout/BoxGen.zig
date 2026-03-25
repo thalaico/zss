@@ -17,6 +17,7 @@ const Layout = @import("../Layout.zig");
 const IsRoot = Layout.IsRoot;
 
 const flow = @import("flow.zig");
+const grid = @import("grid.zig");
 const initial = @import("initial.zig");
 const @"inline" = @import("inline.zig");
 const solve = @import("solve.zig");
@@ -736,21 +737,9 @@ pub fn popFlowBlock(
         const container_height = block_info.sizes.get(.block_size);
         break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column);
     } else if (block_info.is_grid_container) blk: {
-        // TODO: Implement grid layout algorithm
-        // For now, fallback to normal flow
-        const container_width = switch (auto_width) {
-            .normal => block_info.sizes.get(.inline_size).?,
-            .stf => |aw| aw,
-        };
-        var parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
-        if (block_info.is_bfc and parent_edge == 0) parent_edge = 1;
-        const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge);
-        if (!block_info.is_bfc) {
-            if (result.escaped_margin_top > block_info.sizes.margin_block_start) {
-                block_info.sizes.margin_block_start = result.escaped_margin_top;
-            }
-        }
-        break :blk result.auto_height;
+        const container_width = block_info.sizes.get(.inline_size).?;
+        const container_height = block_info.sizes.get(.block_size);
+        break :blk grid.layoutGridChildren(subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else blk: {
