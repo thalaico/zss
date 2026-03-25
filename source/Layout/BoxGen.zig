@@ -225,11 +225,21 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             .bottom = sizes.margin_block_end,
         };
         
-        // Mark as out of flow
+        // Initialize all required fields
+        blocks.items(.skip)[index] = 1; // Absolute blocks are leaf nodes
+        blocks.items(.type)[index] = .block; // Regular block type
         blocks.items(.out_of_flow)[index] = true;
-        
-        // Set the node
         blocks.items(.node)[index] = block.node;
+        blocks.items(.stacking_context)[index] = null; // TODO: May need stacking context
+        blocks.items(.insets)[index] = .{ .x = 0, .y = 0 }; // No relative positioning
+        blocks.items(.border_colors)[index] = .{ .top = .transparent, .bottom = .transparent, .left = .transparent, .right = .transparent };
+        blocks.items(.background)[index] = .{ .color = .transparent, .color_clip = .border, .images = .invalid, .gradient = null };
+        blocks.items(.overflow)[index] = .visible;
+        blocks.items(.opacity)[index] = 1.0;
+        blocks.items(.float_side)[index] = .none;
+        blocks.items(.clear_side)[index] = .none;
+        blocks.items(.visibility)[index] = .visible;
+        blocks.items(.flex_grow)[index] = 0.0;
         
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
