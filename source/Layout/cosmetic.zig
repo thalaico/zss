@@ -134,6 +134,12 @@ pub fn run(layout: *Layout) !void {
         }
     }
 
+    // NOTE: Absolute positioned blocks are already processed via node traversal
+    // The main loop above visits all nodes in the document tree, including nodes with
+    // absolute positioned boxes. Since absolute blocks are registered in node_to_generated_box,
+    // they will be found and processed at line 89-96.
+    // 
+    // We don't need a separate pass for absolute blocks.
     assert(context.mode.pop() == .InitialContainingBlock);
     layout.popNode();
 }

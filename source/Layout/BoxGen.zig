@@ -244,22 +244,17 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
         
-        // Update skip fields to include this new block
-        // The containing block's skip needs to be incremented
-        blocks.items(.skip)[containing_block_ref.index] += 1;
-        
-        // Also need to update all ancestors of the containing block
-        // Walk backwards from containing block to find and update ancestors
-        var curr_idx: i32 = @as(i32, @intCast(containing_block_ref.index)) - 1;
-        while (curr_idx >= 0) : (curr_idx -= 1) {
-            const idx = @as(Subtree.Size, @intCast(curr_idx));
-            const skip = blocks.items(.skip)[idx];
-            // An ancestor is a block that contains the containing block
-            // i.e., idx + skip > containing_block_ref.index
-            if (idx + skip > containing_block_ref.index) {
-                blocks.items(.skip)[idx] += 1;
-            }
-        }
+        // NOTE: We do NOT update skip fields for absolute positioned blocks
+        // Absolute blocks are added at the end of the blocks array, outside the
+        // normal skip-based tree structure. They are positioned relative to their
+        // containing block, but they are not part of its children in the tree sense.
+        // 
+        // Skip-based traversal is used by cosmetic layout and rendering. Since
+        // absolute blocks are out-of-flow, they should be handled separately.
+        // 
+        // TODO: Implement separate traversal for absolute positioned blocks
+        // For now, they will not be visited by cosmetic layout (no backgrounds/borders)
+        // but they will still be positioned correctly.
         
         std.log.info("[layoutAbsoluteBlocks] Created block ref=subtree:{d} index:{d} at ({d},{d}) size {d}x{d}", .{
             @intFromEnum(ref.subtree),
