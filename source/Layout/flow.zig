@@ -851,6 +851,7 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
 /// For row: children are placed horizontally; for column: vertically.
 /// Returns auto height: max child height (row) or total height + gaps (column).
 pub fn offsetChildBlocksFlex(
+    box_tree: *BoxTree,
     subtree: Subtree.View,
     index: Subtree.Size,
     skip: Subtree.Size,
@@ -896,6 +897,63 @@ pub fn offsetChildBlocksFlex(
 
     const container_main = if (flex_is_column) (container_height orelse 0) else container_width;
     const container_cross = if (flex_is_column) container_width else (container_height orelse max_cross);
+
+    // Option 2: Resize IFC containers to their content width before flex distribution
+    // IFCs are created at full container width, but their actual content may be narrower.
+    // This pass measures each IFC's actual content width and resizes it before flex calculations.
+    if (!flex_is_column and child_count >= 1) {
+        const types = subtree.items(.type);
+        child = index + 1;
+        total_main = 0; // Recalculate after resizing IFCs
+        while (child < end) {
+            if (!out_of_flow_flags[child]) {
+                switch (types[child]) {
+                    .ifc_container => |ifc_id| {
+                        // Measure IFC content width from glyphs
+                        const ifc = box_tree.getIfc(ifc_id);
+                        var max_line_width: Unit = 0;
+                        
+                        // Iterate through line boxes to find maximum width
+                        for (ifc.line_boxes.items) |line_box| {
+                            const glyph_start = line_box.elements[0];
+                            const glyph_end = line_box.elements[1];
+                            
+                            // Sum glyph advances to get line width
+                            var line_width: Unit = 0;
+                            const metrics = ifc.glyphs.items(.metrics);
+                            for (glyph_start..glyph_end) |i| {
+                                line_width += metrics[i].advance;
+                            }
+                            
+                            max_line_width = @max(max_line_width, line_width);
+                        }
+                        
+                        // Resize IFC container to content width
+                        const bo = &subtree.items(.box_offsets)[child];
+                        const left_edge = bo.content_pos.x;
+                        const content_width = max_line_width;
+                        const new_w = content_width + left_edge * 2; // Add padding/border
+                        
+                        std.log.err("[IFC-RESIZE] IFC at child {d}: old_w={d} units ({d} CSS px), content_w={d}, new_w={d} units ({d} CSS px)", .{
+                            child, bo.border_size.w, @divTrunc(bo.border_size.w, 4), content_width, new_w, @divTrunc(new_w, 4)
+                        });
+                        
+                        bo.border_size.w = new_w;
+                        bo.content_size.w = content_width;
+                        total_main += new_w;
+                    },
+                    else => {
+                        // Regular blocks: just add to total
+                        total_main += subtree.items(.box_offsets)[child].border_size.w;
+                    },
+                }
+            }
+            child += skips[child];
+        }
+        
+        // Recalculate gaps
+        if (child_count > 1) total_main += flex_gap * @as(Unit, @intCast(child_count - 1));
+    }
 
     // Pass 1.5: Flex item sizing for row containers.
     // - flex-grow:0 items: shrink to content only when children overflow container
