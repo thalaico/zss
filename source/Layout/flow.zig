@@ -965,7 +965,6 @@ pub fn offsetChildBlocksFlex(
                         
 
                         bo.border_size.w = new_w;
-                        bo.content_size.w = content_width;
                         total_main += new_w;
                     },
                     else => {
