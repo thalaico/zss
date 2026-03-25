@@ -121,13 +121,43 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
     
     std.log.info("[layoutAbsoluteBlocks] Processing {d} absolutely positioned elements", .{absolute_blocks.len});
     
-    // TODO: Implement actual layout
-    // For each absolute block:
-    //   1. Find its containing block
-    //   2. Compute position from insets (top, left, right, bottom)
-    //   3. Compute size (width, height)
-    //   4. Create block box at computed position
-    //   5. Apply z-index for stacking
+    const layout = box_gen.getLayout();
+    const allocator = layout.allocator;
+    _ = allocator;
+    
+    for (absolute_blocks) |block| {
+        // Find the containing block for this absolute element
+        const containing_block_ref = findContainingBlockRef(&box_gen.absolute, block.containing_block) orelse {
+            std.log.warn("[layoutAbsoluteBlocks] Could not find containing block for node", .{});
+            continue;
+        };
+        
+        std.log.info("[layoutAbsoluteBlocks] Laying out absolute element (node={any}, containing_block_ref=subtree:{d} index:{d})", .{
+            block.node,
+            @intFromEnum(containing_block_ref.subtree),
+            containing_block_ref.index,
+        });
+        
+        // TODO: Get containing block size
+        // TODO: Get element's computed styles (width, height, insets)
+        // TODO: Calculate final position
+        // TODO: Create block box at calculated position
+    }
+}
+
+fn findContainingBlockRef(absolute: *const Absolute, id: Absolute.ContainingBlock.Id) ?BlockRef {
+    const slice = absolute.containing_blocks.slice();
+    const ids = slice.items(.id);
+    const refs = slice.items(.ref);
+    
+    for (ids, refs, 0..) |containing_id, ref, i| {
+        _ = i;
+        if (containing_id == id) {
+            return ref;
+        }
+    }
+    
+    return null;
 }
 
 /// Returns the next node and its box style, or `null` if there is no next node.
