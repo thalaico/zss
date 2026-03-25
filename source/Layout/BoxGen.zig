@@ -185,15 +185,19 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         std.log.info("[layoutAbsoluteBlocks] Computed: width={d}, height={d}, x={d}, y={d}", .{ width, height, x, y });
         
         // Create block box at the computed position and size
-        const ref = try box_gen.newBlock();
-        const subtree = layout.box_tree.ptr.getSubtree(ref.subtree);
-        const blocks = subtree.blocks.slice();
+        // We can't use newBlock() because it requires stacks to be set up
+        // Instead, manually create the block in the containing block's subtree (reuse from earlier)
+        const index = try layout.box_tree.appendBlockBox(containing_subtree);
+        const ref = BlockRef{ .subtree = containing_block_ref.subtree, .index = index };
+        
+        // Re-get the slice since appendBlockBox might have reallocated
+        const blocks = containing_subtree.blocks.slice();
         
         // Set the position (relative to containing block)
-        blocks.items(.offset)[ref.index] = .{ .x = x, .y = y };
+        blocks.items(.offset)[index] = .{ .x = x, .y = y };
         
         // Set the size
-        blocks.items(.box_offsets)[ref.index] = .{
+        blocks.items(.box_offsets)[index] = .{
             .border_pos = .{ .x = 0, .y = 0 },
             .border_size = .{ .w = width, .h = height },
             .content_pos = .{
@@ -207,14 +211,14 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         };
         
         // Set borders and margins
-        blocks.items(.borders)[ref.index] = .{
+        blocks.items(.borders)[index] = .{
             .left = sizes.border_inline_start,
             .right = sizes.border_inline_end,
             .top = sizes.border_block_start,
             .bottom = sizes.border_block_end,
         };
         
-        blocks.items(.margins)[ref.index] = .{
+        blocks.items(.margins)[index] = .{
             .left = sizes.margin_inline_start_untagged,
             .right = sizes.margin_inline_end_untagged,
             .top = sizes.margin_block_start,
@@ -222,10 +226,10 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         };
         
         // Mark as out of flow
-        blocks.items(.out_of_flow)[ref.index] = true;
+        blocks.items(.out_of_flow)[index] = true;
         
         // Set the node
-        blocks.items(.node)[ref.index] = block.node;
+        blocks.items(.node)[index] = block.node;
         
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
