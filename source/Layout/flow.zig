@@ -929,28 +929,31 @@ pub fn offsetChildBlocksFlex(
                             const glyph_start = line_box.elements[0];
                             const glyph_end = line_box.elements[1];
                             
-                            std.log.err("[IFC-DEBUG] Line: glyph_range=[{d}..{d}), count={d}, total_glyphs={d}", .{glyph_start, glyph_end, glyph_end - glyph_start, ifc.glyphs.len});
+                            // Iterate through line boxes to find maximum width
                             
                             // Sum glyph advances to get line width
                             var line_width: Unit = 0;
                             const metrics = ifc.glyphs.items(.metrics);
                             var glyph_count: usize = 0;
-                            var first_advance: Unit = 0;
-                            for (glyph_start..glyph_end) |i| {
+                            var i = glyph_start;
+                            while (i < glyph_end) {
+                                const glyph_idx = ifc.glyphs.items(.index)[i];
                                 const adv = metrics[i].advance;
-                                if (glyph_count == 0) first_advance = adv;
+                                
+
+                                
                                 line_width += adv;
                                 glyph_count += 1;
+                                i += 1;
+                                
+                                // Special glyphs: when index==0, next glyph is a Special with undefined metrics
+                                // Skip it to avoid adding garbage to line_width
+                                if (glyph_idx == 0 and i < glyph_end) {
+                                    i += 1; // Skip the special glyph with undefined metrics
+                                }
                             }
                             
-                            if (glyph_count > 0 and line_width == 0) {
-                                std.log.err("[IFC-DEBUG] WARNING: {d} glyphs but 0 width! first_adv={d}", .{glyph_count, first_advance});
-                            } else if (glyph_count > 0 and line_width > 10000) {
-                                std.log.err("[IFC-DEBUG] WARNING: line_width={d} units ({d}px) from {d} glyphs", .{line_width, @divTrunc(line_width, 4), glyph_count});
-                            }
-                            // Inline box properties are ALREADY included in glyph advances
-                            // via BoxStart/BoxEnd special glyphs. Don't add them again!
-                            
+
                             max_line_width = @max(max_line_width, line_width);
                         }
                         
@@ -960,10 +963,7 @@ pub fn offsetChildBlocksFlex(
                         const content_width = max_line_width;
                         const new_w = content_width + left_edge * 2; // Add containing block padding/border
                         
-                        std.log.err("[IFC-RESIZE] child={d}: old={d}px, content={d}px, new={d}px (glyphs={d}, lines={d})", .{
-                            child, @divTrunc(bo.border_size.w, 4), @divTrunc(content_width, 4), @divTrunc(new_w, 4), ifc.glyphs.len, ifc.line_boxes.items.len
-                        });
-                        
+
                         bo.border_size.w = new_w;
                         bo.content_size.w = content_width;
                         total_main += new_w;
