@@ -149,18 +149,42 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             containing_block_size.h,
         });
         
-        // Get element's computed styles
+        // Get element's computed styles and compute sizes
         try layout.computer.setCurrentNode(.box_gen, block.node);
         
-        // For now, create a simple block with default size
-        // In a full implementation, we'd:
-        //   1. Get width/height from computed styles
-        //   2. Get top/left/right/bottom insets
-        //   3. Calculate final position and size from containing block + insets
-        //   4. Handle auto values
+        // Compute sizes using the same function as normal flow
+        const containing_block_width = containing_block_size.w;
+        const containing_block_height = containing_block_size.h;
+        const sizes = flow.solveAllSizes(
+            &layout.computer,
+            .absolute,
+            .{ .normal = containing_block_width },
+            containing_block_height,
+        );
         
-        // Simplified: just create a placeholder for now to verify the mechanism works
-        std.log.info("[layoutAbsoluteBlocks] TODO: Compute styles and create box for node {any}", .{block.node});
+        // Get the computed width and height (these return optionals)
+        const width = sizes.get(.inline_size) orelse containing_block_width;
+        const height = sizes.get(.block_size) orelse containing_block_height;
+        
+        // Get position from insets
+        const left = sizes.get(.inset_inline_start);
+        const top = sizes.get(.inset_block_start);
+        
+        const x = switch (left) {
+            .value => |v| v,
+            .auto => 0, // Simplified: should use static position
+            .percentage => |p| @as(math.Unit, @intFromFloat(@as(f32, @floatFromInt(containing_block_width)) * p / 100.0)),
+        };
+        
+        const y = switch (top) {
+            .value => |v| v,
+            .auto => 0, // Simplified: should use static position
+            .percentage => |p| @as(math.Unit, @intFromFloat(@as(f32, @floatFromInt(containing_block_height)) * p / 100.0)),
+        };
+        
+        std.log.info("[layoutAbsoluteBlocks] Computed: width={d}, height={d}, x={d}, y={d}", .{ width, height, x, y });
+        
+        // TODO: Create block box at (x, y) with size (width, height)
     }
 }
 
