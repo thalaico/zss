@@ -184,7 +184,60 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         
         std.log.info("[layoutAbsoluteBlocks] Computed: width={d}, height={d}, x={d}, y={d}", .{ width, height, x, y });
         
-        // TODO: Create block box at (x, y) with size (width, height)
+        // Create block box at the computed position and size
+        const ref = try box_gen.newBlock();
+        const subtree = layout.box_tree.ptr.getSubtree(ref.subtree);
+        const blocks = subtree.blocks.slice();
+        
+        // Set the position (relative to containing block)
+        blocks.items(.offset)[ref.index] = .{ .x = x, .y = y };
+        
+        // Set the size
+        blocks.items(.box_offsets)[ref.index] = .{
+            .border_pos = .{ .x = 0, .y = 0 },
+            .border_size = .{ .w = width, .h = height },
+            .content_pos = .{
+                .x = sizes.border_inline_start + sizes.padding_inline_start,
+                .y = sizes.border_block_start + sizes.padding_block_start,
+            },
+            .content_size = .{
+                .w = width - sizes.border_inline_start - sizes.border_inline_end - sizes.padding_inline_start - sizes.padding_inline_end,
+                .h = height - sizes.border_block_start - sizes.border_block_end - sizes.padding_block_start - sizes.padding_block_end,
+            },
+        };
+        
+        // Set borders and margins
+        blocks.items(.borders)[ref.index] = .{
+            .left = sizes.border_inline_start,
+            .right = sizes.border_inline_end,
+            .top = sizes.border_block_start,
+            .bottom = sizes.border_block_end,
+        };
+        
+        blocks.items(.margins)[ref.index] = .{
+            .left = sizes.margin_inline_start_untagged,
+            .right = sizes.margin_inline_end_untagged,
+            .top = sizes.margin_block_start,
+            .bottom = sizes.margin_block_end,
+        };
+        
+        // Mark as out of flow
+        blocks.items(.out_of_flow)[ref.index] = true;
+        
+        // Set the node
+        blocks.items(.node)[ref.index] = block.node;
+        
+        // Register the generated box for this node
+        try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
+        
+        std.log.info("[layoutAbsoluteBlocks] Created block ref=subtree:{d} index:{d} at ({d},{d}) size {d}x{d}", .{
+            @intFromEnum(ref.subtree),
+            ref.index,
+            x,
+            y,
+            width,
+            height,
+        });
     }
 }
 
