@@ -923,7 +923,6 @@ pub fn offsetChildBlocksFlex(
                         }
                         
                         var max_line_width: Unit = 0;
-                        const inline_boxes = ifc.inline_boxes.slice();
                         
                         // Iterate through line boxes to find maximum width
                         for (ifc.line_boxes.items) |line_box| {
@@ -949,23 +948,8 @@ pub fn offsetChildBlocksFlex(
                             } else if (glyph_count > 0 and line_width > 10000) {
                                 std.log.err("[IFC-DEBUG] WARNING: line_width={d} units ({d}px) from {d} glyphs", .{line_width, @divTrunc(line_width, 4), glyph_count});
                             }
-                            
-                            // Add inline box properties (padding, borders, margins)
-                            if (line_box.inline_box) |ib_idx| {
-                                const ib_skip = inline_boxes.items(.skip)[ib_idx];
-                                var ib = ib_idx;
-                                const ib_end = ib_idx + ib_skip;
-                                while (ib < ib_end) {
-                                    const inline_start = inline_boxes.items(.inline_start)[ib];
-                                    const inline_end = inline_boxes.items(.inline_end)[ib];
-                                    const margins = inline_boxes.items(.margins)[ib];
-                                    
-                                    line_width += inline_start.border + inline_start.padding + margins.start;
-                                    line_width += inline_end.border + inline_end.padding + margins.end;
-                                    
-                                    ib += inline_boxes.items(.skip)[ib];
-                                }
-                            }
+                            // Inline box properties are ALREADY included in glyph advances
+                            // via BoxStart/BoxEnd special glyphs. Don't add them again!
                             
                             max_line_width = @max(max_line_width, line_width);
                         }
