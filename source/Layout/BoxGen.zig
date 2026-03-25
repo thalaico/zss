@@ -85,6 +85,10 @@ pub fn run(box_gen: *BoxGen) !void {
     const allocator = box_gen.getLayout().allocator;
     box_gen.table_context = table.Context.init(allocator);
     try analyzeAllNodes(box_gen);
+    
+    // Layout absolutely positioned elements after normal flow
+    try layoutAbsoluteBlocks(box_gen);
+    
     box_gen.sct_builder.endFrame();
 }
 
@@ -107,6 +111,23 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
     }
 
     try box_gen.dispatchNullNode(.root, {});
+}
+
+fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
+    // Layout absolutely positioned elements that were collected during analyzeAllNodes
+    const absolute_blocks = box_gen.absolute.blocks.items;
+    
+    if (absolute_blocks.len == 0) return;
+    
+    std.log.info("[layoutAbsoluteBlocks] Processing {d} absolutely positioned elements", .{absolute_blocks.len});
+    
+    // TODO: Implement actual layout
+    // For each absolute block:
+    //   1. Find its containing block
+    //   2. Compute position from insets (top, left, right, bottom)
+    //   3. Compute size (width, height)
+    //   4. Create block box at computed position
+    //   5. Apply z-index for stacking
 }
 
 /// Returns the next node and its box style, or `null` if there is no next node.
