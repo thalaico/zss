@@ -138,10 +138,29 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             containing_block_ref.index,
         });
         
-        // TODO: Get containing block size
-        // TODO: Get element's computed styles (width, height, insets)
-        // TODO: Calculate final position
-        // TODO: Create block box at calculated position
+        // Get containing block size
+        const containing_subtree = layout.box_tree.ptr.getSubtree(containing_block_ref.subtree);
+        const containing_slice = containing_subtree.blocks.slice();
+        const containing_box_offsets = containing_slice.items(.box_offsets)[containing_block_ref.index];
+        const containing_block_size = containing_box_offsets.border_size;
+        
+        std.log.info("[layoutAbsoluteBlocks] Containing block size: {d}x{d}", .{
+            containing_block_size.w,
+            containing_block_size.h,
+        });
+        
+        // Get element's computed styles
+        try layout.computer.setCurrentNode(.box_gen, block.node);
+        
+        // For now, create a simple block with default size
+        // In a full implementation, we'd:
+        //   1. Get width/height from computed styles
+        //   2. Get top/left/right/bottom insets
+        //   3. Calculate final position and size from containing block + insets
+        //   4. Handle auto values
+        
+        // Simplified: just create a placeholder for now to verify the mechanism works
+        std.log.info("[layoutAbsoluteBlocks] TODO: Compute styles and create box for node {any}", .{block.node});
     }
 }
 
