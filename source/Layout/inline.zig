@@ -213,7 +213,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             try layout.pushNode();
         },
         .block => |block_inner| switch (block_inner) {
-            .flow, .flex => {
+            .flow, .flex, .grid => {
                 const sizes = inlineBlockSolveSizes(&layout.computer, position, ifc.containing_block_size);
                 const stacking_context = inlineBlockSolveStackingContext(&layout.computer, position);
                 layout.computer.commitNode(.box_gen);

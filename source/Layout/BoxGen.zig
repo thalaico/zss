@@ -565,6 +565,12 @@ pub const BlockInfo = struct {
     flex_gap: zss.math.Unit = 0,
     /// flex-direction for flex containers
     flex_is_column: bool = false,
+    /// Grid layout container (display: grid)
+    is_grid_container: bool = false,
+    /// CSS column-gap for grid containers (in layout units, 4 units = 1px)
+    grid_column_gap: zss.math.Unit = 0,
+    /// CSS row-gap for grid containers (in layout units, 4 units = 1px)
+    grid_row_gap: zss.math.Unit = 0,
     /// CSS float property for this block
     float_side: zss.values.types.Float = .none,
     /// CSS clear property for this block
@@ -729,6 +735,22 @@ pub fn popFlowBlock(
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
         break :blk flow.offsetChildBlocksFlex(subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column);
+    } else if (block_info.is_grid_container) blk: {
+        // TODO: Implement grid layout algorithm
+        // For now, fallback to normal flow
+        const container_width = switch (auto_width) {
+            .normal => block_info.sizes.get(.inline_size).?,
+            .stf => |aw| aw,
+        };
+        var parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
+        if (block_info.is_bfc and parent_edge == 0) parent_edge = 1;
+        const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge);
+        if (!block_info.is_bfc) {
+            if (result.escaped_margin_top > block_info.sizes.margin_block_start) {
+                block_info.sizes.margin_block_start = result.escaped_margin_top;
+            }
+        }
+        break :blk result.auto_height;
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else blk: {

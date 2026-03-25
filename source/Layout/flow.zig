@@ -38,7 +38,7 @@ fn endMode(box_gen: *BoxGen) void {
 pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     switch (inner_block) {
-        .flow, .flex => {
+        .flow, .flex, .grid => {
             const containing_block_size = box_gen.containingBlockSize();
             // Check if parent is a flex row container — flex children should use
             // a reduced width to allow proper text reflow at the correct column width.
@@ -99,6 +99,12 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     else => .stretch,
                 };
                 info.flex_gap = box_style_specified.gap;
+            }
+            if (inner_block == .grid) {
+                const info = &box_gen.stacks.block_info.top.?;
+                info.is_grid_container = true;
+                info.grid_column_gap = box_style_specified.gap;
+                info.grid_row_gap = box_style_specified.gap;
             }
             // Store per-block flex item properties and float/clear/BFC state
             {

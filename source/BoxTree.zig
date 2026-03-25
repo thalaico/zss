@@ -90,6 +90,8 @@ pub const BoxStyle = struct {
         flow,
         /// display: flex
         flex,
+        /// display: grid
+        grid,
     };
     pub const InnerInline = union(enum) {
         /// display: inline
