@@ -909,20 +909,62 @@ pub fn offsetChildBlocksFlex(
             if (!out_of_flow_flags[child]) {
                 switch (types[child]) {
                     .ifc_container => |ifc_id| {
-                        // Measure IFC content width from glyphs
+                        // Measure IFC content width from glyphs and inline boxes
                         const ifc = box_tree.getIfc(ifc_id);
+                        
+                        // Skip empty IFCs (no content to measure)
+                        if (ifc.glyphs.len == 0) {
+                            // Resize empty IFC to 0 width
+                            const bo = &subtree.items(.box_offsets)[child];
+                            bo.border_size.w = 0;
+                            bo.content_size.w = 0;
+                            // Don't add to total_main (0 width)
+                            continue;
+                        }
+                        
                         var max_line_width: Unit = 0;
+                        const inline_boxes = ifc.inline_boxes.slice();
                         
                         // Iterate through line boxes to find maximum width
                         for (ifc.line_boxes.items) |line_box| {
                             const glyph_start = line_box.elements[0];
                             const glyph_end = line_box.elements[1];
                             
+                            std.log.err("[IFC-DEBUG] Line: glyph_range=[{d}..{d}), count={d}, total_glyphs={d}", .{glyph_start, glyph_end, glyph_end - glyph_start, ifc.glyphs.len});
+                            
                             // Sum glyph advances to get line width
                             var line_width: Unit = 0;
                             const metrics = ifc.glyphs.items(.metrics);
+                            var glyph_count: usize = 0;
+                            var first_advance: Unit = 0;
                             for (glyph_start..glyph_end) |i| {
-                                line_width += metrics[i].advance;
+                                const adv = metrics[i].advance;
+                                if (glyph_count == 0) first_advance = adv;
+                                line_width += adv;
+                                glyph_count += 1;
+                            }
+                            
+                            if (glyph_count > 0 and line_width == 0) {
+                                std.log.err("[IFC-DEBUG] WARNING: {d} glyphs but 0 width! first_adv={d}", .{glyph_count, first_advance});
+                            } else if (glyph_count > 0 and line_width > 10000) {
+                                std.log.err("[IFC-DEBUG] WARNING: line_width={d} units ({d}px) from {d} glyphs", .{line_width, @divTrunc(line_width, 4), glyph_count});
+                            }
+                            
+                            // Add inline box properties (padding, borders, margins)
+                            if (line_box.inline_box) |ib_idx| {
+                                const ib_skip = inline_boxes.items(.skip)[ib_idx];
+                                var ib = ib_idx;
+                                const ib_end = ib_idx + ib_skip;
+                                while (ib < ib_end) {
+                                    const inline_start = inline_boxes.items(.inline_start)[ib];
+                                    const inline_end = inline_boxes.items(.inline_end)[ib];
+                                    const margins = inline_boxes.items(.margins)[ib];
+                                    
+                                    line_width += inline_start.border + inline_start.padding + margins.start;
+                                    line_width += inline_end.border + inline_end.padding + margins.end;
+                                    
+                                    ib += inline_boxes.items(.skip)[ib];
+                                }
                             }
                             
                             max_line_width = @max(max_line_width, line_width);
@@ -932,10 +974,10 @@ pub fn offsetChildBlocksFlex(
                         const bo = &subtree.items(.box_offsets)[child];
                         const left_edge = bo.content_pos.x;
                         const content_width = max_line_width;
-                        const new_w = content_width + left_edge * 2; // Add padding/border
+                        const new_w = content_width + left_edge * 2; // Add containing block padding/border
                         
-                        std.log.err("[IFC-RESIZE] IFC at child {d}: old_w={d} units ({d} CSS px), content_w={d}, new_w={d} units ({d} CSS px)", .{
-                            child, bo.border_size.w, @divTrunc(bo.border_size.w, 4), content_width, new_w, @divTrunc(new_w, 4)
+                        std.log.err("[IFC-RESIZE] child={d}: old={d}px, content={d}px, new={d}px (glyphs={d}, lines={d})", .{
+                            child, @divTrunc(bo.border_size.w, 4), @divTrunc(content_width, 4), @divTrunc(new_w, 4), ifc.glyphs.len, ifc.line_boxes.items.len
                         });
                         
                         bo.border_size.w = new_w;
