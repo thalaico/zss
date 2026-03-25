@@ -594,15 +594,18 @@ pub fn solveInsets(
             }
         },
         .absolute, .fixed => {
-            // Absolute positioning: insets computed during cosmetic layout
-            // For now, set all insets to 0 in flow layout
+            // Absolute positioning: solve insets from computed styles
             inline for (.{
-                .inset_inline_start,
-                .inset_inline_end,
-                .inset_block_start,
-                .inset_block_end,
-            }) |field| {
-                sizes.setValue(field, 0);
+                .{ "left", .inset_inline_start },
+                .{ "right", .inset_inline_end },
+                .{ "top", .inset_block_start },
+                .{ "bottom", .inset_block_end },
+            }) |pair| {
+                switch (@field(computed, pair[0])) {
+                    .px => |value| sizes.setValue(pair[1], solve.length(.px, value)),
+                    .percentage => |percentage| sizes.setPercentage(pair[1], percentage),
+                    .auto => sizes.setAuto(pair[1]),
+                }
             }
         },
     }
