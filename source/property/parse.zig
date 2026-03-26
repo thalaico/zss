@@ -209,6 +209,20 @@ pub fn @"flex-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"
     return .{ .box_style = .{ .flex_wrap = .{ .declared = value } } };
 }
 
+pub fn @"white-space"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"white-space") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.whiteSpace(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .white_space = .{ .declared = value } } };
+}
+
+pub fn @"list-style-type"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"list-style-type") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.listStyleType(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .list_style_type = .{ .declared = value } } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;

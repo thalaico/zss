@@ -251,7 +251,8 @@ pub const Font = struct {
     visibility: types.Visibility,
     border_spacing: types.BorderSpacing,
     line_height: types.LineHeight,
-
+    white_space: types.WhiteSpace,
+    list_style_type: types.ListStyleType,
     pub const initial_values = Font{
         .font = .default,
         .font_family = .sans_serif,
@@ -263,6 +264,8 @@ pub const Font = struct {
         .visibility = .visible,
         .border_spacing = 8, // 2px default (CSS border-collapse: separate)
         .line_height = 0, // 0 = normal (1.2 * font-size)
+        .white_space = .normal,
+        .list_style_type = .disc,
     };
 };
 

@@ -158,6 +158,22 @@ pub const FlexWrap = enum {
     wrap_reverse,
 };
 
+pub const WhiteSpace = enum {
+    normal,
+    nowrap,
+    pre,
+    pre_wrap,
+    pre_line,
+};
+
+pub const ListStyleType = enum {
+    disc,
+    circle,
+    square,
+    decimal,
+    none,
+};
+
 // --- CSS Grid types ---
 
 /// Maximum number of explicit grid tracks per dimension.

@@ -783,6 +783,26 @@ pub fn flexWrap(ctx: *Context) ?types.FlexWrap {
     });
 }
 
+pub fn whiteSpace(ctx: *Context) ?types.WhiteSpace {
+    return keyword(ctx, types.WhiteSpace, &.{
+        .{ "normal", .normal },
+        .{ "nowrap", .nowrap },
+        .{ "pre", .pre },
+        .{ "pre-wrap", .pre_wrap },
+        .{ "pre-line", .pre_line },
+    });
+}
+
+pub fn listStyleType(ctx: *Context) ?types.ListStyleType {
+    return keyword(ctx, types.ListStyleType, &.{
+        .{ "disc", .disc },
+        .{ "circle", .circle },
+        .{ "square", .square },
+        .{ "decimal", .decimal },
+        .{ "none", .none },
+    });
+}
+
 pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     return keyword(ctx, types.BoxSizing, &.{
         .{ "content-box", .content_box },

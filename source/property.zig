@@ -93,6 +93,8 @@ pub const Property = enum {
     @"text-align",
     @"vertical-align",
     visibility,
+    @"white-space",
+    @"list-style-type",
     border,
     @"border-top",
     @"border-right",
@@ -199,6 +201,8 @@ pub const Property = enum {
             .@"text-align"            => &.{.{.font           , &.{.text_align}    }},
             .@"vertical-align"        => &.{.{.font           , &.{.vertical_align}}},
             .visibility               => &.{.{.font           , &.{.visibility}    }},
+            .@"white-space"            => &.{.{.font           , &.{.white_space}   }},
+            .@"list-style-type"        => &.{.{.font           , &.{.list_style_type}}},
             .border                   => &.{
                 .{.horizontal_edges, &.{.border_left, .border_right}},
                 .{.vertical_edges,   &.{.border_top, .border_bottom}},
