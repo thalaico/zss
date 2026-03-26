@@ -747,7 +747,7 @@ pub fn popFlowBlock(
     } else if (block_info.is_grid_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
-        break :blk grid.layoutGridChildren(subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap);
+        break :blk grid.layoutGridChildren(subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else blk: {

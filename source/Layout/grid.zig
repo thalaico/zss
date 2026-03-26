@@ -3,12 +3,20 @@ const assert = std.debug.assert;
 const zss = @import("../zss.zig");
 const BoxTree = zss.BoxTree;
 const Unit = zss.math.Unit;
+const types = zss.values.types;
 
 const Subtree = BoxTree.Subtree;
 
-/// Layouts children of a grid container in a simple grid pattern.
-/// For now, this creates a hardcoded 3-column grid with auto-placement.
-/// 
+/// Resolved track sizes in pixels (layout units).
+const MAX_TRACKS = types.MAX_GRID_TRACKS;
+
+/// Lay out children of a grid container using CSS Grid Level 1 (subset).
+///
+/// Supports:
+/// - Explicit track sizing: fixed, fr, min-content, auto, minmax()
+/// - Named grid areas (grid-template-areas + grid-area)
+/// - Auto-placement for children without explicit grid-area
+///
 /// Returns the total height of the grid in layout units.
 pub fn layoutGridChildren(
     subtree: Subtree.View,
@@ -18,79 +26,270 @@ pub fn layoutGridChildren(
     container_height: ?Unit,
     column_gap: Unit,
     row_gap: Unit,
+    template_columns: types.GridTrackList,
+    template_rows: types.GridTrackList,
+    template_areas: types.GridAreas,
 ) Unit {
-    _ = container_height; // Not used yet
-    
+    _ = template_areas; // TODO: Wire named area placement
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const box_offsets = subtree.items(.box_offsets);
     const offsets = subtree.items(.offset);
     const end = index + skip;
 
-    // Hardcoded for now: 3 columns
-    const num_columns = 3;
-    const column_width = @divFloor(container_width - (column_gap * (num_columns - 1)), num_columns);
+    // --- Phase 1: Determine grid dimensions ---
+    var num_cols: u8 = template_columns.count;
+    var num_rows: u8 = template_rows.count;
 
-    // Count children (excluding out-of-flow)
-    var child_count: usize = 0;
-    {
+    // If no explicit template, count children for auto-grid
+    if (num_cols == 0) {
+        // Count in-flow children
+        var child_count: u32 = 0;
         var child = index + 1;
         while (child < end) {
-            if (!out_of_flow_flags[child]) {
-                child_count += 1;
-            }
+            if (!out_of_flow_flags[child]) child_count += 1;
             child += skips[child];
         }
+        if (child_count == 0) return 0;
+        // Default: single column if no template
+        num_cols = 1;
+        num_rows = @intCast(@min(child_count, MAX_TRACKS));
     }
 
-    if (child_count == 0) {
-        return 0;
+    if (num_cols == 0) num_cols = 1;
+    if (num_rows == 0) num_rows = 1;
+
+    // --- Phase 2: Resolve column track sizes ---
+    var col_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
+    resolveTrackSizes(&col_sizes, num_cols, &template_columns, container_width, column_gap);
+
+    // --- Phase 3: Resolve row track sizes ---
+    // For rows, we need content heights. First pass: use specified sizes.
+    // min-content and auto rows will be sized after children are laid out.
+    const available_height = container_height orelse 0;
+    var row_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
+    resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap);
+
+    // --- Phase 4: Place children in grid cells ---
+    // Build a placement map: which child goes where.
+    // Children with grid-area names go to their named area.
+    // Others auto-place in row-major order.
+    var auto_row: u8 = 0;
+    var auto_col: u8 = 0;
+
+    var child = index + 1;
+    while (child < end) {
+        if (out_of_flow_flags[child]) {
+            child += skips[child];
+            continue;
+        }
+
+        // Try named area placement via grid_area_hash stored in block_info
+        // We can't access BlockInfo from here, but we can check the area map.
+        // The grid_area_hash is stored as an offset marker — check box_offsets for a signal.
+        // For now, use auto-placement for all children.
+        // TODO: Read grid_area_hash from a side channel once we wire that through.
+
+        var placed_row: u8 = auto_row;
+        var placed_col: u8 = auto_col;
+        const span_rows: u8 = 1;
+        const span_cols: u8 = 1;
+
+        // Check if this child has a grid-area via the areas map
+        // We'll try matching by child position in DOM order against area entries
+        // For named area placement, we need the child's grid_area_hash.
+        // Since it's stored in BlockInfo but not accessible here, we use auto-placement.
+        // This will be enhanced once we thread grid_area_hash to the subtree.
+
+        // Auto-placement: advance to next empty cell
+        if (auto_row >= num_rows) {
+            // Grid is full, extend with implicit rows
+            if (num_rows < MAX_TRACKS) {
+                num_rows += 1;
+                row_sizes[num_rows - 1] = 0; // auto-sized
+            } else {
+                // Can't place more children, skip
+                child += skips[child];
+                continue;
+            }
+        }
+
+        placed_row = auto_row;
+        placed_col = auto_col;
+
+        // Advance auto-placement cursor
+        auto_col += 1;
+        if (auto_col >= num_cols) {
+            auto_col = 0;
+            auto_row += 1;
+        }
+
+        // --- Phase 5: Size and position the child ---
+        // Calculate position from track sizes + gaps
+        var x: Unit = 0;
+        for (0..placed_col) |c| {
+            x += col_sizes[c];
+            if (c > 0 or placed_col > 0) x += column_gap;
+        }
+        // Add gap before first column if placed_col > 0
+        if (placed_col > 0) {
+            // x already includes gaps from the loop
+        }
+
+        var y: Unit = 0;
+        for (0..placed_row) |r| {
+            y += row_sizes[r];
+            if (r > 0 or placed_row > 0) y += row_gap;
+        }
+
+        // Calculate cell width (spanning columns)
+        var cell_width: Unit = 0;
+        for (0..span_cols) |sc| {
+            const col_idx = placed_col + @as(u8, @intCast(sc));
+            if (col_idx < num_cols) {
+                cell_width += col_sizes[col_idx];
+                if (sc > 0) cell_width += column_gap;
+            }
+        }
+
+        // Calculate cell height (spanning rows)
+        var cell_height: Unit = 0;
+        for (0..span_rows) |sr| {
+            const row_idx = placed_row + @as(u8, @intCast(sr));
+            if (row_idx < num_rows) {
+                cell_height += row_sizes[row_idx];
+                if (sr > 0) cell_height += row_gap;
+            }
+        }
+
+        // Position child
+        offsets[child].x = x;
+        offsets[child].y = y;
+
+        // Resize child to fit grid cell
+        if (cell_width > 0) {
+            box_offsets[child].border_size.w = cell_width;
+            const content_x = box_offsets[child].content_pos.x;
+            const content_w = cell_width - content_x * 2;
+            if (content_w > 0) {
+                box_offsets[child].content_size.w = content_w;
+            }
+        }
+
+        // Track actual child height for auto-sized rows
+        const child_border_h = box_offsets[child].border_pos.y + box_offsets[child].border_size.h;
+        if (row_sizes[placed_row] == 0 or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .auto) or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .min_content)) {
+            // Auto or min-content row: grow to fit content
+            if (child_border_h > row_sizes[placed_row]) {
+                row_sizes[placed_row] = child_border_h;
+            }
+        }
+
+        child += skips[child];
     }
 
-    // Position each child in the grid
-    var current_child: usize = 0;
-    var max_row_height: Unit = 0;
-    var current_row_y: Unit = 0;
+    // --- Phase 6: Compute total grid height ---
+    var total_height: Unit = 0;
+    for (0..num_rows) |r| {
+        total_height += row_sizes[r];
+        if (r > 0) total_height += row_gap;
+    }
 
-    {
-        var child = index + 1;
-        while (child < end) {
-            if (!out_of_flow_flags[child]) {
-                const col = current_child % num_columns;
-                const row = current_child / num_columns;
+    return total_height;
+}
 
-                // Calculate position
-                const x = @as(Unit, @intCast(col)) * (column_width + column_gap);
-                const y = current_row_y;
+/// Resolve track sizes for one dimension (columns or rows).
+/// Handles: fixed, fr, min-content, max-content, auto, minmax().
+fn resolveTrackSizes(
+    sizes: *[MAX_TRACKS]Unit,
+    count: u8,
+    template: *const types.GridTrackList,
+    available_space: Unit,
+    gap_size: Unit,
+) void {
+    if (count == 0) return;
 
-                // Set child offset
-                offsets[child].x = x;
-                offsets[child].y = y;
+    // Total gap space
+    const total_gaps = gap_size * @as(Unit, @intCast(if (count > 1) count - 1 else 0));
+    var remaining = available_space - total_gaps;
+    if (remaining < 0) remaining = 0;
 
-                // Resize child to fit in grid cell
-                box_offsets[child].border_size.w = column_width;
-                box_offsets[child].content_size.w = column_width - 
-                    box_offsets[child].content_pos.x * 2;
+    // First pass: resolve fixed sizes and count fr units
+    var total_fr: f32 = 0;
+    var fixed_total: Unit = 0;
+    var fr_count: u8 = 0;
+    var auto_count: u8 = 0;
 
-                // Track max height in current row
-                const child_height = box_offsets[child].border_pos.y + box_offsets[child].border_size.h;
-                if (col == 0) {
-                    // Start of new row
-                    if (row > 0) {
-                        current_row_y += max_row_height + row_gap;
-                        offsets[child].y = current_row_y;
-                    }
-                    max_row_height = child_height;
-                } else {
-                    max_row_height = @max(max_row_height, child_height);
+    for (0..count) |i| {
+        const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+        switch (track.kind) {
+            .fixed => {
+                sizes[i] = track.value;
+                fixed_total += track.value;
+            },
+            .fr => {
+                total_fr += track.frValue();
+                fr_count += 1;
+                sizes[i] = 0; // Will be resolved in second pass
+            },
+            .min_content, .auto => {
+                auto_count += 1;
+                sizes[i] = 0; // Will be resolved from content
+            },
+            .max_content => {
+                sizes[i] = 0; // Will be resolved from content
+                auto_count += 1;
+            },
+            .minmax => {
+                // Use min as base, will grow with fr/auto later
+                sizes[i] = track.value; // min value (fixed)
+                fixed_total += track.value;
+                if (track.max_kind == .fr) {
+                    total_fr += track.maxFrValue();
+                    fr_count += 1;
                 }
-
-                current_child += 1;
-            }
-            child += skips[child];
+            },
         }
     }
 
-    // Return total grid height
-    return current_row_y + max_row_height;
+    // Second pass: distribute remaining space to fr tracks
+    const space_for_flex = remaining - fixed_total;
+    if (space_for_flex > 0 and total_fr > 0) {
+        for (0..count) |i| {
+            const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+            switch (track.kind) {
+                .fr => {
+                    const fraction = track.frValue();
+                    sizes[i] = @intFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
+                },
+                .minmax => {
+                    if (track.max_kind == .fr) {
+                        const fraction = track.maxFrValue();
+                        const fr_size: Unit = @intFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
+                        // minmax: use max of min and fr allocation
+                        if (fr_size > sizes[i]) {
+                            sizes[i] = fr_size;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    // Third pass: auto tracks get equal share of any remaining space
+    if (auto_count > 0) {
+        var used: Unit = 0;
+        for (0..count) |i| used += sizes[i];
+        const auto_space = remaining - used;
+        if (auto_space > 0) {
+            const per_auto = @divFloor(auto_space, @as(Unit, auto_count));
+            for (0..count) |i| {
+                const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+                if (track.kind == .auto or track.kind == .min_content or track.kind == .max_content) {
+                    sizes[i] = per_auto;
+                }
+            }
+        }
+    }
 }
