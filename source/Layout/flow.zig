@@ -112,11 +112,17 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 info.is_grid_container = true;
                 info.grid_column_gap = box_style_specified.gap;
                 info.grid_row_gap = box_style_specified.gap;
+                // Read grid template properties from cascade
+                const grid_tmpl = computer.getSpecifiedValue(.box_gen, .grid_template);
+                info.grid_columns = grid_tmpl.columns;
+                info.grid_rows = grid_tmpl.rows;
+                info.grid_areas = grid_tmpl.areas;
             }
             // Store per-block flex item properties and float/clear/BFC state
             {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.flex_grow = box_style_specified.flex_grow;
+                info.grid_area_hash = box_style_specified.grid_area;
                 info.float_side = box_style_specified.float;
                 info.clear_side = box_style_specified.clear;
                 if (box_style_specified.float != .none) {

@@ -1348,3 +1348,285 @@ test "value parsers" {
     try ns.expectValue(borderStyle, "none", .none);
     try ns.expectValue(borderStyle, "ridge", .ridge);
 }
+
+
+// --- CSS Grid value parsers ---
+
+/// Hash an identifier at a Location using FNV-1a (case-insensitive).
+fn hashIdentAtLocation(ctx: *Context, loc: Location) u32 {
+    var it = ctx.source_code.identTokenIterator(loc);
+    var h: u32 = 2166136261;
+    while (it.next()) |codepoint| {
+        // Case-insensitive: lowercase ASCII
+        const byte: u8 = if (codepoint >= 'A' and codepoint <= 'Z')
+            @intCast(codepoint + 32)
+        else if (codepoint <= 0x7F)
+            @intCast(codepoint)
+        else
+            @intCast(codepoint & 0xFF);
+        h ^= byte;
+        h *%= 16777619;
+    }
+    return h;
+}
+
+/// Hash a string token's contents using FNV-1a (case-insensitive).
+fn hashStringAtLocation(ctx: *Context, loc: Location) u32 {
+    var it = ctx.source_code.stringTokenIterator(loc);
+    var h: u32 = 2166136261;
+    while (it.next()) |codepoint| {
+        const byte: u8 = if (codepoint >= 'A' and codepoint <= 'Z')
+            @intCast(codepoint + 32)
+        else if (codepoint <= 0x7F)
+            @intCast(codepoint)
+        else
+            @intCast(codepoint & 0xFF);
+        h ^= byte;
+        h *%= 16777619;
+    }
+    return h;
+}
+
+/// Parse a single grid track size: auto | min-content | max-content | <length> | <percentage> | <number>fr | minmax(...)
+fn gridTrackSize(ctx: *Context) ?types.GridTrackSize {
+    const save = ctx.savePoint();
+    // Try keywords
+    if (keyword(ctx, enum { auto, min_content, max_content }, &.{
+        .{ "auto", .auto },
+        .{ "min-content", .min_content },
+        .{ "max-content", .max_content },
+    })) |kw| {
+        return switch (kw) {
+            .auto => .{ .kind = .auto },
+            .min_content => .{ .kind = .min_content },
+            .max_content => .{ .kind = .max_content },
+        };
+    }
+    // Try minmax() function
+    const item = ctx.next() orelse return null;
+    if (item.tag == .function) {
+        const fn_loc = item.index.location(ctx.ast);
+        if (ctx.source_code.mapIdentifierValue(fn_loc, enum { minmax }, &.{
+            .{ "minmax", .minmax },
+        })) |_| {
+            // Parse minmax(min, max)
+            const min_val = gridTrackSize(ctx) orelse {
+                ctx.resetPoint(save);
+                return null;
+            };
+            // Expect comma
+            const comma = ctx.next() orelse {
+                ctx.resetPoint(save);
+                return null;
+            };
+            if (comma.tag != .token_comma) {
+                ctx.resetPoint(save);
+                return null;
+            }
+            const max_val = gridTrackSize(ctx) orelse {
+                ctx.resetPoint(save);
+                return null;
+            };
+            return types.GridTrackSize{
+                .kind = .minmax,
+                .value = min_val.value,
+                .max_kind = max_val.kind,
+                .max_value = max_val.value,
+            };
+        }
+        ctx.resetPoint(save);
+        return null;
+    }
+    ctx.resetPoint(save);
+    // Try <dimension> (length with units) for fr or fixed
+    if (parseFrOrLength(ctx)) |result| return result;
+    // Try bare 0 (integer)
+    if (integer(ctx)) |val| {
+        if (val == 0) return types.GridTrackSize.initFixed(0);
+    }
+    ctx.resetPoint(save);
+    return null;
+}
+
+/// Parse a dimension token as either fr or a length in layout units.
+fn parseFrOrLength(ctx: *Context) ?types.GridTrackSize {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .token_dimension) {
+        const index = item.index;
+        var children = index.children(ctx.ast);
+        const unit_index = children.nextSkipSpaces(ctx.ast).?;
+        const number: f32 = index.extra(ctx.ast).number orelse blk: {
+            const int_val = index.extra(ctx.ast).integer orelse {
+                ctx.resetPoint(item.index);
+                return null;
+            };
+            break :blk @floatFromInt(int_val);
+        };
+        const unit = unit_index.extra(ctx.ast).unit orelse {
+            // Check for 'fr' unit which isn't a standard CSS unit
+            const loc = unit_index.location(ctx.ast);
+            if (ctx.source_code.identifierEqlIgnoreCase(loc, "fr")) {
+                return types.GridTrackSize.initFr(number);
+            }
+            ctx.resetPoint(item.index);
+            return null;
+        };
+        const px: f32 = switch (unit) {
+            .px => number,
+            .em => number * ctx.font_size_px,
+            .rem => number * 16.0,
+            .pt => number * (96.0 / 72.0),
+            .vw => number * ctx.viewport_width_px / 100.0,
+            .vh => number * ctx.viewport_height_px / 100.0,
+        };
+        return types.GridTrackSize.initFixed(@intFromFloat(px * 4.0));
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
+/// Parse grid-template-columns or grid-template-rows: <track-size>+
+pub fn gridTrackList(ctx: *Context) ?types.GridTrackList {
+    var result = types.GridTrackList{};
+    // Parse track sizes until we hit '/' or end
+    while (result.count < types.MAX_GRID_TRACKS) {
+        const save = ctx.savePoint();
+        // Stop at '/' (used in grid-template shorthand)
+        const item = ctx.next() orelse break;
+        if (item.tag == .token_delim) {
+            // Check for '/'
+            ctx.resetPoint(save);
+            break;
+        }
+        ctx.resetPoint(save);
+        // Try to parse a track size
+        const track = gridTrackSize(ctx) orelse break;
+        result.tracks[result.count] = track;
+        result.count += 1;
+    }
+    if (result.count == 0) return null;
+    return result;
+}
+
+/// Parse grid-template-areas: <string>+
+/// Each string is one row. Area names within a string are space-separated.
+pub fn gridAreas(ctx: *Context) ?types.GridAreas {
+    var result = types.GridAreas{};
+    var max_cols: u8 = 0;
+    while (result.count < types.MAX_GRID_AREAS) {
+        const loc = string(ctx) orelse break;
+        // Parse the area names from this row string
+        var col: u8 = 0;
+        var it = ctx.source_code.stringTokenIterator(loc);
+        var name_start: bool = false;
+        var name_hash: u32 = 2166136261;
+        while (it.next()) |codepoint| {
+            if (codepoint == ' ' or codepoint == '\t') {
+                if (name_start) {
+                    // End of name
+                    if (name_hash != 2166136261 and col < types.MAX_GRID_TRACKS) {
+                        addAreaCell(&result, result.count, col, name_hash);
+                        col += 1;
+                    }
+                    name_start = false;
+                    name_hash = 2166136261;
+                }
+            } else {
+                name_start = true;
+                if (codepoint == '.') {
+                    // Dot = unnamed cell
+                    if (col < types.MAX_GRID_TRACKS) col += 1;
+                    name_start = false;
+                    name_hash = 2166136261;
+                } else {
+                    // Hash the character (case-insensitive)
+                    const byte: u8 = if (codepoint >= 'A' and codepoint <= 'Z')
+                        @intCast(codepoint + 32)
+                    else if (codepoint <= 0x7F)
+                        @intCast(codepoint)
+                    else
+                        @intCast(codepoint & 0xFF);
+                    name_hash ^= byte;
+                    name_hash *%= 16777619;
+                }
+            }
+        }
+        // Final name in row
+        if (name_start and name_hash != 2166136261 and col < types.MAX_GRID_TRACKS) {
+            addAreaCell(&result, result.count, col, name_hash);
+            col += 1;
+        }
+        if (col > max_cols) max_cols = col;
+        result.count += 1;
+    }
+    if (result.count == 0) return null;
+    return result;
+}
+
+/// Add a cell to the grid area map. If the name_hash already has an entry, extend it.
+/// Otherwise create a new entry.
+fn addAreaCell(areas: *types.GridAreas, row: u8, col: u8, name_hash: u32) void {
+    // Look for existing entry with same hash
+    for (areas.entries[0..areas.count]) |*entry| {
+        if (entry.name_hash == name_hash) {
+            // Extend the area to include this cell
+            if (row < entry.row_start) entry.row_start = row;
+            if (row + 1 > entry.row_end) entry.row_end = row + 1;
+            if (col < entry.col_start) entry.col_start = col;
+            if (col + 1 > entry.col_end) entry.col_end = col + 1;
+            return;
+        }
+    }
+    // New area
+    if (areas.count < types.MAX_GRID_AREAS) {
+        areas.entries[areas.count] = .{
+            .name_hash = name_hash,
+            .row_start = row,
+            .row_end = row + 1,
+            .col_start = col,
+            .col_end = col + 1,
+        };
+        areas.count += 1;
+    }
+}
+
+/// Parse grid-template shorthand: [<area-strings>? <row-tracks>] / <column-tracks>
+/// Wikipedia uses: grid-template: min-content 1fr min-content / 12.25rem minmax(0, 1fr)
+pub fn gridTemplate(ctx: *Context) ?struct { rows: types.GridTrackList, columns: types.GridTrackList, areas: types.GridAreas } {
+    // Try parsing areas first (strings interleaved with row sizes)
+    var rows = types.GridTrackList{};
+    const areas = types.GridAreas{};
+    // Parse row tracks (and possible area strings) before '/'
+    while (rows.count < types.MAX_GRID_TRACKS) {
+        const save = ctx.savePoint();
+        // Check for area string
+        if (string(ctx)) |loc| {
+            _ = loc;
+            // TODO: Parse area row from string
+            // For now, just consume the string and add an auto row
+            rows.tracks[rows.count] = .{ .kind = .auto };
+            rows.count += 1;
+            continue;
+        }
+        // Check for '/' delimiter
+        const item = ctx.next() orelse break;
+        if (item.tag == .token_delim) {
+            // Assume it's '/' — move to column parsing
+            break;
+        }
+        ctx.resetPoint(save);
+        // Try to parse a row track size
+        const track = gridTrackSize(ctx) orelse break;
+        rows.tracks[rows.count] = track;
+        rows.count += 1;
+    }
+    // Parse column tracks after '/'
+    const columns = gridTrackList(ctx) orelse return null;
+    return .{ .rows = rows, .columns = columns, .areas = areas };
+}
+
+/// Parse grid-area: <ident> (the area name)
+pub fn gridAreaPlacement(ctx: *Context) ?types.GridAreaPlacement {
+    const loc = identifier(ctx) orelse return null;
+    return hashIdentAtLocation(ctx, loc);
+}

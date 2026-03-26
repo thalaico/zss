@@ -39,6 +39,7 @@ const BoxGenComputedValues = struct {
     insets: ?ComputedValues(.insets) = null,
     z_index: ?ComputedValues(.z_index) = null,
     font: ?ComputedValues(.font) = null,
+    grid_template: ?ComputedValues(.grid_template) = null,
 };
 
 const CosmeticComputedValues = struct {

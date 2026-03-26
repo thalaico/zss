@@ -152,6 +152,108 @@ pub const FlexBasis = union(enum) {
     percentage: f32,
 };
 
+// --- CSS Grid types ---
+
+/// Maximum number of explicit grid tracks per dimension.
+pub const MAX_GRID_TRACKS = 8;
+/// Maximum number of named grid areas per container.
+pub const MAX_GRID_AREAS = 16;
+
+/// A single grid track size definition.
+/// Covers the subset needed for Wikipedia: fixed, fr, min-content, max-content, auto, minmax().
+pub const GridTrackSize = struct {
+    kind: Kind = .auto,
+    /// For .fixed: the resolved length in layout units.
+    /// For .fr: the fraction value encoded via @bitCast from f32.
+    /// For .minmax: the min value in layout units (min is always fixed or 0).
+    value: i32 = 0,
+    /// For .minmax only: the max track sizing function.
+    max_kind: Kind = .auto,
+    /// For .minmax only: the max value (same encoding as value).
+    max_value: i32 = 0,
+
+    pub const Kind = enum(u8) {
+        auto,
+        fixed,
+        fr,
+        min_content,
+        max_content,
+        /// minmax() function. min is in value (fixed units), max described by max_kind/max_value.
+        minmax,
+    };
+
+    pub fn initFixed(units: i32) GridTrackSize {
+        return .{ .kind = .fixed, .value = units };
+    }
+
+    pub fn initFr(fraction: f32) GridTrackSize {
+        return .{ .kind = .fr, .value = @bitCast(fraction) };
+    }
+
+    /// minmax(fixed_min, fr_max) — covers Wikipedia's `minmax(0, 1fr)` pattern.
+    pub fn initMinmaxFixedFr(min_units: i32, max_fr: f32) GridTrackSize {
+        return .{
+            .kind = .minmax,
+            .value = min_units,
+            .max_kind = .fr,
+            .max_value = @bitCast(max_fr),
+        };
+    }
+
+    pub fn frValue(self: GridTrackSize) f32 {
+        return @bitCast(self.value);
+    }
+
+    pub fn maxFrValue(self: GridTrackSize) f32 {
+        return @bitCast(self.max_value);
+    }
+};
+
+/// Grid track list for one dimension (columns or rows).
+pub const GridTrackList = struct {
+    tracks: [MAX_GRID_TRACKS]GridTrackSize = [_]GridTrackSize{.{}} ** MAX_GRID_TRACKS,
+    count: u8 = 0,
+};
+
+/// A named grid area entry: maps a name hash to a rectangular region.
+pub const GridAreaEntry = struct {
+    /// FNV-1a hash of the area name.
+    name_hash: u32 = 0,
+    row_start: u8 = 0,
+    row_end: u8 = 0,
+    col_start: u8 = 0,
+    col_end: u8 = 0,
+};
+
+/// Named grid areas for a grid container.
+pub const GridAreas = struct {
+    entries: [MAX_GRID_AREAS]GridAreaEntry = [_]GridAreaEntry{.{}} ** MAX_GRID_AREAS,
+    count: u8 = 0,
+
+    /// Look up an area by name hash. Returns row/col bounds or null.
+    pub fn findArea(self: *const GridAreas, name_hash: u32) ?GridAreaEntry {
+        if (name_hash == 0) return null;
+        for (self.entries[0..self.count]) |entry| {
+            if (entry.name_hash == name_hash) return entry;
+        }
+        return null;
+    }
+};
+
+/// Grid placement for a child element (grid-area property).
+/// Stores the FNV-1a hash of the area name (0 = auto-placement).
+pub const GridAreaPlacement = u32;
+
+/// FNV-1a hash for grid area name strings.
+pub fn gridAreaNameHash(name: []const u8) u32 {
+    var h: u32 = 2166136261;
+    for (name) |byte| {
+        h ^= byte;
+        h *%= 16777619;
+    }
+    return h;
+}
+
 pub const Clear = enum {
     left,
     right,

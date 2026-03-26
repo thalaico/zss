@@ -99,6 +99,13 @@ pub const Property = enum {
     @"border-left",
     @"border-spacing",
     @"line-height",
+    @"grid-template-columns",
+    @"grid-template-rows",
+    @"grid-template-areas",
+    @"grid-template",
+    @"grid-area",
+    @"column-gap",
+    @"row-gap",
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -218,6 +225,13 @@ pub const Property = enum {
             },
             .@"border-spacing"        => &.{.{.font           , &.{.border_spacing}}},
             .@"line-height"           => &.{.{.font           , &.{.line_height}   }},
+            .@"grid-template-columns"  => &.{.{.grid_template   , &.{.columns}       }},
+            .@"grid-template-rows"     => &.{.{.grid_template   , &.{.rows}          }},
+            .@"grid-template-areas"    => &.{.{.grid_template   , &.{.areas}         }},
+            .@"grid-template"          => &.{.{.grid_template   , &.{.columns, .rows, .areas} }},
+            .@"grid-area"              => &.{.{.box_style       , &.{.grid_area}     }},
+            .@"column-gap"             => &.{.{.box_style       , &.{.gap}           }},
+            .@"row-gap"                => &.{.{.box_style       , &.{.gap}           }},
         };
         // zig fmt: on
     }

@@ -572,6 +572,14 @@ pub const BlockInfo = struct {
     grid_column_gap: zss.math.Unit = 0,
     /// CSS row-gap for grid containers (in layout units, 4 units = 1px)
     grid_row_gap: zss.math.Unit = 0,
+    /// Grid template columns (parsed track list)
+    grid_columns: zss.values.types.GridTrackList = .{},
+    /// Grid template rows (parsed track list)
+    grid_rows: zss.values.types.GridTrackList = .{},
+    /// Grid named areas
+    grid_areas: zss.values.types.GridAreas = .{},
+    /// Grid area placement hash for this block (0 = auto)
+    grid_area_hash: zss.values.types.GridAreaPlacement = 0,
     /// CSS float property for this block
     float_side: zss.values.types.Float = .none,
     /// CSS clear property for this block

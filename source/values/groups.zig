@@ -29,6 +29,7 @@ pub const Tag = enum {
 
     color,
     font,
+    grid_template,
 
     fn Value(comptime tag: Tag) type {
         return switch (tag) {
@@ -47,6 +48,7 @@ pub const Tag = enum {
             .background => Background,
             .color => Color,
             .font => Font,
+            .grid_template => GridTemplate,
         };
     }
 
@@ -67,6 +69,7 @@ pub const Tag = enum {
             .background_color,
             .background_clip,
             .background,
+            .grid_template,
             => .not_inherited,
 
             .color,
@@ -92,6 +95,7 @@ pub const Tag = enum {
             .background_color,
             .color,
             .font, // TODO: should probably be multi
+            .grid_template,
             => .single,
 
             .background_clip,
@@ -278,6 +282,7 @@ pub const BoxStyle = struct {
     flex_grow: types.FlexFactor,
     flex_shrink: types.FlexFactor,
     flex_basis: types.FlexBasis,
+    grid_area: types.GridAreaPlacement,
 
     pub const initial_values = BoxStyle{
         .display = .@"inline",
@@ -292,6 +297,7 @@ pub const BoxStyle = struct {
         .flex_grow = 0.0,
         .flex_shrink = 1.0,
         .flex_basis = .auto,
+        .grid_area = 0,
     };
 };
 
@@ -500,5 +506,22 @@ pub const Background = struct {
         },
         .origin = .padding_box,
         .size = .{ .size = .{ .width = .auto, .height = .auto } },
+    };
+};
+
+
+/// Grid container template properties.
+/// columns -> grid-template-columns
+/// rows    -> grid-template-rows
+/// areas   -> grid-template-areas
+pub const GridTemplate = struct {
+    columns: types.GridTrackList,
+    rows: types.GridTrackList,
+    areas: types.GridAreas,
+
+    pub const initial_values = GridTemplate{
+        .columns = .{},
+        .rows = .{},
+        .areas = .{},
     };
 };

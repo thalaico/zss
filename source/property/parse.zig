@@ -868,3 +868,59 @@ pub fn @"line-height"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     if (!ctx.empty()) return null;
     return .{ .font = .{ .line_height = .{ .declared = value } } };
 }
+
+// --- CSS Grid property parsers ---
+
+pub fn @"grid-template-columns"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"grid-template-columns") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gridTrackList(ctx) orelse return null;
+    return .{ .grid_template = .{ .columns = .{ .declared = value } } };
+}
+
+pub fn @"grid-template-rows"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"grid-template-rows") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gridTrackList(ctx) orelse return null;
+    return .{ .grid_template = .{ .rows = .{ .declared = value } } };
+}
+
+pub fn @"grid-template-areas"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"grid-template-areas") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gridAreas(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .grid_template = .{ .areas = .{ .declared = value } } };
+}
+
+/// grid-template shorthand: <rows> / <columns> with optional area strings.
+/// For now, parse the track lists separated by '/' and consume area strings if present.
+pub fn @"grid-template"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"grid-template") {
+    ctx.initDecl(declaration_index);
+    // Try parsing: <row-tracks> / <column-tracks>
+    // Also handle area strings interleaved with row tracks.
+    const result = values.parse.gridTemplate(ctx) orelse return null;
+    return .{ .grid_template = .{
+        .rows = .{ .declared = result.rows },
+        .columns = .{ .declared = result.columns },
+        .areas = .{ .declared = result.areas },
+    } };
+}
+
+pub fn @"grid-area"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"grid-area") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gridAreaPlacement(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .grid_area = .{ .declared = value } } };
+}
+
+pub fn @"column-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"column-gap") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+}
+
+pub fn @"row-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"row-gap") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.gap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+}
