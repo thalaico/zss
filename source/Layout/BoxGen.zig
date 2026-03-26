@@ -582,6 +582,10 @@ pub const BlockInfo = struct {
     grid_areas: zss.values.types.GridAreas = .{},
     /// Grid area placement hash for this block (0 = auto)
     grid_area_hash: zss.values.types.GridAreaPlacement = 0,
+    /// Grid area hashes for children (populated during child block finalization).
+    /// Index i corresponds to the i-th in-flow child.
+    grid_child_area_hashes: [128]u32 = [_]u32{0} ** 128,
+    grid_child_count: u8 = 0,
     /// CSS float property for this block
     float_side: zss.values.types.Float = .none,
     /// CSS clear property for this block
@@ -741,6 +745,18 @@ pub fn popFlowBlock(
     var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
 
+    // If the parent is a grid container, record this child's grid-area hash
+    if (box_gen.stacks.block_info.top) |*parent_info| {
+        if (parent_info.is_grid_container and block_info.grid_area_hash != 0) {
+            if (parent_info.grid_child_count < parent_info.grid_child_area_hashes.len) {
+                parent_info.grid_child_area_hashes[parent_info.grid_child_count] = block_info.grid_area_hash;
+            }
+        }
+        if (parent_info.is_grid_container) {
+            parent_info.grid_child_count +|= 1;
+        }
+    }
+
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
     const auto_height = if (block_info.is_flex_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
@@ -749,7 +765,7 @@ pub fn popFlowBlock(
     } else if (block_info.is_grid_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
-        break :blk grid.layoutGridChildren(subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas);
+        break :blk grid.layoutGridChildren(subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
     else blk: {

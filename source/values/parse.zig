@@ -1540,8 +1540,9 @@ pub fn gridTrackList(ctx: *Context) ?types.GridTrackList {
 /// Each string is one row. Area names within a string are space-separated.
 pub fn gridAreas(ctx: *Context) ?types.GridAreas {
     var result = types.GridAreas{};
+    var row: u8 = 0;
     var max_cols: u8 = 0;
-    while (result.count < types.MAX_GRID_AREAS) {
+    while (row < types.MAX_GRID_TRACKS) {
         const loc = string(ctx) orelse break;
         // Parse the area names from this row string
         var col: u8 = 0;
@@ -1553,7 +1554,7 @@ pub fn gridAreas(ctx: *Context) ?types.GridAreas {
                 if (name_start) {
                     // End of name
                     if (name_hash != 2166136261 and col < types.MAX_GRID_TRACKS) {
-                        addAreaCell(&result, result.count, col, name_hash);
+                        addAreaCell(&result, row, col, name_hash);
                         col += 1;
                     }
                     name_start = false;
@@ -1581,13 +1582,13 @@ pub fn gridAreas(ctx: *Context) ?types.GridAreas {
         }
         // Final name in row
         if (name_start and name_hash != 2166136261 and col < types.MAX_GRID_TRACKS) {
-            addAreaCell(&result, result.count, col, name_hash);
+            addAreaCell(&result, row, col, name_hash);
             col += 1;
         }
         if (col > max_cols) max_cols = col;
-        result.count += 1;
+        row += 1;
     }
-    if (result.count == 0) return null;
+    if (row == 0) return null;
     return result;
 }
 
@@ -1623,16 +1624,51 @@ fn addAreaCell(areas: *types.GridAreas, row: u8, col: u8, name_hash: u32) void {
 pub fn gridTemplate(ctx: *Context) ?struct { rows: types.GridTrackList, columns: types.GridTrackList, areas: types.GridAreas } {
     // Try parsing areas first (strings interleaved with row sizes)
     var rows = types.GridTrackList{};
-    const areas = types.GridAreas{};
+    var areas = types.GridAreas{};
     // Parse row tracks (and possible area strings) before '/'
     while (rows.count < types.MAX_GRID_TRACKS) {
         const save = ctx.savePoint();
-        // Check for area string
+        // Check for area string (e.g., 'siteNotice siteNotice')
         if (string(ctx)) |loc| {
-            _ = loc;
-            // TODO: Parse area row from string
-            // For now, just consume the string and add an auto row
-            rows.tracks[rows.count] = .{ .kind = .auto };
+            // Parse area names from this row string
+            var col: u8 = 0;
+            var sit = ctx.source_code.stringTokenIterator(loc);
+            var name_started: bool = false;
+            var name_h: u32 = 2166136261;
+            while (sit.next()) |codepoint| {
+                if (codepoint == ' ' or codepoint == '\t') {
+                    if (name_started) {
+                        if (name_h != 2166136261 and col < types.MAX_GRID_TRACKS) {
+                            addAreaCell(&areas, rows.count, col, name_h);
+                            col += 1;
+                        }
+                        name_started = false;
+                        name_h = 2166136261;
+                    }
+                } else {
+                    name_started = true;
+                    if (codepoint == '.') {
+                        if (col < types.MAX_GRID_TRACKS) col += 1;
+                        name_started = false;
+                        name_h = 2166136261;
+                    } else {
+                        const byte: u8 = if (codepoint >= 'A' and codepoint <= 'Z')
+                            @intCast(codepoint + 32)
+                        else if (codepoint <= 0x7F)
+                            @intCast(codepoint)
+                        else
+                            @intCast(codepoint & 0xFF);
+                        name_h ^= byte;
+                        name_h *%= 16777619;
+                    }
+                }
+            }
+            // Final name in row
+            if (name_started and name_h != 2166136261 and col < types.MAX_GRID_TRACKS) {
+                addAreaCell(&areas, rows.count, col, name_h);
+            }
+            // After area string, optionally parse a row track size
+            rows.tracks[rows.count] = gridTrackSize(ctx) orelse .{ .kind = .auto };
             rows.count += 1;
             continue;
         }

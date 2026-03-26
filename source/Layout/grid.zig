@@ -29,8 +29,9 @@ pub fn layoutGridChildren(
     template_columns: types.GridTrackList,
     template_rows: types.GridTrackList,
     template_areas: types.GridAreas,
+    child_area_hashes: []const u32,
+    child_count: u8,
 ) Unit {
-    _ = template_areas; // TODO: Wire named area placement
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const box_offsets = subtree.items(.box_offsets);
@@ -44,16 +45,16 @@ pub fn layoutGridChildren(
     // If no explicit template, count children for auto-grid
     if (num_cols == 0) {
         // Count in-flow children
-        var child_count: u32 = 0;
+        var inflow_count: u32 = 0;
         var child = index + 1;
         while (child < end) {
-            if (!out_of_flow_flags[child]) child_count += 1;
+            if (!out_of_flow_flags[child]) inflow_count += 1;
             child += skips[child];
         }
-        if (child_count == 0) return 0;
+        if (inflow_count == 0) return 0;
         // Default: single column if no template
         num_cols = 1;
-        num_rows = @intCast(@min(child_count, MAX_TRACKS));
+        num_rows = @intCast(@min(inflow_count, MAX_TRACKS));
     }
 
     if (num_cols == 0) num_cols = 1;
@@ -76,6 +77,7 @@ pub fn layoutGridChildren(
     // Others auto-place in row-major order.
     var auto_row: u8 = 0;
     var auto_col: u8 = 0;
+    var child_index: u8 = 0; // index into child_area_hashes
 
     var child = index + 1;
     while (child < end) {
@@ -84,62 +86,74 @@ pub fn layoutGridChildren(
             continue;
         }
 
-        // Try named area placement via grid_area_hash stored in block_info
-        // We can't access BlockInfo from here, but we can check the area map.
-        // The grid_area_hash is stored as an offset marker — check box_offsets for a signal.
-        // For now, use auto-placement for all children.
-        // TODO: Read grid_area_hash from a side channel once we wire that through.
-
         var placed_row: u8 = auto_row;
         var placed_col: u8 = auto_col;
-        const span_rows: u8 = 1;
-        const span_cols: u8 = 1;
+        var span_rows: u8 = 1;
+        var span_cols: u8 = 1;
 
-        // Check if this child has a grid-area via the areas map
-        // We'll try matching by child position in DOM order against area entries
-        // For named area placement, we need the child's grid_area_hash.
-        // Since it's stored in BlockInfo but not accessible here, we use auto-placement.
-        // This will be enhanced once we thread grid_area_hash to the subtree.
+        // Try named area placement
+        var named_placement = false;
+        if (child_index < child_count) {
+            const area_hash = child_area_hashes[child_index];
+            if (area_hash != 0) {
+                if (template_areas.findArea(area_hash)) |area| {
+                    placed_row = area.row_start;
+                    placed_col = area.col_start;
+                    span_rows = area.row_end - area.row_start;
+                    span_cols = area.col_end - area.col_start;
+                    named_placement = true;
 
-        // Auto-placement: advance to next empty cell
-        if (auto_row >= num_rows) {
-            // Grid is full, extend with implicit rows
-            if (num_rows < MAX_TRACKS) {
-                num_rows += 1;
-                row_sizes[num_rows - 1] = 0; // auto-sized
-            } else {
-                // Can't place more children, skip
-                child += skips[child];
-                continue;
+                    // Extend grid if named area exceeds explicit dimensions
+                    if (area.row_end > num_rows and area.row_end <= MAX_TRACKS) {
+                        for (num_rows..area.row_end) |r| {
+                            row_sizes[r] = 0;
+                        }
+                        num_rows = area.row_end;
+                    }
+                    if (area.col_end > num_cols and area.col_end <= MAX_TRACKS) {
+                        num_cols = area.col_end;
+                    }
+                }
+            }
+        }
+        child_index +|= 1;
+
+        if (!named_placement) {
+            // Auto-placement: advance to next empty cell
+            if (auto_row >= num_rows) {
+                if (num_rows < MAX_TRACKS) {
+                    num_rows += 1;
+                    row_sizes[num_rows - 1] = 0;
+                } else {
+                    child += skips[child];
+                    continue;
+                }
+            }
+
+            placed_row = auto_row;
+            placed_col = auto_col;
+
+            // Advance auto-placement cursor
+            auto_col += 1;
+            if (auto_col >= num_cols) {
+                auto_col = 0;
+                auto_row += 1;
             }
         }
 
-        placed_row = auto_row;
-        placed_col = auto_col;
-
-        // Advance auto-placement cursor
-        auto_col += 1;
-        if (auto_col >= num_cols) {
-            auto_col = 0;
-            auto_row += 1;
-        }
-
         // --- Phase 5: Size and position the child ---
-        // Calculate position from track sizes + gaps
+        // Calculate x position from track sizes + gaps
         var x: Unit = 0;
         for (0..placed_col) |c| {
             x += col_sizes[c];
-            if (c > 0 or placed_col > 0) x += column_gap;
-        }
-        // Add gap before first column if placed_col > 0
-        if (placed_col > 0) {
-            // x already includes gaps from the loop
+            x += column_gap;
         }
 
+        // Calculate y position from track sizes + gaps
         var y: Unit = 0;
         for (0..placed_row) |r| {
             y += row_sizes[r];
-            if (r > 0 or placed_row > 0) y += row_gap;
+            y += row_gap;
         }
 
         // Calculate cell width (spanning columns)
