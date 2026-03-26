@@ -775,6 +775,14 @@ pub fn flexBasis(ctx: *Context) ?types.FlexBasis {
     }
 }
 
+pub fn flexWrap(ctx: *Context) ?types.FlexWrap {
+    return keyword(ctx, types.FlexWrap, &.{
+        .{ "nowrap", .nowrap },
+        .{ "wrap", .wrap },
+        .{ "wrap-reverse", .wrap_reverse },
+    });
+}
+
 pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     return keyword(ctx, types.BoxSizing, &.{
         .{ "content-box", .content_box },

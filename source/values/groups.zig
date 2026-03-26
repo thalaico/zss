@@ -282,6 +282,7 @@ pub const BoxStyle = struct {
     flex_grow: types.FlexFactor,
     flex_shrink: types.FlexFactor,
     flex_basis: types.FlexBasis,
+    flex_wrap: types.FlexWrap,
     grid_area: types.GridAreaPlacement,
 
     pub const initial_values = BoxStyle{
@@ -297,6 +298,7 @@ pub const BoxStyle = struct {
         .flex_grow = 0.0,
         .flex_shrink = 1.0,
         .flex_basis = .auto,
+        .flex_wrap = .nowrap,
         .grid_area = 0,
     };
 };

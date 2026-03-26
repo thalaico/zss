@@ -152,6 +152,12 @@ pub const FlexBasis = union(enum) {
     percentage: f32,
 };
 
+pub const FlexWrap = enum {
+    nowrap,
+    wrap,
+    wrap_reverse,
+};
+
 // --- CSS Grid types ---
 
 /// Maximum number of explicit grid tracks per dimension.

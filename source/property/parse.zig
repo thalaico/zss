@@ -202,6 +202,13 @@ pub fn flex(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.flex) {
     } };
 }
 
+pub fn @"flex-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-wrap") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.flexWrap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .flex_wrap = .{ .declared = value } } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;

@@ -102,6 +102,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .flex_grow = specified.flex_grow,
         .flex_shrink = specified.flex_shrink,
         .flex_basis = specified.flex_basis,
+        .flex_wrap = specified.flex_wrap,
         .grid_area = specified.grid_area,
     };
 
