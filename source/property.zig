@@ -109,6 +109,7 @@ pub const Property = enum {
     @"grid-area",
     @"column-gap",
     @"row-gap",
+    content,
 
     pub fn affectedFields(comptime property: Property) []const struct { groups.Tag, []const @Type(.enum_literal) } {
         // zig fmt: off
@@ -238,6 +239,7 @@ pub const Property = enum {
             .@"grid-area"              => &.{.{.box_style       , &.{.grid_area}     }},
             .@"column-gap"             => &.{.{.box_style       , &.{.gap}           }},
             .@"row-gap"                => &.{.{.box_style       , &.{.gap}           }},
+            .content                   => &.{.{.generated_content, &.{.content}      }},
         };
         // zig fmt: on
     }

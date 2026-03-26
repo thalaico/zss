@@ -460,3 +460,14 @@ pub const BorderSpacing = @import("../zss.zig").math.Unit;
 
 /// CSS line-height: stored as layout units (4 units = 1px). 0 = normal.
 pub const LineHeight = @import("../zss.zig").math.Unit;
+
+/// CSS content property for generated content (::before/::after).
+/// MVP: normal (no generation), none (suppress), empty_string (clearfix pattern).
+pub const Content = enum {
+    /// Default: no generated content (for real elements)
+    normal,
+    /// Explicitly suppresses generation
+    none,
+    /// content: '' — the clearfix pattern
+    empty_string,
+};

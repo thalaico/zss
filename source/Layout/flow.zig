@@ -194,15 +194,6 @@ pub fn solveAllSizes(
     containing_block_width: ContainingBlockWidth,
     containing_block_height: ?Unit,
 ) BlockUsedSizes {
-    // DEBUG: Log containing block width for debugging
-    const debug_cbw = switch (containing_block_width) {
-        .normal => |cbw| cbw,
-        .stf => -1,
-    };
-    const css_pixels = @divTrunc(debug_cbw, 4);
-    if (debug_cbw > 0 and css_pixels < 2000) {
-        std.log.err("[WIDTH-DEBUG] solveAllSizes: cbw={d} units ({d} CSS px)", .{debug_cbw, css_pixels});
-    }
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     const specified_sizes = BlockComputedSizes{
         .content_width = computer.getSpecifiedValue(.box_gen, .content_width),
@@ -248,12 +239,6 @@ pub fn solveAllSizes(
             // TODO: Do this in adjustWidthAndMargins
             const width_before_clamp = sizes.get(.inline_size).?;
             sizes.inline_size_untagged = solve.clampSize(width_before_clamp, sizes.min_inline_size, sizes.max_inline_size);
-            // DEBUG: Log when width is clamped
-            if (width_before_clamp != sizes.inline_size_untagged and sizes.inline_size_untagged < 2000) {
-                std.log.err("[WIDTH-DEBUG] CLAMPED: {d} -> {d} (min={d}, max={d})", .{width_before_clamp, sizes.inline_size_untagged, sizes.min_inline_size, sizes.max_inline_size});
-            } else if (sizes.inline_size_untagged < 2000) {
-                std.log.err("[WIDTH-DEBUG] Width={d} (min={d}, max={d})", .{sizes.inline_size_untagged, sizes.min_inline_size, sizes.max_inline_size});
-            }
             // CSS2.2§10.4: when max-width constrains an auto width,
             // re-compute auto margins as if width were a fixed value.
             if (was_auto.inline_size) {

@@ -945,3 +945,25 @@ pub fn @"row-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"ro
     if (!ctx.empty()) return null;
     return .{ .box_style = .{ .gap = .{ .declared = value } } };
 }
+
+pub fn content(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.content) {
+    ctx.initDecl(declaration_index);
+    // Try keywords: normal, none
+    if (values.parse.keyword(ctx, enum { normal, none }, &.{
+        .{ "normal", .normal },
+        .{ "none", .none },
+    })) |kw| {
+        if (!ctx.empty()) return null;
+        return .{ .generated_content = .{ .content = .{ .declared = switch (kw) {
+            .normal => .normal,
+            .none => .none,
+        } } } };
+    }
+    // Try string (content: '' or content: 'text')
+    if (values.parse.string(ctx)) |_| {
+        if (!ctx.empty()) return null;
+        // MVP: all string values treated as empty_string for clearfix support
+        return .{ .generated_content = .{ .content = .{ .declared = .empty_string } } };
+    }
+    return null;
+}

@@ -69,10 +69,18 @@ pub const Source = struct {
 /// A structure capable of storing the cascaded values of all CSS properties for every document node.
 pub const Database = struct {
     node_map: std.AutoHashMapUnmanaged(Environment.NodeId, Storage) = .empty,
+    /// Cascaded values for pseudo-elements (::before/::after) keyed by (node, pseudo).
+    pseudo_map: std.AutoHashMapUnmanaged(PseudoKey, Storage) = .empty,
     arena: std.heap.ArenaAllocator.State = .{},
+
+    pub const PseudoKey = struct {
+        node: Environment.NodeId,
+        pseudo: selectors.PseudoElement,
+    };
 
     pub fn deinit(db: *Database, allocator: Allocator) void {
         db.node_map.deinit(allocator);
+        db.pseudo_map.deinit(allocator);
 
         var arena = db.arena.promote(allocator);
         defer db.arena = arena.state;
@@ -87,6 +95,18 @@ pub const Database = struct {
 
     pub fn getStorage(db: *const Database, node: Environment.NodeId) ?*Storage {
         return db.node_map.getPtr(node);
+    }
+
+    pub fn addPseudoStorage(db: *Database, allocator: Allocator, node: Environment.NodeId, pseudo: selectors.PseudoElement) !*Storage {
+        const key = PseudoKey{ .node = node, .pseudo = pseudo };
+        const gop = try db.pseudo_map.getOrPut(allocator, key);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        return gop.value_ptr;
+    }
+
+    pub fn getPseudoStorage(db: *const Database, node: Environment.NodeId, pseudo: selectors.PseudoElement) ?*Storage {
+        const key = PseudoKey{ .node = node, .pseudo = pseudo };
+        return db.pseudo_map.getPtr(key);
     }
 
     /// Stores the cascaded values of all CSS properties for a single document node.
@@ -187,6 +207,8 @@ pub const Database = struct {
 const RunContext = struct {
     arena: std.heap.ArenaAllocator,
     element_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Environment.NodeId, std.ArrayListUnmanaged(BlockImportance)) = .empty,
+    /// Pseudo-element declaration blocks, collected during cascade and applied at the end.
+    pseudo_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Database.PseudoKey, std.ArrayListUnmanaged(BlockImportance)) = .empty,
     cascade_node_stack: zss.Stack([]const *const Node) = .{},
     document_node_stack: zss.Stack(?Environment.NodeId) = .{},
 
@@ -198,6 +220,16 @@ const RunContext = struct {
     fn appendDeclBlock(ctx: *RunContext, node: zss.Environment.NodeId, block: Block, importance: Importance) !void {
         const allocator = ctx.arena.allocator();
         const gop = try ctx.element_to_decl_block_list.getOrPut(allocator, node);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{};
+        }
+        try gop.value_ptr.append(allocator, .{ .block = block, .importance = importance });
+    }
+
+    fn appendPseudoDeclBlock(ctx: *RunContext, node: zss.Environment.NodeId, pseudo: selectors.PseudoElement, block: Block, importance: Importance) !void {
+        const allocator = ctx.arena.allocator();
+        const key = Database.PseudoKey{ .node = node, .pseudo = pseudo };
+        const gop = try ctx.pseudo_to_decl_block_list.getOrPut(allocator, key);
         if (!gop.found_existing) {
             gop.value_ptr.* = .{};
         }
@@ -227,6 +259,17 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
     while (element_iterator.next()) |entry| {
         const node = entry.key_ptr.*;
         const cascaded_values = try env.cascade_db.addStorage(env.allocator, node);
+        cascaded_values.reset();
+        for (entry.value_ptr.*.items) |item| {
+            try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
+        }
+    }
+
+    // Apply pseudo-element cascaded values
+    var pseudo_iterator = ctx.pseudo_to_decl_block_list.iterator();
+    while (pseudo_iterator.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const cascaded_values = try env.cascade_db.addPseudoStorage(env.allocator, key.node, key.pseudo);
         cascaded_values.reset();
         for (entry.value_ptr.*.items) |item| {
             try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
@@ -285,6 +328,10 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
     const allocator = ctx.arena.allocator();
 
     for (selector_list.items(.selector), selector_list.items(.block)) |selector, block| {
+        // Check if this selector targets a pseudo-element (::before/::after).
+        // If so, we match the element part and store in pseudo_map instead of node_map.
+        const pseudo_element = selectors.extractPseudoElement(source.selector_data.items, selector);
+
         assert(ctx.document_node_stack.top == null);
         ctx.document_node_stack.top = env.root_node;
         while (ctx.document_node_stack.top) |*top| {
@@ -300,7 +347,11 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
             if (node.firstChild(env)) |first_child| try ctx.document_node_stack.push(allocator, first_child);
 
             if (zss.selectors.matchElement(source.selector_data.items, selector, env, node)) {
-                try ctx.appendDeclBlock(node, block, importance);
+                if (pseudo_element) |pe| {
+                    try ctx.appendPseudoDeclBlock(node, pe, block, importance);
+                } else {
+                    try ctx.appendDeclBlock(node, block, importance);
+                }
             }
         }
     }

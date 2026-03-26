@@ -541,6 +541,14 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                         .unrecognized, .ignored => {},
                     }
                 }
+            } else {
+                // pseudo == .element or .legacy_element
+                if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoElement)) |pe| {
+                    switch (pe) {
+                        .before, .after => return pe,
+                        .unrecognized => {},
+                    }
+                }
             }
             return unrecognizedPseudo(pseudo, parser, main_component_index);
         },

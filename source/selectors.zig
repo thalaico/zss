@@ -91,7 +91,7 @@ comptime {
 
 pub const Combinator = enum(u8) { descendant, child, next_sibling, subsequent_sibling, column };
 
-pub const PseudoElement = enum { unrecognized }; // TODO: Support more pseudo elements
+pub const PseudoElement = enum { before, after, unrecognized };
 
 pub const PseudoClass = enum { root, link, visited, hover, active, focus, unrecognized, ignored };
 
@@ -132,6 +132,35 @@ test "Specificity.order" {
 
     try ex(Order.lt, order(.{}, .{ .a = 255, .b = 255, .c = 255 }));
 }
+
+/// Extract the pseudo-element (::before/::after) from the rightmost compound selector.
+/// Returns null if no pseudo-element is present or if it's unrecognized.
+pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.ListIndex) ?PseudoElement {
+    const last_trailing = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing].trailing;
+    // Scan the rightmost compound selector for a pseudo-element tag
+    var i = trailing.compound_selector_start;
+    while (i < last_trailing) : (i += 1) {
+        switch (data[i].simple_selector_tag) {
+            .pseudo_element => {
+                i += 1;
+                const pe = data[i].pseudo_element_selector;
+                return switch (pe) {
+                    .before, .after => pe,
+                    .unrecognized => null,
+                };
+            },
+            // Skip over other simple selectors (they have a data payload)
+            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type => { i += 1; },
+            .attribute => {
+                i += 1;
+                if (data[i - 1].simple_selector_tag.attribute != null) i += 1;
+            },
+        }
+    }
+    return null;
+}
+
 
 /// Returns `true` if the complex selector matches `match_candidate`.
 /// Asserts that `match_candidate` is an element node.
@@ -289,6 +318,8 @@ fn matchCompoundSelector(
                 index += 1;
                 const pseudo_element = data[index].pseudo_element_selector;
                 switch (pseudo_element) {
+                    // Skip recognized pseudo-elements — the cascade handles them.
+                    .before, .after => {},
                     .unrecognized => return false,
                 }
             },

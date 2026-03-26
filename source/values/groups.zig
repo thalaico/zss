@@ -30,6 +30,7 @@ pub const Tag = enum {
     color,
     font,
     grid_template,
+    generated_content,
 
     fn Value(comptime tag: Tag) type {
         return switch (tag) {
@@ -49,6 +50,7 @@ pub const Tag = enum {
             .color => Color,
             .font => Font,
             .grid_template => GridTemplate,
+            .generated_content => GeneratedContent,
         };
     }
 
@@ -70,6 +72,7 @@ pub const Tag = enum {
             .background_clip,
             .background,
             .grid_template,
+            .generated_content,
             => .not_inherited,
 
             .color,
@@ -96,6 +99,7 @@ pub const Tag = enum {
             .color,
             .font, // TODO: should probably be multi
             .grid_template,
+            .generated_content,
             => .single,
 
             .background_clip,
@@ -528,5 +532,14 @@ pub const GridTemplate = struct {
         .columns = .{},
         .rows = .{},
         .areas = .{},
+    };
+};
+
+/// content -> content
+pub const GeneratedContent = struct {
+    content: types.Content,
+
+    pub const initial_values = GeneratedContent{
+        .content = .normal,
     };
 };
