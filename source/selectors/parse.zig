@@ -395,6 +395,20 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
             return;
         },
         .token_colon => pseudo_class_selector: {
+            // Peek ahead: if this is :not(), handle it specially to emit negated selector tags.
+            // parsePseudo can't do this because it returns a PseudoClass enum, not selector data.
+            const after_colon_tag, const after_colon_index = parser.next() orelse break :pseudo_class_selector;
+            if (after_colon_tag == .function) {
+                const fn_loc = after_colon_index.location(parser.ast);
+                const is_not = parser.source_code.mapIdentifierValue(fn_loc, bool, &.{.{ "not", true }});
+                if (is_not != null) {
+                    try parseNotFunction(parser, data_list, after_colon_index);
+                    // :not() specificity = specificity of its argument (CSS Selectors Level 3)
+                    return;
+                }
+            }
+            // Not :not() — reset and delegate to parsePseudo for other pseudo-classes
+            parser.sequence.reset(after_colon_index);
             const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
             try data_list.appendSlice(&.{
                 .{ .simple_selector_tag = .pseudo_class },
@@ -491,6 +505,57 @@ fn parseAttributeSelector(parser: *Parser, data_list: DataListManaged, block_ind
         .{ .attribute_selector = attribute_selector },
         .{ .attribute_selector_value = attribute_value },
     });
+}
+
+/// Parse the argument of :not() and emit the corresponding negated selector tag.
+/// CSS Selectors Level 3: :not() accepts a single simple selector (type, id, class, or pseudo-class).
+/// We emit not_class, not_id, or not_type tags that the matcher already understands.
+fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index) !void {
+    const saved_sequence = parser.sequence;
+    defer parser.sequence = saved_sequence;
+    parser.sequence = function_index.children(parser.ast);
+
+    _ = parser.skipSpaces();
+    const arg_tag, const arg_index = parser.next() orelse return;
+
+    switch (arg_tag) {
+        // :not(.class)
+        .token_delim => {
+            if (arg_index.extra(parser.ast).codepoint != '.') return;
+            const class_name_index = parser.accept(.token_ident) orelse return;
+            const name = try parser.env.addClassName(class_name_index.location(parser.ast), parser.source_code);
+            try data_list.appendSlice(&.{
+                .{ .simple_selector_tag = .not_class },
+                .{ .class_selector = name },
+            });
+            parser.addSpecificity(.class);
+        },
+        // :not(#id)
+        .token_hash_id => {
+            const name = try parser.env.addIdName(arg_index.location(parser.ast), parser.source_code);
+            try data_list.appendSlice(&.{
+                .{ .simple_selector_tag = .not_id },
+                .{ .id_selector = name },
+            });
+            parser.addSpecificity(.id);
+        },
+        // :not(type) — e.g., :not(div), :not(span)
+        .token_ident => {
+            const type_name = try parser.env.addTypeName(arg_index.location(parser.ast), parser.source_code);
+            const element_type: Environment.ElementType = .{
+                .namespace = parser.default_namespace,
+                .name = type_name,
+            };
+            try data_list.appendSlice(&.{
+                .{ .simple_selector_tag = .not_type },
+                .{ .type_selector = element_type },
+            });
+            parser.addSpecificity(.type);
+        },
+        // Unsupported :not() argument (compound selectors, attribute selectors, etc.)
+        // Treat as ignored — the selector still participates in the cascade.
+        else => return,
+    }
 }
 
 fn parsePseudoElementSelector(parser: *Parser, data_list: DataListManaged) !?void {
