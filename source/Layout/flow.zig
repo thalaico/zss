@@ -85,7 +85,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             // during layout (getTextFont uses InheritedValue from box_gen stage).
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
             // Resolve font-size em → px using parent's computed font-size.
-            font_specified.font_size = resolveFontSizeEm(computer, font_specified.font_size);
+            font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
             computer.setComputedValue(.box_gen, .font, font_specified);
             computer.commitNode(.box_gen);
 
@@ -295,27 +295,6 @@ fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32) BlockComputedSizes {
         },
     };
 }
-
-/// Resolve font-size em against parent's computed font-size.
-/// For px values, returns as-is. For em, multiplies by parent's font-size.
-fn resolveFontSizeEm(computer: *const StyleComputer, font_size: zss.values.types.FontSize) zss.values.types.FontSize {
-    return switch (font_size) {
-        .px => font_size,
-        .em => |em_val| .{ .px = em_val * getParentFontSizePx(computer) },
-    };
-}
-
-fn getParentFontSizePx(computer: *const StyleComputer) f32 {
-    const parent = computer.current.node.parent(computer.env) orelse return 16.0;
-    const current_stage = &computer.stage.box_gen;
-    if (current_stage.map.get(parent)) |parent_computed| {
-        if (parent_computed.font) |font| {
-            return font.font_size.px_val();
-        }
-    }
-    return 16.0; // fallback to initial font-size
-}
-
 pub fn solveAllSizes(
     computer: *StyleComputer,
     position: BoxTree.BoxStyle.Position,
@@ -324,8 +303,7 @@ pub fn solveAllSizes(
 ) BlockUsedSizes {
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     // Get element's computed font-size for em resolution.
-    const font = computer.getSpecifiedValue(.box_gen, .font);
-    const font_size_px = font.font_size.px_val();
+    const font_size_px = computer.resolvedFontSizePx(.box_gen);
 
     // Resolve em values in specified sizes using element's computed font-size.
     const specified_sizes = resolveBlockEm(BlockComputedSizes{

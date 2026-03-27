@@ -149,6 +149,27 @@ pub fn getTextFont(sc: StyleComputer, comptime stage: Stage) ComputedValues(.fon
     return inherited_value.get(sc, stage);
 }
 
+
+/// Get the current element's resolved font-size in px.
+/// Resolves em values against the parent's computed font-size.
+pub fn resolvedFontSizePx(sc: StyleComputer, comptime stage: Stage) f32 {
+    const font = sc.getSpecifiedValue(stage, .font);
+    return switch (font.font_size) {
+        .px => |v| v,
+        .em => |em_val| blk: {
+            const parent = sc.current.node.parent(sc.env) orelse break :blk em_val * 16.0;
+            const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(parent) orelse &.{};
+            const parent_font = sc.getSpecifiedValueForElement(stage, .font, parent, cascaded_values);
+            const parent_fs: f32 = switch (parent_font.font_size) {
+                .px => |v| v,
+                // Recursive case: parent also uses em. In practice, nesting >1 level is rare.
+                .em => |pem| pem * 16.0,
+            };
+            break :blk em_val * parent_fs;
+        },
+    };
+}
+
 pub fn setComputedValue(sc: *StyleComputer, comptime stage: Stage, comptime group: groups.Tag, value: ComputedValues(group)) void {
     const current_stage = &@field(sc.stage, @tagName(stage));
     const field = &@field(current_stage.current_computed, @tagName(group));

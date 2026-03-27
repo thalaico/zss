@@ -167,7 +167,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
 
     // Propagate text properties to IFCs
     const font_family = specified.font.font_family;
-    const font_size_px: f32 = specified.font.font_size.px_val();
+    const font_size_px: f32 = layout.computer.resolvedFontSizePx(.cosmetic);
     const font_weight = specified.font.font_weight;
     const text_decoration = specified.font.text_decoration;
     const text_align = specified.font.text_align;
