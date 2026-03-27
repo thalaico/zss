@@ -462,12 +462,16 @@ pub const BorderSpacing = @import("../zss.zig").math.Unit;
 pub const LineHeight = @import("../zss.zig").math.Unit;
 
 /// CSS content property for generated content (::before/::after).
-/// MVP: normal (no generation), none (suppress), empty_string (clearfix pattern).
-pub const Content = enum {
+/// Drives box generation in insertPseudoElement: .normal/.none suppress generation,
+/// .empty_string creates a leaf block (clearfix), .string creates an IFC with shaped text.
+pub const Content = union(enum) {
     /// Default: no generated content (for real elements)
     normal,
     /// Explicitly suppresses generation
     none,
-    /// content: '' — the clearfix pattern
+    /// content: '' — the clearfix pattern (empty block, typically with clear:both)
     empty_string,
+    /// content: 'text' — generates an inline formatting context with shaped text.
+    /// TextId indexes into Environment.texts; resolved at layout time via env.getText().
+    string: @import("../zss.zig").Environment.TextId,
 };

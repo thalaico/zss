@@ -946,7 +946,7 @@ pub fn @"row-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"ro
     return .{ .box_style = .{ .gap = .{ .declared = value } } };
 }
 
-pub fn content(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.content) {
+pub fn content(ctx: *Context, declaration_index: Ast.Index, env: *@import("../zss.zig").Environment) !?ReturnType(.content) {
     ctx.initDecl(declaration_index);
     // Try keywords: normal, none
     if (values.parse.keyword(ctx, enum { normal, none }, &.{
@@ -960,10 +960,14 @@ pub fn content(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.content
         } } } };
     }
     // Try string (content: '' or content: 'text')
-    if (values.parse.string(ctx)) |_| {
+    if (values.parse.string(ctx)) |loc| {
         if (!ctx.empty()) return null;
-        // MVP: all string values treated as empty_string for clearfix support
-        return .{ .generated_content = .{ .content = .{ .declared = .empty_string } } };
+        const text_id = try env.addTextFromStringToken(loc, ctx.source_code);
+        // addTextFromStringToken returns TextId.empty_string (sentinel 0) for ''
+        if (text_id == @import("../zss.zig").Environment.TextId.empty_string) {
+            return .{ .generated_content = .{ .content = .{ .declared = .empty_string } } };
+        }
+        return .{ .generated_content = .{ .content = .{ .declared = .{ .string = text_id } } } };
     }
     return null;
 }

@@ -40,6 +40,54 @@ pub const Result = struct {
     min_width: Unit,
 };
 
+/// Create an IFC with shaped text for a pseudo-element's content property.
+/// Handles the full lifecycle: beginMode -> shape text -> endMode.
+/// Caller must push .@"inline" onto box_gen.stacks.mode before calling,
+/// and pop it after this returns.
+pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: FontProps) !Result {
+    const layout = box_gen.getLayout();
+
+    // Create IFC with root inline box
+    try beginMode(box_gen, .normal, box_gen.containingBlockSize());
+
+    const ifc = box_gen.inline_context.ifc.top.?.ptr;
+
+    // Configure font for the IFC from the pseudo-element's inherited font cascade
+    const handle: Fonts.Handle = switch (font_props.font) {
+        .default => layout.inputs.fonts.queryFamily(font_props.font_family),
+        .none => .invalid,
+    };
+    box_gen.inline_context.setFont(handle);
+    ifc.font_family = font_props.font_family;
+    ifc.font_size = font_props.font_size;
+
+    // Shape text with HarfBuzz
+    layout.inputs.fonts.setFontSize(handle, font_props.font_size);
+    if (layout.inputs.fonts.get(handle)) |hb_font| {
+        const glyph_start: u32 = @intCast(ifc.glyphs.len);
+        try ifcAddText(layout.box_tree, ifc, text, hb_font);
+        const glyph_end: u32 = @intCast(ifc.glyphs.len);
+        if (glyph_end > glyph_start) {
+            try ifc.font_runs.append(layout.allocator, .{
+                .glyph_start = glyph_start,
+                .glyph_end = glyph_end,
+                .font_weight = font_props.font_weight,
+                .font_size = font_props.font_size,
+            });
+        }
+    }
+
+    // Solve metrics, split into line boxes, finalize IFC
+    return try endMode(box_gen);
+}
+
+pub const FontProps = struct {
+    font: zss.values.types.Font,
+    font_family: zss.values.types.FontFamily,
+    font_size: zss.values.types.FontSize,
+    font_weight: zss.values.types.FontWeight,
+};
+
 pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: ContainingBlockSize) !void {
     assert(containing_block_size.width >= 0);
     if (containing_block_size.height) |h| assert(h >= 0);

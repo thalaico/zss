@@ -191,8 +191,8 @@ fn popBlock(box_gen: *BoxGen) ?void {
 }
 
 /// Create a virtual block box for a ::before or ::after pseudo-element.
-/// The box is a leaf (no children) with properties from the pseudo-element's
-/// cascaded styles. Primary use case: clearfix (content: ''; display: block; clear: both).
+/// For empty content (clearfix): creates a leaf block box.
+/// For string content: creates a block box containing an IFC with shaped text.
 fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
@@ -212,7 +212,16 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
     const containing_block_size = box_gen.containingBlockSize();
     const sizes = solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
 
-    // Create a leaf block box: push, set properties, pop immediately.
+    // Resolve content text (if any) before creating the box.
+    const content_text: ?[]const u8 = switch (gen_content.content) {
+        .string => |text_id| blk: {
+            const t = layout.inputs.env.getText(text_id);
+            break :blk if (t.len > 0) t else null;
+        },
+        else => null,
+    };
+
+    // Create a block box for the pseudo-element.
     box_gen.bfc_stack.top.? += 1;
     const box_style = BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
     _ = try box_gen.pushFlowBlock(box_style, sizes, .normal, .none, node);
@@ -222,7 +231,19 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
         info.clear_side = clear;
     }
 
-    // Finalize immediately — pseudo-element has no children.
+    if (content_text) |text| {
+        // String content: create an IFC with shaped text inside the block.
+        const font = computer.getSpecifiedValue(.box_gen, .font);
+        try box_gen.stacks.mode.push(layout.allocator, .@"inline");
+        _ = try @"inline".addPseudoElementText(box_gen, text, .{
+            .font = font.font,
+            .font_family = font.font_family,
+            .font_size = font.font_size,
+            .font_weight = font.font_weight,
+        });
+        assert(box_gen.stacks.mode.pop() == .@"inline");
+    }
+
     box_gen.popFlowBlock(.normal);
     box_gen.bfc_stack.top.? -= 1;
 }

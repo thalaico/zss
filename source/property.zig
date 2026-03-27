@@ -375,6 +375,7 @@ fn parseDeclaration(
                     fba.reset();
                     break :blk try parse_fn(ctx, declaration_index, fba, urls);
                 },
+                struct { *ValueContext, Ast.Index, *Environment } => try parse_fn(ctx, declaration_index, env),
                 else => |T| @compileError(@typeName(T) ++ " is not a supported argument list for a property parser"),
             };
 
