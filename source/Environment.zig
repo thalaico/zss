@@ -40,6 +40,7 @@ node_properties: NodeProperties,
 ids_to_nodes: std.AutoHashMapUnmanaged(IdName, NodeId),
 
 nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
+nodes_to_attributes: std.AutoHashMapUnmanaged(NodeId, []const NodeAttribute) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
@@ -495,6 +496,13 @@ pub const ElementAttribute = packed struct {
     name: AttributeName,
 };
 
+/// A DOM node's attribute: interned name paired with interned value.
+/// Used for CSS attribute selector matching ([attr], [attr=val], etc.).
+pub const NodeAttribute = struct {
+    name: AttributeName,
+    value: AttributeValue,
+};
+
 pub const NodeProperty = struct {
     category: NodeCategory = .text,
     type: ElementType = .{ .namespace = .none, .name = .anonymous },
@@ -595,6 +603,53 @@ pub fn addIdNameFromString(env: *Environment, string: []const u8) !IdName {
         inline else => |case| try env.id_names.addFromString(case, env.allocator, string),
     };
     return @enumFromInt(index);
+}
+
+/// Intern an attribute name from a raw UTF-8 string (e.g. from a DOM attribute name).
+pub fn addAttributeNameFromString(env: *Environment, string: []const u8) !AttributeName {
+    const index = switch (env.case_options.type_names) {
+        inline else => |case| try env.attribute_names.addFromString(case, env.allocator, string),
+    };
+    return @enumFromInt(index);
+}
+
+/// Intern an attribute value from a raw UTF-8 string.
+/// Uses sensitive interning; the case-insensitive variant is populated automatically.
+pub fn addAttributeValueFromString(env: *Environment, string: []const u8) !AttributeValue {
+    switch (env.case_options.attribute_values) {
+        .insensitive => {
+            const index = try env.attribute_values_insensitive.addFromString(.insensitive, env.allocator, string);
+            return @enumFromInt(index);
+        },
+        .sensitive => {
+            const index = try env.attribute_values_sensitive.addFromString(.sensitive, env.allocator, string);
+            if (index == env.attribute_values_sensitive_to_insensitive.items.len) {
+                const index_insensitive = try env.attribute_values_insensitive.addFromString(.insensitive, env.allocator, string);
+                try env.attribute_values_sensitive_to_insensitive.append(env.allocator, index_insensitive);
+            }
+            return @enumFromInt(index);
+        },
+    }
+}
+
+/// Store the attributes associated with a DOM node.
+/// The caller must pass an allocator-owned slice; ownership transfers to the Environment.
+pub fn registerAttributes(env: *Environment, node: NodeId, attrs: []const NodeAttribute) !void {
+    try env.nodes_to_attributes.put(env.allocator, node, attrs);
+}
+
+/// Return the value of a named attribute on a node, or null if the attribute is absent.
+pub fn nodeGetAttributeValue(env: *const Environment, node: NodeId, name: AttributeName) ?AttributeValue {
+    const attrs = env.nodes_to_attributes.get(node) orelse return null;
+    for (attrs) |attr| {
+        if (attr.name == name) return attr.value;
+    }
+    return null;
+}
+
+/// Return true if the node has an attribute with the given name (any value).
+pub fn nodeHasAttribute(env: *const Environment, node: NodeId, name: AttributeName) bool {
+    return env.nodeGetAttributeValue(node, name) != null;
 }
 
 pub const Testing = struct {

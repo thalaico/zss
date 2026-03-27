@@ -1,6 +1,7 @@
 const zss = @import("zss.zig");
 const Ast = zss.syntax.Ast;
 const Stylesheet = zss.Stylesheet;
+const Utf8StringInterner = zss.Utf8StringInterner;
 
 const Environment = zss.Environment;
 const AttributeName = Environment.AttributeName;
@@ -270,9 +271,29 @@ fn matchCompoundSelector(
                 const class_name = data[index].class_selector;
                 if (!env.nodeHasClass(element, class_name)) return false;
             },
-            .attribute => {
-                // Skip attribute selectors for now (not implemented)
-                return false;
+            .attribute => |op_case| {
+                index += 1;
+                const attr_selector = data[index].attribute_selector;
+                if (op_case) |oc| {
+                    // [attr<op>val] — attribute must exist and value must match operator
+                    index += 1;
+                    const selector_value = data[index].attribute_selector_value;
+                    const node_value = env.nodeGetAttributeValue(element, attr_selector.name) orelse return false;
+                    const case = switch (oc.case) {
+                        .default, .same_case => Utf8StringInterner.Case.sensitive,
+                        .ignore_case => Utf8StringInterner.Case.insensitive,
+                    };
+                    switch (oc.operator) {
+                        .equals => {
+                            if (!env.eqlAttributeValues(case, node_value, selector_value)) return false;
+                        },
+                        // TODO: implement substring attribute operators (list_contains, starts_with, etc.)
+                        .list_contains, .equals_or_prefix_dash, .starts_with, .ends_with, .contains => return false,
+                    }
+                } else {
+                    // [attr] — attribute just needs to exist
+                    if (!env.nodeHasAttribute(element, attr_selector.name)) return false;
+                }
             },
             .not_class => {
                 index += 1;
