@@ -928,7 +928,6 @@ pub fn offsetChildBlocksFlex(
 
     const container_main = if (flex_is_column) (container_height orelse 0) else container_width;
     const container_cross = if (flex_is_column) container_width else (container_height orelse 0);
-    _ = container_cross;
     const wrapping = flex_wrap != .nowrap;
 
     // --- Phase 1: IFC content measurement (row containers only) ---
@@ -1003,6 +1002,15 @@ pub fn offsetChildBlocksFlex(
         }
         line_cross_sizes[line_idx] = max_cross;
         total_cross += max_cross;
+    }
+
+    // CSS Flexbox §9.4: If the flex container is single-line and has a
+    // definite cross size, the flex line's cross size equals the container's
+    // inner cross size (so that align-items:center works against the full
+    // container height, not just the tallest child).
+    if (num_lines == 1 and container_cross > 0) {
+        line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
+        total_cross = line_cross_sizes[0];
     }
     if (num_lines > 1) total_cross += flex_gap * @as(Unit, @intCast(num_lines - 1));
 

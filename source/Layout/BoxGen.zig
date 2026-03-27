@@ -120,11 +120,8 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
     
     if (absolute_blocks.len == 0) return;
     
-    std.log.info("[layoutAbsoluteBlocks] Processing {d} absolutely positioned elements", .{absolute_blocks.len});
     
     const layout = box_gen.getLayout();
-    const allocator = layout.allocator;
-    _ = allocator;
     
     for (absolute_blocks) |block| {
         // Find the containing block for this absolute element
@@ -133,11 +130,6 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             continue;
         };
         
-        std.log.info("[layoutAbsoluteBlocks] Laying out absolute element (node={any}, containing_block_ref=subtree:{d} index:{d})", .{
-            block.node,
-            @intFromEnum(containing_block_ref.subtree),
-            containing_block_ref.index,
-        });
         
         // Get containing block size
         const containing_subtree = layout.box_tree.ptr.getSubtree(containing_block_ref.subtree);
@@ -145,10 +137,6 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         const containing_box_offsets = containing_slice.items(.box_offsets)[containing_block_ref.index];
         const containing_block_size = containing_box_offsets.border_size;
         
-        std.log.info("[layoutAbsoluteBlocks] Containing block size: {d}x{d}", .{
-            containing_block_size.w,
-            containing_block_size.h,
-        });
         
         // Get element's computed styles and compute sizes
         try layout.computer.setCurrentNode(.box_gen, block.node);
@@ -167,24 +155,8 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         const width = sizes.get(.inline_size) orelse containing_block_width;
         const height = sizes.get(.block_size) orelse containing_block_height;
         
-        // Get position from insets
-        const left = sizes.get(.inset_inline_start);
-        const top = sizes.get(.inset_block_start);
-        
-        const x = switch (left) {
-            .value => |v| v,
-            .auto => 0, // Simplified: should use static position
-            .percentage => |p| @as(math.Unit, @intFromFloat(@as(f32, @floatFromInt(containing_block_width)) * p / 100.0)),
-        };
-        
-        const y = switch (top) {
-            .value => |v| v,
-            .auto => 0, // Simplified: should use static position
-            .percentage => |p| @as(math.Unit, @intFromFloat(@as(f32, @floatFromInt(containing_block_height)) * p / 100.0)),
-        };
-        
-        std.log.info("[layoutAbsoluteBlocks] Computed: width={d}, height={d}, x={d}, y={d}", .{ width, height, x, y });
-        
+        // Position (left/top) is resolved by the cosmetic pass into insets.
+        // We don't compute it here to avoid double-counting.
         // Create block box at the computed position and size
         // We can't use newBlock() because it requires stacks to be set up
         // Instead, manually create the block in the containing block's subtree (reuse from earlier)
@@ -194,8 +166,9 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // Re-get the slice since appendBlockBox might have reallocated
         const blocks = containing_subtree.blocks.slice();
         
-        // Set the position (relative to containing block)
-        blocks.items(.offset)[index] = .{ .x = x, .y = y };
+        // Offset is zero: the cosmetic pass writes CSS left/top into insets,
+        // and the renderer sums offset + insets. Setting both would double-count.
+        blocks.items(.offset)[index] = .{ .x = 0, .y = 0 };
         
         // Set the size
         blocks.items(.box_offsets)[index] = .{
@@ -245,26 +218,10 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
         
-        // NOTE: We do NOT update skip fields for absolute positioned blocks
-        // Absolute blocks are added at the end of the blocks array, outside the
-        // normal skip-based tree structure. They are positioned relative to their
-        // containing block, but they are not part of its children in the tree sense.
-        // 
-        // Skip-based traversal is used by cosmetic layout and rendering. Since
-        // absolute blocks are out-of-flow, they should be handled separately.
-        // 
-        // TODO: Implement separate traversal for absolute positioned blocks
-        // For now, they will not be visited by cosmetic layout (no backgrounds/borders)
-        // but they will still be positioned correctly.
-        
-        std.log.info("[layoutAbsoluteBlocks] Created block ref=subtree:{d} index:{d} at ({d},{d}) size {d}x{d}", .{
-            @intFromEnum(ref.subtree),
-            ref.index,
-            x,
-            y,
-            width,
-            height,
-        });
+        // Absolute blocks are appended at the end of the blocks array,
+        // outside the skip-based tree. They are not part of the normal
+        // child traversal. The cosmetic pass finds them via node_to_generated_box
+        // (DOM node traversal), so they DO get backgrounds/borders/insets.
     }
 }
 
