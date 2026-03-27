@@ -359,9 +359,9 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
     const unit = unit_index.extra(ctx.ast).unit orelse return null;
     return switch (unit) {
         .px => .{ .px = number },
-        // em resolves against the element's computed font-size;
-        // rem resolves against the root element's font-size (initial 16px).
-        .em => .{ .px = number * ctx.font_size_px },
+        // em resolves against the element's computed font-size at layout time
+        // (for types that support deferred em; others convert eagerly).
+        .em => if (@hasField(Type, "em")) .{ .em = number } else .{ .px = number * ctx.font_size_px },
         .rem => .{ .px = number * 16.0 },
         // 1pt = 1/72 inch = 96/72 px = 1.333px
         .pt => .{ .px = number * (96.0 / 72.0) },
@@ -820,17 +820,17 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
             const number = index.extra(ctx.ast).number orelse break :blk null;
             const unit = unit_index.extra(ctx.ast).unit orelse break :blk null;
             break :blk switch (unit) {
-                .px => number,
-                .em => number * ctx.font_size_px,
-                .rem => number * 16.0,
-                .pt => number * (96.0 / 72.0),
-                .vw => number * ctx.viewport_width_px / 100.0,
-                .vh => number * ctx.viewport_height_px / 100.0,
+                .px => .{ .px = number },
+                .em => .{ .em = number },
+                .rem => .{ .px = number * 16.0 },
+                .pt => .{ .px = number * (96.0 / 72.0) },
+                .vw => .{ .px = number * ctx.viewport_width_px / 100.0 },
+                .vh => .{ .px = number * ctx.viewport_height_px / 100.0 },
             };
         },
         .token_integer => blk: {
             const number = item.index.extra(ctx.ast).number orelse break :blk null;
-            if (number == 0) break :blk @as(types.FontSize, 0);
+            if (number == 0) break :blk .{ .px = @as(f32, 0) };
             break :blk null;
         },
         else => null,

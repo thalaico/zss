@@ -261,8 +261,19 @@ fn specifiedToComputed(comptime group: groups.Tag, specified: SpecifiedValues(gr
             return computed_value;
         },
         .font => {
-            // TODO: This is not the correct computed value for fonts.
-            return specified;
+            // Resolve font-size em against parent's computed font-size.
+            var result = specified;
+            result.font_size = switch (specified.font_size) {
+                .px => specified.font_size,
+                .em => |em_val| blk: {
+                    const parent_font_size = if (node.parent(sc.env)) |parent| pfz: {
+                        var inherited = InheritedValue(.font){ .node = parent };
+                        break :pfz inherited.get(sc, .box_gen).font_size.px_val();
+                    } else 16.0; // root: initial font-size
+                    break :blk .{ .px = em_val * parent_font_size };
+                },
+            };
+            return result;
         },
         .color => {
             return .{

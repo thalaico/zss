@@ -59,10 +59,10 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
     };
     box_gen.inline_context.setFont(handle);
     ifc.font_family = font_props.font_family;
-    ifc.font_size = font_props.font_size;
+    ifc.font_size = font_props.font_size.px_val();
 
     // Shape text with HarfBuzz
-    layout.inputs.fonts.setFontSize(handle, font_props.font_size);
+    layout.inputs.fonts.setFontSize(handle, font_props.font_size.px_val());
     if (layout.inputs.fonts.get(handle)) |hb_font| {
         const glyph_start: u32 = @intCast(ifc.glyphs.len);
         try ifcAddText(layout.box_tree, ifc, text, hb_font);
@@ -72,7 +72,7 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
                 .glyph_start = glyph_start,
                 .glyph_end = glyph_end,
                 .font_weight = font_props.font_weight,
-                .font_size = font_props.font_size,
+                .font_size = font_props.font_size.px_val(),
             });
         }
     }
@@ -209,10 +209,10 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // Later text nodes (e.g. comhead at 8pt) must not overwrite this —
             // ifc.font_size is used for line-height and as the default rendering size.
             if (ifc.ptr.font_runs.items.len == 0) {
-                ifc.ptr.font_size = font.font_size;
+                ifc.ptr.font_size = font.font_size.px_val();
             }
             // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
-            layout.inputs.fonts.setFontSize(handle, font.font_size);
+            layout.inputs.fonts.setFontSize(handle, font.font_size.px_val());
             if (layout.inputs.fonts.get(handle)) |hb_font| {
                 // Record glyph range for this text node's font run.
                 const glyph_start: u32 = @intCast(ifc.ptr.glyphs.len);
@@ -224,7 +224,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     const runs = &ifc.ptr.font_runs;
                     if (runs.items.len > 0 and
                         runs.items[runs.items.len - 1].font_weight == font.font_weight and
-                        runs.items[runs.items.len - 1].font_size == font.font_size and
+                        runs.items[runs.items.len - 1].font_size == font.font_size.px_val() and
                         runs.items[runs.items.len - 1].glyph_end == glyph_start)
                     {
                         runs.items[runs.items.len - 1].glyph_end = glyph_end;
@@ -233,7 +233,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             .glyph_start = glyph_start,
                             .glyph_end = glyph_end,
                             .font_weight = font.font_weight,
-                            .font_size = font.font_size,
+                            .font_size = font.font_size.px_val(),
                         });
                     }
                 }
@@ -517,6 +517,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.margin_left = .auto;
             used.margin_inline_start = 0;
         },
+        .em => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.left);
@@ -542,6 +543,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.padding_left = .{ .percentage = value };
             used.padding_inline_start = solve.positivePercentage(value, percentage_base_unit);
         },
+        .em => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
         .px => |value| {
@@ -556,6 +558,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.margin_right = .auto;
             used.margin_inline_end = 0;
         },
+        .em => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.right);
@@ -581,6 +584,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.padding_right = .{ .percentage = value };
             used.padding_inline_end = solve.positivePercentage(value, percentage_base_unit);
         },
+        .em => unreachable,
     }
 
     {
@@ -607,6 +611,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.vertical_edges.padding_top = .{ .percentage = value };
             used.padding_block_start = solve.positivePercentage(value, percentage_base_unit);
         },
+        .em => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.bottom);
@@ -632,6 +637,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.vertical_edges.padding_bottom = .{ .percentage = value };
             used.padding_block_end = solve.positivePercentage(value, percentage_base_unit);
         },
+        .em => unreachable,
     }
 
     computed.vertical_edges.margin_top = specified.vertical_edges.margin_top;
@@ -706,6 +712,7 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.padding_left = .{ .percentage = value };
             used.padding_inline_start = solve.positivePercentage(value, containing_block_size.width);
         },
+        .em => unreachable,
     }
     switch (specified.horizontal_edges.padding_right) {
         .px => |value| {
@@ -716,6 +723,7 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.padding_right = .{ .percentage = value };
             used.padding_inline_end = solve.positivePercentage(value, containing_block_size.width);
         },
+        .em => unreachable,
     }
     switch (specified.horizontal_edges.margin_left) {
         .px => |value| {
@@ -730,6 +738,7 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.margin_left = .auto;
             used.setValue(.margin_inline_start, 0);
         },
+        .em => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
         .px => |value| {
@@ -744,6 +753,7 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.margin_right = .auto;
             used.setValue(.margin_inline_end, 0);
         },
+        .em => unreachable,
     }
     switch (specified.content_width.min_width) {
         .px => |value| {
@@ -754,6 +764,7 @@ fn inlineBlockSolveSizes(
             computed.content_width.min_width = .{ .percentage = value };
             used.min_inline_size = solve.positivePercentage(value, containing_block_size.width);
         },
+        .em => unreachable,
     }
     switch (specified.content_width.max_width) {
         .px => |value| {
@@ -768,6 +779,7 @@ fn inlineBlockSolveSizes(
             computed.content_width.max_width = .none;
             used.max_inline_size = std.math.maxInt(Unit);
         },
+        .em => unreachable,
     }
 
     switch (specified.content_width.width) {
@@ -783,6 +795,7 @@ fn inlineBlockSolveSizes(
             computed.content_width.width = .auto;
             used.setAuto(.inline_size);
         },
+        .em => unreachable,
     }
 
     {
@@ -824,6 +837,7 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.padding_top = .{ .percentage = value };
             used.padding_block_start = solve.positivePercentage(value, containing_block_size.width);
         },
+        .em => unreachable,
     }
     switch (specified.vertical_edges.padding_bottom) {
         .px => |value| {
@@ -834,6 +848,7 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.padding_bottom = .{ .percentage = value };
             used.padding_block_end = solve.positivePercentage(value, containing_block_size.width);
         },
+        .em => unreachable,
     }
     switch (specified.vertical_edges.margin_top) {
         .px => |value| {
@@ -848,6 +863,7 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.margin_top = .auto;
             used.margin_block_start = 0;
         },
+        .em => unreachable,
     }
     switch (specified.vertical_edges.margin_bottom) {
         .px => |value| {
@@ -862,6 +878,7 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.margin_bottom = .auto;
             used.margin_block_end = 0;
         },
+        .em => unreachable,
     }
     switch (specified.content_height.min_height) {
         .px => |value| {
@@ -875,6 +892,7 @@ fn inlineBlockSolveSizes(
             else
                 0;
         },
+        .em => unreachable,
     }
     switch (specified.content_height.max_height) {
         .px => |value| {
@@ -892,6 +910,7 @@ fn inlineBlockSolveSizes(
             computed.content_height.max_height = .none;
             used.max_block_size = std.math.maxInt(Unit);
         },
+        .em => unreachable,
     }
     switch (specified.content_height.height) {
         .px => |value| {
@@ -909,6 +928,7 @@ fn inlineBlockSolveSizes(
             computed.content_height.height = .auto;
             used.setAuto(.block_size);
         },
+        .em => unreachable,
     }
 
     computed.insets = solve.insets(specified.insets);

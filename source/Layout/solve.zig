@@ -214,6 +214,7 @@ pub fn insets(specified: SpecifiedValues(.insets)) ComputedValues(.insets) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
+            .em => unreachable,
         };
     }
     return computed;

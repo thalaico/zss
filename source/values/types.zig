@@ -285,8 +285,18 @@ pub const Clear = enum {
 
 pub const LengthPercentageAuto = union(enum) {
     px: f32,
+    em: f32,
     percentage: f32,
     auto,
+
+    /// Resolve em to px using the element's computed font-size.
+    /// After resolution, .em is unreachable.
+    pub fn resolveEm(self: LengthPercentageAuto, font_size_px: f32) LengthPercentageAuto {
+        return switch (self) {
+            .em => |v| .{ .px = v * font_size_px },
+            else => self,
+        };
+    }
 };
 
 pub const Size = LengthPercentageAuto;
@@ -295,7 +305,15 @@ pub const Inset = LengthPercentageAuto;
 
 pub const LengthPercentage = union(enum) {
     px: f32,
+    em: f32,
     percentage: f32,
+
+    pub fn resolveEm(self: LengthPercentage, font_size_px: f32) LengthPercentage {
+        return switch (self) {
+            .em => |v| .{ .px = v * font_size_px },
+            else => self,
+        };
+    }
 };
 
 pub const MinSize = LengthPercentage;
@@ -303,8 +321,16 @@ pub const Padding = LengthPercentage;
 
 pub const MaxSize = union(enum) {
     px: f32,
+    em: f32,
     percentage: f32,
     none,
+
+    pub fn resolveEm(self: MaxSize, font_size_px: f32) MaxSize {
+        return switch (self) {
+            .em => |v| .{ .px = v * font_size_px },
+            else => self,
+        };
+    }
 };
 
 pub const BorderWidth = union(enum) {
@@ -414,8 +440,27 @@ pub const Font = enum {
 pub const Opacity = f32;
 
 
-/// Computed font-size in px (after unit conversion).
-pub const FontSize = f32;
+/// Font-size value: px (absolute) or em (relative to parent's font-size).
+pub const FontSize = union(enum) {
+    px: f32,
+    em: f32,
+
+    /// Resolve em against parent's computed font-size. Returns px.
+    pub fn resolve(self: FontSize, parent_font_size_px: f32) f32 {
+        return switch (self) {
+            .px => |v| v,
+            .em => |v| v * parent_font_size_px,
+        };
+    }
+
+    /// Extract px value. Panics if still em (must be resolved first).
+    pub fn px_val(self: FontSize) f32 {
+        return switch (self) {
+            .px => |v| v,
+            .em => unreachable,
+        };
+    }
+};
 
 pub const FontWeight = enum {
     normal,

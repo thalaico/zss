@@ -260,7 +260,7 @@ pub const Font = struct {
     pub const initial_values = Font{
         .font = .default,
         .font_family = .sans_serif,
-        .font_size = 16.0, // 16px default
+        .font_size = .{ .px = 16.0 }, // 16px default
         .font_weight = .normal,
         .text_decoration = .none,
         .text_align = .left,

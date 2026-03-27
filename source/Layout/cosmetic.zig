@@ -167,7 +167,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
 
     // Propagate text properties to IFCs
     const font_family = specified.font.font_family;
-    const font_size_px: f32 = specified.font.font_size;
+    const font_size_px: f32 = specified.font.font_size.px_val();
     const font_weight = specified.font.font_weight;
     const text_decoration = specified.font.text_decoration;
     const text_align = specified.font.text_align;
@@ -290,21 +290,25 @@ fn solveInsetsStatic(
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
+            .em => unreachable,
         },
         .right = switch (specified.right) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
+            .em => unreachable,
         },
         .top = switch (specified.top) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
+            .em => unreachable,
         },
         .bottom = switch (specified.bottom) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
+            .em => unreachable,
         },
     };
     used.* = .{ .x = 0, .y = 0 };
@@ -334,6 +338,7 @@ fn solveInsetsRelative(
             computed.left = .auto;
             left = null;
         },
+        .em => unreachable,
     }
     switch (specified.right) {
         .px => |value| {
@@ -348,6 +353,7 @@ fn solveInsetsRelative(
             computed.right = .auto;
             right = null;
         },
+        .em => unreachable,
     }
     switch (specified.top) {
         .px => |value| {
@@ -362,6 +368,7 @@ fn solveInsetsRelative(
             computed.top = .auto;
             top = null;
         },
+        .em => unreachable,
     }
     switch (specified.bottom) {
         .px => |value| {
@@ -376,6 +383,7 @@ fn solveInsetsRelative(
             computed.bottom = .auto;
             bottom = null;
         },
+        .em => unreachable,
     }
 
     used.* = .{
@@ -414,6 +422,7 @@ fn solveInsetsAbsolute(
             computed.left = .auto;
             left = 0; // Simplified: should compute static position
         },
+        .em => unreachable,
     }
     
     switch (specified.top) {
@@ -429,6 +438,7 @@ fn solveInsetsAbsolute(
             computed.top = .auto;
             top = 0; // Simplified: should compute static position
         },
+        .em => unreachable,
     }
     
     // Right and bottom are used for sizing when width/height are auto
@@ -437,11 +447,13 @@ fn solveInsetsAbsolute(
         .px => |value| computed.right = .{ .px = value },
         .percentage => |value| computed.right = .{ .percentage = value },
         .auto => computed.right = .auto,
+        .em => unreachable,
     }
     switch (specified.bottom) {
         .px => |value| computed.bottom = .{ .px = value },
         .percentage => |value| computed.bottom = .{ .percentage = value },
         .auto => computed.bottom = .auto,
+        .em => unreachable,
     }
     
     used.* = .{
