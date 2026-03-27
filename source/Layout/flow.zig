@@ -1008,7 +1008,11 @@ pub fn offsetChildBlocksFlex(
     // definite cross size, the flex line's cross size equals the container's
     // inner cross size (so that align-items:center works against the full
     // container height, not just the tallest child).
-    if (num_lines == 1 and container_cross > 0) {
+    //
+    // Only for row containers: for column containers, container_cross is the
+    // width (always definite), but inflating line_cross would corrupt the
+    // auto_height return value (which is cross_cursor for the current impl).
+    if (num_lines == 1 and container_cross > 0 and !flex_is_column) {
         line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
         total_cross = line_cross_sizes[0];
     }
