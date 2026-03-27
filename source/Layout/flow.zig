@@ -6,6 +6,7 @@ const zss = @import("../zss.zig");
 const NodeId = zss.Environment.NodeId;
 const StyleComputer = zss.Layout.StyleComputer;
 const Unit = zss.math.Unit;
+const selectors = zss.selectors;
 
 const BoxGen = zss.Layout.BoxGen;
 const BlockComputedSizes = BoxGen.BlockComputedSizes;
@@ -133,11 +134,17 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     info.is_bfc = true;
                 }
             }
+            // Insert ::before pseudo-element as first child (after pushBlock descended)
+            try insertPseudoElement(box_gen, node, .before);
         },
     }
 }
 
 pub fn nullNode(box_gen: *BoxGen) ?void {
+    // Insert ::after pseudo-element as last child (before parent block is finalized)
+    if (box_gen.stacks.block_info.top) |info| {
+        insertPseudoElement(box_gen, info.node, .after) catch {};
+    }
     popBlock(box_gen) orelse {
         endMode(box_gen);
         return {};
@@ -182,6 +189,44 @@ fn popBlock(box_gen: *BoxGen) ?void {
     box_gen.popFlowBlock(.normal);
     box_gen.getLayout().popNode();
 }
+
+/// Create a virtual block box for a ::before or ::after pseudo-element.
+/// The box is a leaf (no children) with properties from the pseudo-element's
+/// cascaded styles. Primary use case: clearfix (content: ''; display: block; clear: both).
+fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
+    const layout = box_gen.getLayout();
+    const computer = &layout.computer;
+
+    // Check if this node has cascaded styles for the pseudo-element.
+    if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
+
+    // Only generate a box if content is active (not normal/none).
+    const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
+    if (gen_content.content == .normal or gen_content.content == .none) return;
+
+    // Read the pseudo-element's display and clear properties.
+    const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
+    const clear = box_style_specified.clear;
+
+    // Compute block sizes from the pseudo-element's cascade.
+    const containing_block_size = box_gen.containingBlockSize();
+    const sizes = solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
+
+    // Create a leaf block box: push, set properties, pop immediately.
+    box_gen.bfc_stack.top.? += 1;
+    const box_style = BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
+    _ = try box_gen.pushFlowBlock(box_style, sizes, .normal, .none, node);
+
+    // Apply the pseudo-element's clear value so it participates in float clearing.
+    if (box_gen.stacks.block_info.top) |*info| {
+        info.clear_side = clear;
+    }
+
+    // Finalize immediately — pseudo-element has no children.
+    box_gen.popFlowBlock(.normal);
+    box_gen.bfc_stack.top.? -= 1;
+}
+
 
 pub const ContainingBlockWidth = union(SizeMode) {
     normal: Unit,

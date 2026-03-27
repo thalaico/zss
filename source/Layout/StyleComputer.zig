@@ -8,6 +8,7 @@ const CascadeStorage = zss.cascade.Database.Storage;
 const Environment = zss.Environment;
 const NodeId = Environment.NodeId;
 const Stack = zss.Stack;
+const selectors = zss.selectors;
 
 const groups = zss.values.groups;
 const SpecifiedValues = groups.Tag.SpecifiedValues;
@@ -40,6 +41,7 @@ const BoxGenComputedValues = struct {
     z_index: ?ComputedValues(.z_index) = null,
     font: ?ComputedValues(.font) = null,
     grid_template: ?ComputedValues(.grid_template) = null,
+    generated_content: ?ComputedValues(.generated_content) = null,
 };
 
 const CosmeticComputedValues = struct {
@@ -109,6 +111,22 @@ pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !
         gop_result.value_ptr.* = .{};
     }
     current_stage.current_computed = gop_result.value_ptr.*;
+}
+
+/// Set up the style computer to read cascaded values for a pseudo-element
+/// (::before or ::after) attached to the given node. Returns true if the
+/// pseudo-element has cascaded styles; false means no CSS rules matched.
+/// Unlike setCurrentNode, this does not allocate or cache computed values.
+pub fn setPseudoElement(sc: *StyleComputer, comptime stage: Stage, node: NodeId, pseudo: selectors.PseudoElement) bool {
+    const cascaded_values = sc.env.cascade_db.getPseudoStorage(node, pseudo) orelse return false;
+    sc.current = .{
+        .node = node,
+        .cascaded_values = cascaded_values,
+    };
+    // Fresh computed values for the pseudo-element (not stored in the per-node map).
+    const current_stage = &@field(sc.stage, @tagName(stage));
+    current_stage.current_computed = .{};
+    return true;
 }
 
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
