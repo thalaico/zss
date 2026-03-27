@@ -263,7 +263,7 @@ fn InheritedValue(comptime group: groups.Tag) type {
                 const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(parent) orelse &.{};
                 // TODO: Recursive call here
                 const specified_value = sc.getSpecifiedValueForElement(stage, group, parent, cascaded_values);
-                break :blk specifiedToComputed(group, specified_value, sc, parent);
+                break :blk specifiedToComputed(stage, group, specified_value, sc, parent);
             } else group.initialValues();
             return self.value.?;
         }
@@ -271,7 +271,7 @@ fn InheritedValue(comptime group: groups.Tag) type {
 }
 
 /// Given a specified value, returns a computed value.
-fn specifiedToComputed(comptime group: groups.Tag, specified: SpecifiedValues(group), sc: StyleComputer, node: NodeId) ComputedValues(group) {
+fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specified: SpecifiedValues(group), sc: StyleComputer, node: NodeId) ComputedValues(group) {
     switch (group) {
         .box_style => {
             const parent = node.parent(sc.env);
@@ -289,7 +289,7 @@ fn specifiedToComputed(comptime group: groups.Tag, specified: SpecifiedValues(gr
                 .em => |em_val| blk: {
                     const parent_font_size = if (node.parent(sc.env)) |parent| pfz: {
                         var inherited = InheritedValue(.font){ .node = parent };
-                        break :pfz inherited.get(sc, .box_gen).font_size.px_val();
+                        break :pfz inherited.get(sc, stage).font_size.px_val();
                     } else 16.0; // root: initial font-size
                     break :blk .{ .px = em_val * parent_font_size };
                 },
