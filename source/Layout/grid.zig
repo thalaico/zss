@@ -85,10 +85,22 @@ pub fn layoutGridChildren(
     var row_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
     resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap);
 
-    // --- Phase 4: Place children in grid cells ---
-    // Build a placement map: which child goes where.
-    // Children with grid-area names go to their named area.
-    // Others auto-place in row-major order.
+    // --- Phase 4: Place children and size rows ---
+    // Record placement info so we can reposition after row sizes are finalized.
+    // Row sizes start at 0 for auto/min-content/fr tracks and are updated as
+    // children are placed, but children placed in DOM order may reference rows
+    // whose occupants haven't been processed yet. A second positioning pass
+    // using final row sizes is required.
+    const PlacementInfo = struct {
+        child_idx: Subtree.Size, // index into subtree
+        placed_row: u8,
+        placed_col: u8,
+        span_rows: u8,
+        span_cols: u8,
+    };
+    var placements: [128]PlacementInfo = undefined;
+    var placement_count: u8 = 0;
+
     var auto_row: u8 = 0;
     var auto_col: u8 = 0;
     var child_index: u8 = 0; // index into child_area_hashes
@@ -159,22 +171,7 @@ pub fn layoutGridChildren(
             }
         }
 
-        // --- Phase 5: Size and position the child ---
-        // Calculate x position from track sizes + gaps
-        var x: Unit = 0;
-        for (0..placed_col) |c| {
-            x += col_sizes[c];
-            x += column_gap;
-        }
-
-        // Calculate y position from track sizes + gaps
-        var y: Unit = 0;
-        for (0..placed_row) |r| {
-            y += row_sizes[r];
-            y += row_gap;
-        }
-
-        // Calculate cell width (spanning columns)
+        // Set child width from column track sizes
         var cell_width: Unit = 0;
         for (0..span_cols) |sc| {
             const col_idx = placed_col + @as(u8, @intCast(sc));
@@ -183,22 +180,6 @@ pub fn layoutGridChildren(
                 if (sc > 0) cell_width += column_gap;
             }
         }
-
-        // Calculate cell height (spanning rows)
-        var cell_height: Unit = 0;
-        for (0..span_rows) |sr| {
-            const row_idx = placed_row + @as(u8, @intCast(sr));
-            if (row_idx < num_rows) {
-                cell_height += row_sizes[row_idx];
-                if (sr > 0) cell_height += row_gap;
-            }
-        }
-
-        // Position child
-        offsets[child].x = x;
-        offsets[child].y = y;
-
-        // Resize child to fit grid cell
         if (cell_width > 0) {
             box_offsets[child].border_size.w = cell_width;
             const content_x = box_offsets[child].content_pos.x;
@@ -217,7 +198,38 @@ pub fn layoutGridChildren(
             }
         }
 
+        // Record placement for repositioning pass
+        if (placement_count < 128) {
+            placements[placement_count] = .{
+                .child_idx = child,
+                .placed_row = placed_row,
+                .placed_col = placed_col,
+                .span_rows = span_rows,
+                .span_cols = span_cols,
+            };
+            placement_count += 1;
+        }
+
+        // Set X position (column positions don't change)
+        var x: Unit = 0;
+        for (0..placed_col) |c| {
+            x += col_sizes[c];
+            x += column_gap;
+        }
+        offsets[child].x = x;
+
         child += skips[child];
+    }
+
+    // --- Phase 5: Reposition children using finalized row sizes ---
+    // Row sizes are now correct (auto-sized from content). Recompute Y positions.
+    for (placements[0..placement_count]) |p| {
+        var y: Unit = 0;
+        for (0..p.placed_row) |r| {
+            y += row_sizes[r];
+            y += row_gap;
+        }
+        offsets[p.child_idx].y = y;
     }
 
     // --- Phase 6: Compute total grid height ---
