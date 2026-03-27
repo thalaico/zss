@@ -480,9 +480,11 @@ fn setDataRootInlineBox(ifc: *const Ifc, inline_box_index: Ifc.Size) void {
 
 fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: Ifc.Size, node: NodeId, percentage_base_unit: Unit) void {
     // TODO: Also use the logical properties ('padding-inline-start', 'border-block-end', etc.).
+    // Resolve em values in edges using element's computed font-size.
+    const font_size_px = computer.resolvedFontSizePx(.box_gen);
     const specified = .{
-        .horizontal_edges = computer.getSpecifiedValue(.box_gen, .horizontal_edges),
-        .vertical_edges = computer.getSpecifiedValue(.box_gen, .vertical_edges),
+        .horizontal_edges = resolveHorizontalEdgesEm(computer.getSpecifiedValue(.box_gen, .horizontal_edges), font_size_px),
+        .vertical_edges = resolveVerticalEdgesEm(computer.getSpecifiedValue(.box_gen, .vertical_edges), font_size_px),
         .border_styles = computer.getSpecifiedValue(.box_gen, .border_styles),
     };
 
@@ -660,13 +662,15 @@ fn inlineBlockSolveSizes(
     position: BoxTree.BoxStyle.Position,
     containing_block_size: ContainingBlockSize,
 ) BlockUsedSizes {
-    const specified = BlockComputedSizes{
+    // Resolve em values using element's computed font-size.
+    const font_size_px = computer.resolvedFontSizePx(.box_gen);
+    const specified = flow.resolveBlockEm(BlockComputedSizes{
         .content_width = computer.getSpecifiedValue(.box_gen, .content_width),
         .horizontal_edges = computer.getSpecifiedValue(.box_gen, .horizontal_edges),
         .content_height = computer.getSpecifiedValue(.box_gen, .content_height),
         .vertical_edges = computer.getSpecifiedValue(.box_gen, .vertical_edges),
         .insets = computer.getSpecifiedValue(.box_gen, .insets),
-    };
+    }, font_size_px);
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     var computed: BlockComputedSizes = undefined;
     var used: BlockUsedSizes = undefined;
@@ -1268,5 +1272,30 @@ fn splitIntoLineBoxes(
         else
             0, // TODO: This is never reached because the root inline box always creates at least 1 line box.
         .longest_line_box_length = s.longest_line_box_length,
+    };
+}
+
+
+/// Resolve em values in horizontal edges to px.
+fn resolveHorizontalEdgesEm(edges: ComputedValues(.horizontal_edges), fs: f32) ComputedValues(.horizontal_edges) {
+    return .{
+        .margin_left = edges.margin_left.resolveEm(fs),
+        .margin_right = edges.margin_right.resolveEm(fs),
+        .padding_left = edges.padding_left.resolveEm(fs),
+        .padding_right = edges.padding_right.resolveEm(fs),
+        .border_left = edges.border_left,
+        .border_right = edges.border_right,
+    };
+}
+
+/// Resolve em values in vertical edges to px.
+fn resolveVerticalEdgesEm(edges: ComputedValues(.vertical_edges), fs: f32) ComputedValues(.vertical_edges) {
+    return .{
+        .margin_top = edges.margin_top.resolveEm(fs),
+        .margin_bottom = edges.margin_bottom.resolveEm(fs),
+        .padding_top = edges.padding_top.resolveEm(fs),
+        .padding_bottom = edges.padding_bottom.resolveEm(fs),
+        .border_top = edges.border_top,
+        .border_bottom = edges.border_bottom,
     };
 }

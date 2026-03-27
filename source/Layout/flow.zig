@@ -258,7 +258,7 @@ pub const ContainingBlockWidth = union(SizeMode) {
 
 /// Resolve all em values in block sizes to px using the element's computed font-size.
 /// Called before passing sizes to solve functions which expect only px/percentage/auto.
-fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32) BlockComputedSizes {
+pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32) BlockComputedSizes {
     return .{
         .content_width = .{
             .width = sizes.content_width.width.resolveEm(fs),
