@@ -57,6 +57,20 @@ pub fn layoutGridChildren(
         num_rows = @intCast(@min(inflow_count, MAX_TRACKS));
     }
 
+    // Derive grid dimensions from named areas when explicit tracks are missing.
+    // E.g., grid-template-columns: 1fr; grid-template-areas: 'a' 'b' 'c';
+    // gives 1 column and 3 rows even though grid-template-rows isn't set.
+    if (template_areas.count > 0) {
+        var max_area_row: u8 = 0;
+        var max_area_col: u8 = 0;
+        for (template_areas.entries[0..template_areas.count]) |area| {
+            if (area.row_end > max_area_row) max_area_row = area.row_end;
+            if (area.col_end > max_area_col) max_area_col = area.col_end;
+        }
+        if (max_area_row > num_rows) num_rows = max_area_row;
+        if (max_area_col > num_cols) num_cols = max_area_col;
+    }
+
     if (num_cols == 0) num_cols = 1;
     if (num_rows == 0) num_rows = 1;
 
@@ -79,9 +93,13 @@ pub fn layoutGridChildren(
     var auto_col: u8 = 0;
     var child_index: u8 = 0; // index into child_area_hashes
 
+    const block_types = subtree.items(.type);
     var child = index + 1;
-    while (child < end) {
-        if (out_of_flow_flags[child]) {
+    while (child < end and child_index < child_count) {
+        // Skip out-of-flow and anonymous inline formatting context boxes.
+        // IFC containers are generated for whitespace text between block children
+        // and must not be treated as grid items.
+        if (out_of_flow_flags[child] or block_types[child] == .ifc_container) {
             child += skips[child];
             continue;
         }

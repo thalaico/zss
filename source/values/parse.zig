@@ -1437,6 +1437,10 @@ fn gridTrackSize(ctx: *Context) ?types.GridTrackSize {
         if (ctx.source_code.mapIdentifierValue(fn_loc, enum { minmax }, &.{
             .{ "minmax", .minmax },
         })) |_| {
+            // Enter function argument sequence
+            const state = ctx.enterSequence(item.index);
+            defer ctx.resetState(state);
+
             // Parse minmax(min, max)
             const min_val = gridTrackSize(ctx) orelse {
                 ctx.resetPoint(save);
