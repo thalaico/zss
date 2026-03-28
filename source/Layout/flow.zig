@@ -55,27 +55,11 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             // Read box_style early so flex properties are available after commitNode.
             const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
             const layout_width: ContainingBlockWidth = if (parent_is_flex_row) blk: {
-                // For flex row items, estimate width by dividing equally.
-                // Non-grow items will be shrunk to content width later.
-                // Grow items will be expanded by distributeFlexGrow.
-                const env = box_gen.getLayout().inputs.env;
-                const parent_node = box_gen.stacks.block_info.top.?.node;
-                var flex_child_count: u32 = 0;
-                if (parent_node.firstChild(env)) |first| {
-                    var sib: ?NodeId = first;
-                    while (sib) |s| {
-                        // Only count element nodes, not text nodes
-                        if (env.getNodeProperty(.category, s) == .element) {
-                            flex_child_count += 1;
-                        }
-                        sib = s.nextSibling(env);
-                    }
-                }
-                if (flex_child_count < 1) flex_child_count = 1;
-                const gap = box_gen.stacks.block_info.top.?.flex_gap;
-                const total_gaps = gap * @as(Unit, @intCast(flex_child_count - 1));
-                const per_child = @divFloor(@max(0, containing_block_size.width - total_gaps), @as(Unit, @intCast(flex_child_count)));
-                break :blk .{ .normal = per_child };
+                // CSS Flexbox §9: flex items are initially laid out at the
+                // container's full width. After all children are laid out,
+                // offsetChildBlocksFlex resolves flexible lengths per §9.7
+                // and re-lays out text at the resolved width.
+                break :blk .{ .normal = containing_block_size.width };
             } else
                 .{ .normal = containing_block_size.width };
             const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height);
@@ -1062,9 +1046,12 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
     return max_height;
 }
 
-/// Offset children of a flex container along the main axis.
-/// Supports flex-wrap: items wrap to new lines when they exceed container main size.
-/// For row: children placed horizontally; for column: vertically.
+/// CSS Flexbox §9 Layout Algorithm.
+/// Items are initially laid out at container width. This function:
+///   §9.2: Determines flex base size from flex-basis or content measurement
+///   §9.3: Collects items into lines, resolves flexible lengths (§9.7)
+///   §9.4: Determines cross sizes per line
+///   §9.5-9.6: Positions items with justify-content and align-items
 /// Returns auto height: total cross extent of all lines.
 pub fn offsetChildBlocksFlex(
     box_tree: *BoxTree,
@@ -1087,13 +1074,7 @@ pub fn offsetChildBlocksFlex(
     const container_cross = if (flex_is_column) container_width else (container_height orelse 0);
     const wrapping = flex_wrap != .nowrap;
 
-    // --- Phase 1: IFC content measurement (row containers only) ---
-    if (!flex_is_column) {
-        resizeIfcContainers(box_tree, subtree, index, end);
-    }
-
-    // --- Phase 2: Collect in-flow children ---
-    const MAX_CHILDREN = 128;
+    // --- Phase 1: Collect in-flow children ---
     var children: [MAX_CHILDREN]Subtree.Size = undefined;
     var child_count: usize = 0;
     {
@@ -1113,15 +1094,28 @@ pub fn offsetChildBlocksFlex(
 
     if (child_count == 0) return 0;
 
-    // Pre-shrink non-grow items to content width BEFORE line splitting.
-    // Without this, items have their initial layout width (container/N) which
-    // causes incorrect line breaks when flex-wrap is enabled.
-    if (!flex_is_column) {
-        shrinkNonGrowChildren(subtree, children[0..child_count]);
+    // --- Phase 2 (§9.2): Determine flex base size and hypothetical main size ---
+    const flex_basis_values = subtree.items(.flex_basis_px);
+    var flex_base_sizes: [MAX_CHILDREN]Unit = undefined;
+    var hypothetical_main_sizes: [MAX_CHILDREN]Unit = undefined;
+
+    for (0..child_count) |ci| {
+        const child_idx = children[ci];
+        const basis_px = flex_basis_values[child_idx];
+
+        if (basis_px >= 0) {
+            // Definite flex-basis: use it directly
+            flex_base_sizes[ci] = basis_px;
+        } else {
+            // flex-basis: auto — use the item's content/intrinsic size
+            flex_base_sizes[ci] = measureContentMainSize(box_tree, subtree, child_idx, flex_is_column);
+        }
+
+        // Hypothetical main size = flex base size clamped at zero
+        hypothetical_main_sizes[ci] = @max(0, flex_base_sizes[ci]);
     }
 
-    // --- Phase 3: Break children into lines ---
-    const MAX_LINES = 32;
+    // --- Phase 3 (§9.3): Collect into flex lines ---
     var line_starts: [MAX_LINES + 1]usize = undefined;
     var num_lines: usize = 0;
     {
@@ -1133,15 +1127,15 @@ pub fn offsetChildBlocksFlex(
             var line_main: Unit = 0;
             var line_items: usize = 0;
             for (0..child_count) |ci| {
-                const child_main = childMainSize(subtree, children[ci], flex_is_column);
+                const item_main = hypothetical_main_sizes[ci];
                 const with_gap: Unit = if (line_items > 0) flex_gap else 0;
-                if (line_items > 0 and line_main + with_gap + child_main > container_main and num_lines < MAX_LINES) {
+                if (line_items > 0 and line_main + with_gap + item_main > container_main and num_lines < MAX_LINES) {
                     num_lines += 1;
                     line_starts[num_lines] = ci;
-                    line_main = child_main;
+                    line_main = item_main;
                     line_items = 1;
                 } else {
-                    line_main += with_gap + child_main;
+                    line_main += with_gap + item_main;
                     line_items += 1;
                 }
             }
@@ -1150,11 +1144,47 @@ pub fn offsetChildBlocksFlex(
         }
     }
 
-    // --- Phase 4: Per-line sizing and positioning ---
-    var cross_cursor: Unit = 0;
-    const reverse_cross = flex_wrap == .wrap_reverse;
+    // --- Phase 3b (§9.7): Resolve flexible lengths per line ---
+    var used_main_sizes: [MAX_CHILDREN]Unit = undefined;
+    const flex_grows = subtree.items(.flex_grow);
+    const flex_shrinks = subtree.items(.flex_shrink);
 
-    // Compute line cross sizes
+    for (0..num_lines) |line_idx| {
+        const ls = line_starts[line_idx];
+        const le = line_starts[line_idx + 1];
+
+        resolveFlexibleLengths(
+            children[ls..le],
+            flex_base_sizes[ls..le],
+            hypothetical_main_sizes[ls..le],
+            used_main_sizes[ls..le],
+            flex_grows,
+            flex_shrinks,
+            container_main,
+            flex_gap,
+        );
+    }
+
+    // --- Phase 4: Apply resolved sizes to box tree ---
+    // Resize items to their resolved main size and re-layout IFC text content.
+    if (!flex_is_column) {
+        for (0..child_count) |ci| {
+            const child_idx = children[ci];
+            const resolved_w = used_main_sizes[ci];
+            const bo = &subtree.items(.box_offsets)[child_idx];
+            const left_edge = bo.content_pos.x;
+
+            if (resolved_w != bo.border_size.w) {
+                bo.border_size.w = resolved_w;
+                bo.content_size.w = @max(0, resolved_w - left_edge * 2);
+
+                // Re-layout IFC (text) containers at the new width
+                relayoutIfcAtWidth(box_tree, subtree, child_idx, bo.content_size.w);
+            }
+        }
+    }
+
+    // --- Phase 5 (§9.4): Determine cross sizes per line ---
     var line_cross_sizes: [MAX_LINES]Unit = undefined;
     var total_cross: Unit = 0;
     for (0..num_lines) |line_idx| {
@@ -1168,23 +1198,16 @@ pub fn offsetChildBlocksFlex(
         total_cross += max_cross;
     }
 
-    // CSS Flexbox §9.4: If the flex container is single-line and has a
-    // definite cross size, the flex line's cross size equals the container's
-    // inner cross size (so that align-items:center works against the full
-    // container height, not just the tallest child).
-    //
-    // Only for row containers: for column containers, container_cross is the
-    // width (always definite), but inflating line_cross would corrupt the
-    // auto_height return value (which is cross_cursor for the current impl).
+    // §9.4: Single-line container with definite cross size → line cross = container cross
     if (num_lines == 1 and container_cross > 0 and !flex_is_column) {
         line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
         total_cross = line_cross_sizes[0];
     }
     if (num_lines > 1) total_cross += flex_gap * @as(Unit, @intCast(num_lines - 1));
 
-    if (reverse_cross) {
-        cross_cursor = total_cross;
-    }
+    // --- Phase 6 (§9.5-9.6): Position items ---
+    const reverse_cross = flex_wrap == .wrap_reverse;
+    var cross_cursor: Unit = if (reverse_cross) total_cross else 0;
 
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
@@ -1196,38 +1219,14 @@ pub fn offsetChildBlocksFlex(
             cross_cursor -= line_cross;
         }
 
-        // Measure line main extent
+        // Compute line main extent for justify-content
         var line_total_main: Unit = 0;
-        var total_flex_grow: f32 = 0.0;
         for (ls..le) |ci| {
             line_total_main += childMainSize(subtree, children[ci], flex_is_column);
-            total_flex_grow += subtree.items(.flex_grow)[children[ci]];
         }
         if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
 
-        // Shrink non-grow items to content width.
-        // CSS flex: items without flex-grow size to their content,
-        // then remaining space is distributed via flex-grow.
-        if (!flex_is_column) {
-            shrinkNonGrowChildren(subtree, children[ls..le]);
-            line_total_main = 0;
-            for (ls..le) |ci| {
-                line_total_main += childMainSize(subtree, children[ci], flex_is_column);
-            }
-            if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
-        }
-
-        // Distribute flex-grow space
-        if (total_flex_grow > 0.0 and !flex_is_column) {
-            distributeFlexGrow(subtree, children[ls..le], container_main, flex_gap, total_flex_grow);
-            line_total_main = 0;
-            for (ls..le) |ci| {
-                line_total_main += childMainSize(subtree, children[ci], flex_is_column);
-            }
-            if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
-        }
-
-        // Position children on this line
+        // Main-axis alignment (§9.5)
         const free_space = @max(0, container_main - line_total_main);
         var main_cursor: Unit = switch (justify) {
             .flex_start => 0,
@@ -1241,6 +1240,7 @@ pub fn offsetChildBlocksFlex(
             0;
         const total_item_gap = flex_gap + sb_gap;
 
+        // Cross-axis alignment (§9.6)
         for (ls..le) |ci| {
             const child_idx = children[ci];
             const box_offsets = subtree.items(.box_offsets)[child_idx];
@@ -1279,6 +1279,250 @@ pub fn offsetChildBlocksFlex(
     return if (reverse_cross) total_cross else cross_cursor;
 }
 
+/// Measure an item's content main size by examining its children's extents.
+/// For IFC containers (text), measures actual glyph advance widths.
+/// For block containers, measures the maximum right edge of in-flow grandchildren.
+fn measureContentMainSize(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Subtree.Size, flex_is_column: bool) Unit {
+    if (flex_is_column) {
+        return subtree.items(.box_offsets)[child_idx].border_size.h;
+    }
+
+    const types_slice = subtree.items(.type);
+    const child_skip = subtree.items(.skip)[child_idx];
+    const child_end = child_idx + child_skip;
+
+    // Check if this item is itself an IFC container
+    switch (types_slice[child_idx]) {
+        .ifc_container => |ifc_id| {
+            return measureIfcContentWidth(box_tree, ifc_id, subtree, child_idx);
+        },
+        else => {},
+    }
+
+    // Measure max content width from children
+    var max_right: Unit = 0;
+    var has_children = false;
+    var gc = child_idx + 1;
+    while (gc < child_end) {
+        if (!subtree.items(.out_of_flow)[gc]) {
+            has_children = true;
+            switch (types_slice[gc]) {
+                .ifc_container => |ifc_id| {
+                    const ifc_w = measureIfcContentWidth(box_tree, ifc_id, subtree, gc);
+                    max_right = @max(max_right, ifc_w);
+                },
+                else => {
+                    const gbo = subtree.items(.box_offsets)[gc];
+                    const goff = subtree.items(.offset)[gc];
+                    max_right = @max(max_right, goff.x + gbo.border_pos.x + gbo.border_size.w);
+                },
+            }
+        }
+        gc += subtree.items(.skip)[gc];
+    }
+
+    if (!has_children) {
+        return subtree.items(.box_offsets)[child_idx].border_size.w;
+    }
+
+    const left_edge = subtree.items(.box_offsets)[child_idx].content_pos.x;
+    return max_right + left_edge * 2;
+}
+
+/// Measure IFC content width from glyph advances.
+fn measureIfcContentWidth(box_tree: *BoxTree, ifc_id: anytype, subtree: Subtree.View, child_idx: Subtree.Size) Unit {
+    const ifc = box_tree.getIfc(ifc_id);
+    if (ifc.glyphs.len == 0) return 0;
+
+    var max_line_width: Unit = 0;
+    for (ifc.line_boxes.items) |line_box| {
+        var line_width: Unit = 0;
+        var i = line_box.elements[0];
+        while (i < line_box.elements[1]) {
+            line_width += ifc.glyphs.items(.metrics)[i].advance;
+            const glyph_idx = ifc.glyphs.items(.index)[i];
+            i += 1;
+            if (glyph_idx == 0 and i < line_box.elements[1]) i += 1;
+        }
+        max_line_width = @max(max_line_width, line_width);
+    }
+
+    const left_edge = subtree.items(.box_offsets)[child_idx].content_pos.x;
+    return max_line_width + left_edge * 2;
+}
+
+/// CSS Flexbox §9.7: Resolve Flexible Lengths.
+/// Distributes free space via flex-grow or absorbs overflow via flex-shrink.
+fn resolveFlexibleLengths(
+    line_children: []const Subtree.Size,
+    flex_base: []const Unit,
+    hypothetical: []const Unit,
+    used: []Unit,
+    flex_grows: anytype,
+    flex_shrinks: anytype,
+    container_main: Unit,
+    flex_gap: Unit,
+) void {
+    const n = line_children.len;
+    if (n == 0) return;
+
+    // Step 1: Determine grow vs shrink.
+    var sum_hypothetical_outer: Unit = 0;
+    for (0..n) |i| {
+        sum_hypothetical_outer += hypothetical[i];
+    }
+    if (n > 1) sum_hypothetical_outer += flex_gap * @as(Unit, @intCast(n - 1));
+    const growing = sum_hypothetical_outer <= container_main;
+
+    // Step 2: Initialize targets and frozen state.
+    var targets: [MAX_CHILDREN]Unit = undefined;
+    var frozen: [MAX_CHILDREN]bool = undefined;
+
+    for (0..n) |i| {
+        targets[i] = flex_base[i];
+        const ci = line_children[i];
+
+        if (growing) {
+            frozen[i] = (flex_grows[ci] == 0.0) or (flex_base[i] >= hypothetical[i]);
+        } else {
+            frozen[i] = (flex_shrinks[ci] == 0.0) or (flex_base[i] <= hypothetical[i]);
+        }
+
+        if (frozen[i]) {
+            targets[i] = hypothetical[i];
+        }
+    }
+
+    // Step 3: Calculate initial free space.
+    var initial_free_space: Unit = container_main;
+    if (n > 1) initial_free_space -= flex_gap * @as(Unit, @intCast(n - 1));
+    for (0..n) |i| {
+        if (frozen[i]) {
+            initial_free_space -= targets[i];
+        } else {
+            initial_free_space -= flex_base[i];
+        }
+    }
+
+    // Step 4: Iterative resolution loop.
+    var iterations: u32 = 0;
+    while (iterations < 10) : (iterations += 1) {
+        var all_frozen = true;
+        for (0..n) |i| {
+            if (!frozen[i]) { all_frozen = false; break; }
+        }
+        if (all_frozen) break;
+
+        // Remaining free space
+        var remaining: Unit = container_main;
+        if (n > 1) remaining -= flex_gap * @as(Unit, @intCast(n - 1));
+        var sum_factors: f32 = 0.0;
+        for (0..n) |i| {
+            if (frozen[i]) {
+                remaining -= targets[i];
+            } else {
+                remaining -= flex_base[i];
+                const ci = line_children[i];
+                if (growing) {
+                    sum_factors += flex_grows[ci];
+                } else {
+                    sum_factors += flex_shrinks[ci] * @as(f32, @floatFromInt(@max(1, flex_base[i])));
+                }
+            }
+        }
+
+        // §9.7 step 4b: sum of factors < 1 caps free space
+        if (sum_factors > 0.0 and sum_factors < 1.0) {
+            const scaled = @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(initial_free_space)) * sum_factors)));
+            if ((growing and scaled < remaining) or (!growing and scaled > remaining)) {
+                remaining = scaled;
+            }
+        }
+
+        if (sum_factors <= 0.0) break;
+
+        // Distribute proportionally
+        for (0..n) |i| {
+            if (frozen[i]) continue;
+            const ci = line_children[i];
+            if (growing) {
+                const ratio = flex_grows[ci] / sum_factors;
+                targets[i] = flex_base[i] + @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(remaining)) * ratio)));
+            } else {
+                const scaled_shrink = flex_shrinks[ci] * @as(f32, @floatFromInt(@max(1, flex_base[i])));
+                const ratio = scaled_shrink / sum_factors;
+                const abs_remaining = @as(f32, @floatFromInt(@max(0, -remaining)));
+                targets[i] = flex_base[i] - @as(Unit, @intFromFloat(@round(abs_remaining * ratio)));
+            }
+        }
+
+        // Freeze items that hit zero (min violation)
+        var any_frozen_this_round = false;
+        for (0..n) |i| {
+            if (frozen[i]) continue;
+            if (targets[i] < 0) {
+                targets[i] = 0;
+                frozen[i] = true;
+                any_frozen_this_round = true;
+            }
+        }
+        if (!any_frozen_this_round) break;
+    }
+
+    // Write results
+    for (0..n) |i| {
+        used[i] = @max(0, targets[i]);
+    }
+}
+
+/// Re-layout IFC containers within a flex item at the new resolved width.
+/// Adjusts IFC container box dimensions to match actual content width.
+fn relayoutIfcAtWidth(
+    box_tree: *BoxTree,
+    subtree: Subtree.View,
+    item_idx: Subtree.Size,
+    _: Unit,  // new_content_w — reserved for future text re-layout
+) void {
+    const types_slice = subtree.items(.type);
+    const item_skip = subtree.items(.skip)[item_idx];
+    const item_end = item_idx + item_skip;
+
+    var gc = item_idx + 1;
+    while (gc < item_end) {
+        if (!subtree.items(.out_of_flow)[gc]) {
+            switch (types_slice[gc]) {
+                .ifc_container => |ifc_id| {
+                    const ifc = box_tree.getIfc(ifc_id);
+                    if (ifc.glyphs.len > 0) {
+                        var max_line_width: Unit = 0;
+                        for (ifc.line_boxes.items) |line_box| {
+                            var line_width: Unit = 0;
+                            var gi = line_box.elements[0];
+                            while (gi < line_box.elements[1]) {
+                                line_width += ifc.glyphs.items(.metrics)[gi].advance;
+                                const glyph_idx = ifc.glyphs.items(.index)[gi];
+                                gi += 1;
+                                if (glyph_idx == 0 and gi < line_box.elements[1]) gi += 1;
+                            }
+                            max_line_width = @max(max_line_width, line_width);
+                        }
+                        const bo = &subtree.items(.box_offsets)[gc];
+                        const left_edge = bo.content_pos.x;
+                        bo.border_size.w = max_line_width + left_edge * 2;
+                        bo.content_size.w = max_line_width;
+                    } else {
+                        const bo = &subtree.items(.box_offsets)[gc];
+                        bo.border_size.w = 0;
+                        bo.content_size.w = 0;
+                    }
+                },
+                else => {},
+            }
+        }
+        gc += subtree.items(.skip)[gc];
+    }
+}
+
 fn childMainSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) Unit {
     const bo = subtree.items(.box_offsets)[child];
     return if (flex_is_column) bo.border_size.h else bo.border_size.w;
@@ -1289,115 +1533,5 @@ fn childCrossSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bo
     return if (flex_is_column) bo.border_size.w else bo.border_size.h;
 }
 
-/// Resize IFC containers to their content width.
-fn resizeIfcContainers(
-    box_tree: *BoxTree,
-    subtree: Subtree.View,
-    start: Subtree.Size,
-    end: Subtree.Size,
-) void {
-    const types_slice = subtree.items(.type);
-    const out_of_flow_flags = subtree.items(.out_of_flow);
-    const skips_slice = subtree.items(.skip);
-    var child = start + 1;
-    while (child < end) {
-        if (!out_of_flow_flags[child]) {
-            switch (types_slice[child]) {
-                .ifc_container => |ifc_id| {
-                    const ifc = box_tree.getIfc(ifc_id);
-                    if (ifc.glyphs.len == 0) {
-                        const bo = &subtree.items(.box_offsets)[child];
-                        bo.border_size.w = 0;
-                        bo.content_size.w = 0;
-                    } else {
-                        var max_line_width: Unit = 0;
-                        for (ifc.line_boxes.items) |line_box| {
-                            var line_width: Unit = 0;
-                            var i = line_box.elements[0];
-                            while (i < line_box.elements[1]) {
-                                const glyph_idx = ifc.glyphs.items(.index)[i];
-                                line_width += ifc.glyphs.items(.metrics)[i].advance;
-                                i += 1;
-                                if (glyph_idx == 0 and i < line_box.elements[1]) i += 1;
-                            }
-                            max_line_width = @max(max_line_width, line_width);
-                        }
-                        const bo = &subtree.items(.box_offsets)[child];
-                        const left_edge = bo.content_pos.x;
-                        bo.border_size.w = max_line_width + left_edge * 2;
-                        bo.content_size.w = max_line_width;
-                    }
-                },
-                else => {},
-            }
-        }
-        child += skips_slice[child];
-    }
-}
-
-/// Shrink non-grow flex items to content width when overflowing.
-fn shrinkNonGrowChildren(
-    subtree: Subtree.View,
-    line_children: []const Subtree.Size,
-) void {
-    const flex_grows = subtree.items(.flex_grow);
-    for (line_children) |child| {
-        if (flex_grows[child] == 0.0) {
-            const bo = subtree.items(.box_offsets)[child];
-            const child_skip = subtree.items(.skip)[child];
-            var max_content_right: Unit = 0;
-            var has_grandchildren = false;
-            var grandchild = child + 1;
-            const child_end = child + child_skip;
-            while (grandchild < child_end) {
-                if (!subtree.items(.out_of_flow)[grandchild]) {
-                    has_grandchildren = true;
-                    const gbo = subtree.items(.box_offsets)[grandchild];
-                    const goff = subtree.items(.offset)[grandchild];
-                    max_content_right = @max(max_content_right, goff.x + gbo.border_pos.x + gbo.border_size.w);
-                }
-                grandchild += subtree.items(.skip)[grandchild];
-            }
-            const left_edge = bo.content_pos.x;
-            if (!has_grandchildren) {
-                // No in-flow grandchildren: element has explicit size or is empty.
-                // Don't shrink — respect the element's own width.
-                continue;
-            }
-            const content_width = max_content_right + left_edge + left_edge;
-            const new_w = @min(bo.border_size.w, @max(left_edge * 2, content_width));
-            subtree.items(.box_offsets)[child].border_size.w = new_w;
-            subtree.items(.box_offsets)[child].content_size.w = new_w - left_edge * 2;
-        }
-    }
-}
-
-/// Distribute remaining space to flex-grow items proportionally.
-fn distributeFlexGrow(
-    subtree: Subtree.View,
-    line_children: []const Subtree.Size,
-    container_main: Unit,
-    flex_gap: Unit,
-    total_flex_grow: f32,
-) void {
-    const flex_grows = subtree.items(.flex_grow);
-    var non_grow_main: Unit = 0;
-    var total_items: usize = 0;
-    for (line_children) |child| {
-        if (flex_grows[child] == 0.0) {
-            non_grow_main += subtree.items(.box_offsets)[child].border_size.w;
-        }
-        total_items += 1;
-    }
-    const total_gaps = flex_gap * @as(Unit, @intCast(@max(1, total_items) - 1));
-    const avail_for_grow = @max(0, container_main - non_grow_main - total_gaps);
-    for (line_children) |child| {
-        const grow = flex_grows[child];
-        if (grow > 0.0) {
-            const target_w = @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(avail_for_grow)) * grow / total_flex_grow)));
-            const left_edge = subtree.items(.box_offsets)[child].content_pos.x;
-            subtree.items(.box_offsets)[child].border_size.w = target_w;
-            subtree.items(.box_offsets)[child].content_size.w = @max(0, target_w - left_edge * 2);
-        }
-    }
-}
+const MAX_CHILDREN = 128;
+const MAX_LINES = 32;
