@@ -266,6 +266,18 @@ pub fn @"list-style-type"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTy
     return .{ .font = .{ .list_style_type = .{ .declared = value } } };
 }
 
+pub fn @"list-style"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"list-style") {
+    ctx.initDecl(declaration_index);
+    // list-style shorthand: <type> || <position> || <image>.
+    // We only care about the type component; consume and ignore the rest.
+    const value = values.parse.listStyleType(ctx) orelse return null;
+    // Consume remaining tokens (position, image) without failing.
+    while (!ctx.empty()) {
+        _ = ctx.next();
+    }
+    return .{ .font = .{ .list_style_type = .{ .declared = value } } };
+}
+
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
     ctx.initDecl(declaration_index);
     const value = values.parse.opacity(ctx) orelse return null;
