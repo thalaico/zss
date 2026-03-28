@@ -160,7 +160,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
 
     const used: BoxTree.BoxStyle = .{
         .outer = switch (computed.display) {
-            .block => .{ .block = .flow },
+            .block, .list_item => .{ .block = .flow },
             .@"inline" => .{ .@"inline" = .@"inline" },
             .inline_block => .{ .@"inline" = .{ .block = .flow } },
             .table => .{ .block = .flow },
@@ -182,7 +182,7 @@ fn blockify(display: types.Display) types.Display {
     // TODO: This is incomplete, fill in the rest when more values of the 'display' property are supported.
     // TODO: There should be a slightly different version of this switch table for the root element. (See rule 4 of secion 9.7)
     return switch (display) {
-        .block => .block,
+        .block, .list_item => .block,
         .@"inline", .inline_block => .block,
         .table => .table,
         .table_row => .table_row,
@@ -196,7 +196,7 @@ fn blockify(display: types.Display) types.Display {
 
 fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
     return switch (computed_display) {
-        .block => .flow,
+        .block, .list_item => .flow,
         .table => .flow,
         .table_row => .flow,
         .table_cell => .flow,

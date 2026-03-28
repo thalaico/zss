@@ -642,7 +642,7 @@ pub fn display(ctx: *Context) ?types.Display {
     return keyword(ctx, types.Display, &.{
         .{ "inline", .@"inline" },
         .{ "block", .block },
-        // .{ "list-item", .list_item },
+        .{ "list-item", .list_item },
         .{ "inline-block", .inline_block },
         .{ "table", .table },
         // .{ "inline-table", .inline_table },

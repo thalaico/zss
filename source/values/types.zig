@@ -19,6 +19,7 @@ pub const Display = enum {
     table_footer_group,
     flex,
     grid,
+    list_item,
     none,
 };
 

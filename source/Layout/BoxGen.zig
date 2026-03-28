@@ -216,6 +216,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         blocks.items(.flex_grow)[index] = 0.0;
         blocks.items(.flex_shrink)[index] = 1.0;
         blocks.items(.flex_basis_px)[index] = -1;
+        blocks.items(.list_style_type)[index] = .none;
         
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
@@ -660,6 +661,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.list_style_type)[index] = .none;
 }
 
 pub fn pushFlowBlock(
@@ -778,6 +780,7 @@ pub fn popFlowBlock(
     subtree.items(.flex_grow)[block.index] = block_info.flex_grow;
     subtree.items(.flex_shrink)[block.index] = block_info.flex_shrink;
     subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
+    subtree.items(.list_style_type)[block.index] = .none;
 }
 
 pub fn pushStfFlowBlock(
@@ -1071,6 +1074,7 @@ fn setDataBlock(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.list_style_type)[index] = .none;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -1128,6 +1132,7 @@ fn setDataIfcContainer(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.list_style_type)[index] = .none;
 }
 
 fn setDataSubtreeProxy(
@@ -1163,4 +1168,5 @@ fn setDataSubtreeProxy(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.list_style_type)[index] = .none;
 }

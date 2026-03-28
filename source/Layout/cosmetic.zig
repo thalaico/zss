@@ -212,6 +212,21 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     // Store visibility on the block itself (for renderBlock to check)
     subtree.items(.visibility)[ref.index] = block_visibility;
 
+    // Set list marker style for list-item elements (<li>)
+    {
+        const node = subtree.items(.node)[ref.index];
+        if (node) |n| {
+            const env = layout.inputs.env;
+            if (env.getNodeProperty(.category, n) == .element) {
+                const type_info = env.getNodeProperty(.type, n);
+                var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+                if (type_iter.eql("li")) {
+                    subtree.items(.list_style_type)[ref.index] = specified.font.list_style_type;
+                }
+            }
+        }
+    }
+
     var computed_insets: ComputedValues(.insets) = undefined;
     {
         const used_insets = &subtree.items(.insets)[ref.index];

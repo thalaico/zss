@@ -258,6 +258,8 @@ pub const Subtree = struct {
         flex_shrink: f32,
         /// flex-basis resolved to layout units; -1 = auto
         flex_basis_px: math.Unit,
+        /// List marker style for list-item blocks (.none = no marker)
+        list_style_type: values.types.ListStyleType = .none,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
