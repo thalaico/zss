@@ -41,10 +41,15 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
     switch (inner_block) {
         .flow, .flex, .grid => {
             const containing_block_size = box_gen.containingBlockSize();
-            // Check if parent is a flex row container — flex children should use
-            // a reduced width to allow proper text reflow at the correct column width.
+            // Check if parent is a flex or grid container — CSS spec says float
+            // and clear have no effect on flex/grid items, and flex children should
+            // use a reduced width for proper text reflow.
             const parent_is_flex_row = if (box_gen.stacks.block_info.top) |parent_info|
                 parent_info.is_flex_container and !parent_info.flex_is_column
+            else
+                false;
+            const parent_is_flex_or_grid = if (box_gen.stacks.block_info.top) |parent_info|
+                parent_info.is_flex_container or parent_info.is_grid_container
             else
                 false;
             const layout_width: ContainingBlockWidth = if (parent_is_flex_row) blk: {
@@ -120,9 +125,16 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 const info = &box_gen.stacks.block_info.top.?;
                 info.flex_grow = box_style_specified.flex_grow;
                 info.grid_area_hash = box_style_specified.grid_area;
-                info.float_side = box_style_specified.float;
-                info.clear_side = box_style_specified.clear;
-                if (box_style_specified.float != .none) {
+                // CSS spec: float and clear have no effect on flex/grid items.
+                // Suppress them when parent is a flex or grid container.
+                if (parent_is_flex_or_grid) {
+                    info.float_side = .none;
+                    info.clear_side = .none;
+                } else {
+                    info.float_side = box_style_specified.float;
+                    info.clear_side = box_style_specified.clear;
+                }
+                if (info.float_side != .none) {
                     info.is_bfc = true;
                 }
                 if (box_style_specified.overflow != .visible) {
