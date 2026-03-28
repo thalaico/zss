@@ -125,6 +125,13 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.flex_grow = box_style_specified.flex_grow;
+                info.flex_shrink = box_style_specified.flex_shrink;
+                // Resolve flex_basis to layout units (4 units per CSS pixel); -1 = auto
+                info.flex_basis_px = switch (box_style_specified.flex_basis) {
+                    .auto => -1,
+                    .px => |v| @intFromFloat(@round(v * 4.0)),
+                    .percentage => |pct| @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct / 100.0)),
+                };
                 info.grid_area_hash = box_style_specified.grid_area;
                 // CSS spec: float and clear have no effect on flex/grid items.
                 // Suppress them when parent is a flex or grid container.

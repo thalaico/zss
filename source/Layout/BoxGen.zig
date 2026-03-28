@@ -214,6 +214,8 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         blocks.items(.clear_side)[index] = .none;
         blocks.items(.visibility)[index] = .visible;
         blocks.items(.flex_grow)[index] = 0.0;
+        blocks.items(.flex_shrink)[index] = 1.0;
+        blocks.items(.flex_basis_px)[index] = -1;
         
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
@@ -554,6 +556,10 @@ pub const BlockInfo = struct {
     vertical_align: zss.values.types.VerticalAlign = .baseline,
     /// flex-grow factor for this block (used when parent is a flex container)
     flex_grow: f32 = 0.0,
+    /// flex-shrink factor for this block (used when parent is a flex container)
+    flex_shrink: f32 = 1.0,
+    /// flex-basis resolved to layout units; -1 = auto
+    flex_basis_px: math.Unit = -1,
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -652,6 +658,8 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
     subtree.items(.flex_grow)[index] = 0.0;
+    subtree.items(.flex_shrink)[index] = 1.0;
+    subtree.items(.flex_basis_px)[index] = -1;
 }
 
 pub fn pushFlowBlock(
@@ -768,6 +776,8 @@ pub fn popFlowBlock(
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
     subtree.items(.visibility)[block.index] = .visible;
     subtree.items(.flex_grow)[block.index] = block_info.flex_grow;
+    subtree.items(.flex_shrink)[block.index] = block_info.flex_shrink;
+    subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
 }
 
 pub fn pushStfFlowBlock(
@@ -1059,6 +1069,8 @@ fn setDataBlock(
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
     subtree.items(.flex_grow)[index] = 0.0;
+    subtree.items(.flex_shrink)[index] = 1.0;
+    subtree.items(.flex_basis_px)[index] = -1;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -1114,6 +1126,8 @@ fn setDataIfcContainer(
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
     subtree.items(.flex_grow)[index] = 0.0;
+    subtree.items(.flex_shrink)[index] = 1.0;
+    subtree.items(.flex_basis_px)[index] = -1;
 }
 
 fn setDataSubtreeProxy(
@@ -1147,4 +1161,6 @@ fn setDataSubtreeProxy(
     subtree.items(.clear_side)[index] = .none;
     subtree.items(.visibility)[index] = .visible;
     subtree.items(.flex_grow)[index] = 0.0;
+    subtree.items(.flex_shrink)[index] = 1.0;
+    subtree.items(.flex_basis_px)[index] = -1;
 }

@@ -254,6 +254,10 @@ pub const Subtree = struct {
         visibility: values.types.Visibility,
         /// flex-grow factor for this block when inside a flex container
         flex_grow: f32,
+        /// flex-shrink factor for this block when inside a flex container
+        flex_shrink: f32,
+        /// flex-basis resolved to layout units; -1 = auto
+        flex_basis_px: math.Unit,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

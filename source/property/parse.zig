@@ -209,6 +209,42 @@ pub fn @"flex-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"
     return .{ .box_style = .{ .flex_wrap = .{ .declared = value } } };
 }
 
+/// flex-flow shorthand: <flex-direction> || <flex-wrap>
+/// Values can appear in either order. Missing values get their initial values
+/// (direction=row, wrap=nowrap).
+pub fn @"flex-flow"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-flow") {
+    ctx.initDecl(declaration_index);
+    var direction: ?types.FlexDirection = null;
+    var wrap: ?types.FlexWrap = null;
+
+    // Parse up to 2 tokens in any order
+    var i: u8 = 0;
+    while (i < 2) : (i += 1) {
+        if (direction == null) {
+            if (values.parse.flexDirection(ctx)) |d| {
+                direction = d;
+                continue;
+            }
+        }
+        if (wrap == null) {
+            if (values.parse.flexWrap(ctx)) |w| {
+                wrap = w;
+                continue;
+            }
+        }
+        break;
+    }
+
+    // At least one value must have been parsed
+    if (direction == null and wrap == null) return null;
+    if (!ctx.empty()) return null;
+
+    return .{ .box_style = .{
+        .flex_direction = .{ .declared = direction orelse .row },
+        .flex_wrap = .{ .declared = wrap orelse .nowrap },
+    } };
+}
+
 pub fn @"white-space"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"white-space") {
     ctx.initDecl(declaration_index);
     const value = values.parse.whiteSpace(ctx) orelse return null;
