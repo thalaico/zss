@@ -656,7 +656,9 @@ pub fn display(ctx: *Context) ?types.Display {
         // .{ "table-caption", .table_caption },
         .{ "none", .none },
         .{ "flex", .flex },
+        .{ "inline-flex", .flex },
         .{ "grid", .grid },
+        .{ "inline-grid", .grid },
     });
 }
 
@@ -1688,8 +1690,8 @@ pub fn gridTemplate(ctx: *Context) ?struct { rows: types.GridTrackList, columns:
         rows.tracks[rows.count] = track;
         rows.count += 1;
     }
-    // Parse column tracks after '/'
-    const columns = gridTrackList(ctx) orelse return null;
+    // Parse column tracks after '/'. If there is no '/', columns is empty (auto-sized).
+    const columns = gridTrackList(ctx) orelse types.GridTrackList{};
     return .{ .rows = rows, .columns = columns, .areas = areas };
 }
 
