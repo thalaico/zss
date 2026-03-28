@@ -1243,10 +1243,12 @@ fn shrinkNonGrowChildren(
             const bo = subtree.items(.box_offsets)[child];
             const child_skip = subtree.items(.skip)[child];
             var max_content_right: Unit = 0;
+            var has_grandchildren = false;
             var grandchild = child + 1;
             const child_end = child + child_skip;
             while (grandchild < child_end) {
                 if (!subtree.items(.out_of_flow)[grandchild]) {
+                    has_grandchildren = true;
                     const gbo = subtree.items(.box_offsets)[grandchild];
                     const goff = subtree.items(.offset)[grandchild];
                     max_content_right = @max(max_content_right, goff.x + gbo.border_pos.x + gbo.border_size.w);
@@ -1254,6 +1256,11 @@ fn shrinkNonGrowChildren(
                 grandchild += subtree.items(.skip)[grandchild];
             }
             const left_edge = bo.content_pos.x;
+            if (!has_grandchildren) {
+                // No in-flow grandchildren: element has explicit size or is empty.
+                // Don't shrink — respect the element's own width.
+                continue;
+            }
             const content_width = max_content_right + left_edge + left_edge;
             const new_w = @min(bo.border_size.w, @max(left_edge * 2, content_width));
             subtree.items(.box_offsets)[child].border_size.w = new_w;
