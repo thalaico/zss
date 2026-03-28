@@ -552,6 +552,15 @@ fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index:
             });
             parser.addSpecificity(.type);
         },
+        // :not(:pseudo-class) — e.g., :not(:focus), :not(:hover)
+        .token_colon => {
+            const pseudo_class = parsePseudo(.class, parser) orelse return;
+            try data_list.appendSlice(&.{
+                .{ .simple_selector_tag = .not_pseudo_class },
+                .{ .pseudo_class_selector = pseudo_class },
+            });
+            parser.addSpecificity(.pseudo_class);
+        },
         // Unsupported :not() argument (compound selectors, attribute selectors, etc.)
         // Treat as ignored — the selector still participates in the cascade.
         else => return,

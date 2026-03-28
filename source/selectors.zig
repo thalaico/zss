@@ -78,6 +78,8 @@ pub const Data = union {
         not_id,
         /// :not() negation: next Data is a `type_selector` to negate
         not_type,
+        /// :not() negation: next Data is a `pseudo_class_selector` to negate
+        not_pseudo_class,
     };
 
     pub const AttributeOperatorCase = struct {
@@ -152,7 +154,7 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
                 };
             },
             // Skip over other simple selectors (they have a data payload)
-            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type => { i += 1; },
+            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type, .not_pseudo_class => { i += 1; },
             .attribute => {
                 i += 1;
                 if (data[i - 1].simple_selector_tag.attribute != null) i += 1;
@@ -160,6 +162,69 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
         }
     }
     return null;
+}
+
+
+/// Returns true if the given pseudo-class matches the element.
+/// Used by both .pseudo_class and .not_pseudo_class matching.
+fn matchPseudoClass(pseudo_class: PseudoClass, element: NodeId, env: *const Environment) bool {
+    switch (pseudo_class) {
+        .root => return element == env.root_node,
+        .link => {
+            const type_info = env.getNodeProperty(.type, element);
+            var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+            return type_iter.eql("a");
+        },
+        .visited => return false,
+        .hover, .active, .focus => return false,
+        .first_child => {
+            var sib = element.previousSibling(env);
+            while (sib) |s| : (sib = s.previousSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element) return false;
+            }
+            return true;
+        },
+        .last_child => {
+            var sib = element.nextSibling(env);
+            while (sib) |s| : (sib = s.nextSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element) return false;
+            }
+            return true;
+        },
+        .only_child => {
+            var prev = element.previousSibling(env);
+            while (prev) |s| : (prev = s.previousSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element) return false;
+            }
+            var next = element.nextSibling(env);
+            while (next) |s| : (next = s.nextSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element) return false;
+            }
+            return true;
+        },
+        .first_of_type => {
+            const my_type = env.getNodeProperty(.type, element);
+            var sib = element.previousSibling(env);
+            while (sib) |s| : (sib = s.previousSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element) {
+                    if (matchTypeSelector(my_type, env.getNodeProperty(.type, s))) return false;
+                }
+            }
+            return true;
+        },
+        .enabled => {
+            if (!isFormElement(env, element)) return false;
+            return !env.nodeHasAttributeByName(element, "disabled");
+        },
+        .disabled => {
+            if (!isFormElement(env, element)) return false;
+            return env.nodeHasAttributeByName(element, "disabled");
+        },
+        .checked => return env.nodeHasAttributeByName(element, "checked"),
+        .empty => return element.firstChild(env) == null,
+        .unrecognized => return false,
+        .ignored => return true,
+    }
 }
 
 
@@ -312,82 +377,16 @@ fn matchCompoundSelector(
                 const element_type = env.getNodeProperty(.type, element);
                 if (matchTypeSelector(selector_type, element_type)) return false;
             },
+            .not_pseudo_class => {
+                index += 1;
+                const negated_pc = data[index].pseudo_class_selector;
+                // If the pseudo-class MATCHES, the :not() fails.
+                if (matchPseudoClass(negated_pc, element, env)) return false;
+            },
             .pseudo_class => {
                 index += 1;
                 const pseudo_class = data[index].pseudo_class_selector;
-                switch (pseudo_class) {
-                    .root => {
-                        if (element != env.root_node) return false;
-                    },
-                    .link => {
-                        // :link matches <a> elements (all unvisited; we don't track visited state)
-                        const type_info = env.getNodeProperty(.type, element);
-                        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-                        if (!type_iter.eql("a")) return false;
-                    },
-                    // :visited never matches (we don't track navigation history)
-                    .visited => return false,
-                    // :hover, :active, :focus never match in static rendering
-                    .hover, .active, .focus => return false,
-                    .first_child => {
-                        // :first-child — no preceding element sibling
-                        var sib = element.previousSibling(env);
-                        while (sib) |s| : (sib = s.previousSibling(env)) {
-                            if (env.getNodeProperty(.category, s) == .element) return false;
-                        }
-                    },
-                    .last_child => {
-                        // :last-child — no following element sibling
-                        var sib = element.nextSibling(env);
-                        while (sib) |s| : (sib = s.nextSibling(env)) {
-                            if (env.getNodeProperty(.category, s) == .element) return false;
-                        }
-                    },
-                    .only_child => {
-                        // :only-child — both first-child and last-child
-                        var prev = element.previousSibling(env);
-                        while (prev) |s| : (prev = s.previousSibling(env)) {
-                            if (env.getNodeProperty(.category, s) == .element) return false;
-                        }
-                        var next = element.nextSibling(env);
-                        while (next) |s| : (next = s.nextSibling(env)) {
-                            if (env.getNodeProperty(.category, s) == .element) return false;
-                        }
-                    },
-                    .first_of_type => {
-                        // :first-of-type — no preceding sibling with the same type
-                        const my_type = env.getNodeProperty(.type, element);
-                        var sib = element.previousSibling(env);
-                        while (sib) |s| : (sib = s.previousSibling(env)) {
-                            if (env.getNodeProperty(.category, s) == .element) {
-                                if (matchTypeSelector(my_type, env.getNodeProperty(.type, s))) return false;
-                            }
-                        }
-                    },
-                    .enabled => {
-                        // :enabled matches interactive form elements without 'disabled' attr.
-                        if (!isFormElement(env, element)) return false;
-                        if (env.nodeHasAttributeByName(element, "disabled")) return false;
-                    },
-                    .disabled => {
-                        // :disabled — form element with disabled attribute
-                        if (!isFormElement(env, element)) return false;
-                        if (!env.nodeHasAttributeByName(element, "disabled")) return false;
-                    },
-                    .checked => {
-                        // :checked — check for the 'checked' HTML attribute
-                        if (!env.nodeHasAttributeByName(element, "checked")) return false;
-                    },
-                    .empty => {
-                        // :empty — element has no children (or only whitespace text nodes)
-                        const first = element.firstChild(env);
-                        if (first != null) return false;
-                    },
-                    .unrecognized => return false,
-                    // Functional pseudo-classes (:not(), :is(), :where(), etc.)
-                    // treated as always-matching until properly implemented.
-                    .ignored => {},
-                }
+                if (!matchPseudoClass(pseudo_class, element, env)) return false;
             },
             .pseudo_element => {
                 index += 1;
