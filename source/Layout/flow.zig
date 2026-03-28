@@ -52,6 +52,8 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 parent_info.is_flex_container or parent_info.is_grid_container
             else
                 false;
+            // Read box_style early so flex properties are available after commitNode.
+            const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
             const layout_width: ContainingBlockWidth = if (parent_is_flex_row) blk: {
                 // For flex row items, estimate width by dividing equally.
                 // Non-grow items will be shrunk to content width later.
@@ -74,11 +76,10 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 const total_gaps = gap * @as(Unit, @intCast(flex_child_count - 1));
                 const per_child = @divFloor(@max(0, containing_block_size.width - total_gaps), @as(Unit, @intCast(flex_child_count)));
                 break :blk .{ .normal = per_child };
-            } else .{ .normal = containing_block_size.width };
+            } else
+                .{ .normal = containing_block_size.width };
             const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height);
             const stacking_context = solveStackingContext(computer, position);
-            // Read flex properties before commitNode consumes the node state
-            const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
             // Read and commit font group so child text nodes inherit font-size
             // during layout (getTextFont uses InheritedValue from box_gen stage).
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
@@ -865,6 +866,12 @@ pub fn offsetChildBlocks(
     var escaped_margin_top: Unit = 0;
     var float_left_bottom: Unit = 0;
     var float_right_bottom: Unit = 0;
+    // Horizontal tracking for side-by-side float placement.
+    // Left floats accumulate rightward; right floats accumulate leftward.
+    var float_left_x: Unit = 0;
+    var float_left_line_y: Unit = 0;
+    var float_right_x: Unit = container_width;
+    var float_right_line_y: Unit = 0;
 
     while (child < end) {
         if (out_of_flow_flags[child]) {
@@ -878,26 +885,67 @@ pub fn offsetChildBlocks(
             const border_box_h = box_offsets.border_size.h;
             const margin_bottom = margins.bottom;
 
-            // Apply clear: push cursor below relevant floats
+            // Apply clear: push cursor below relevant floats and reset float x
             switch (clear_side) {
-                .left => cursor = @max(cursor, float_left_bottom),
-                .right => cursor = @max(cursor, float_right_bottom),
-                .both => cursor = @max(cursor, @max(float_left_bottom, float_right_bottom)),
+                .left => {
+                    cursor = @max(cursor, float_left_bottom);
+                    float_left_x = 0;
+                    float_left_line_y = cursor;
+                },
+                .right => {
+                    cursor = @max(cursor, float_right_bottom);
+                    float_right_x = container_width;
+                    float_right_line_y = cursor;
+                },
+                .both => {
+                    cursor = @max(cursor, @max(float_left_bottom, float_right_bottom));
+                    float_left_x = 0;
+                    float_left_line_y = cursor;
+                    float_right_x = container_width;
+                    float_right_line_y = cursor;
+                },
                 .none => {},
             }
 
             switch (float_side) {
                 .left => {
+                    const child_skip = skips[child];
+                    // CSS §10.3.5: Floated elements with auto width use shrink-to-fit.
+                    // Measure the max content right of descendants to determine used width.
+                    const content_w = floatContentWidth(subtree, child, child_skip, box_offsets);
+                    const child_border_width = content_w;
                     const child_height = margin_top + border_box_h + margin_bottom;
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = cursor };
-                    float_left_bottom = @max(float_left_bottom, cursor + child_height);
+                    // Also shrink the float's border-box to content width.
+                    subtree.items(.box_offsets)[child].border_size.w = @max(0, content_w - box_offsets.border_pos.x);
+                    subtree.items(.box_offsets)[child].content_size.w = @max(0, content_w - box_offsets.content_pos.x * 2);
+                    // If this float doesn't fit on the current line, wrap.
+                    if (float_left_x > 0 and float_left_x + child_border_width > container_width) {
+                        float_left_line_y = float_left_bottom;
+                        float_left_x = 0;
+                    }
+                    // Use the higher of cursor and current float line.
+                    const y = @max(cursor, float_left_line_y);
+                    subtree.items(.offset)[child] = .{ .x = float_left_x, .y = y };
+                    float_left_x += child_border_width;
+                    float_left_bottom = @max(float_left_bottom, y + child_height);
                 },
                 .right => {
+                    const child_skip = skips[child];
+                    const content_w = floatContentWidth(subtree, child, child_skip, box_offsets);
+                    const child_border_width = content_w;
                     const child_height = margin_top + border_box_h + margin_bottom;
-                    const child_border_width = box_offsets.border_pos.x + box_offsets.border_size.w;
-                    const x = @max(0, container_width - child_border_width);
-                    subtree.items(.offset)[child] = .{ .x = x, .y = cursor };
-                    float_right_bottom = @max(float_right_bottom, cursor + child_height);
+                    subtree.items(.box_offsets)[child].border_size.w = @max(0, content_w - box_offsets.border_pos.x);
+                    subtree.items(.box_offsets)[child].content_size.w = @max(0, content_w - box_offsets.content_pos.x * 2);
+                    // If this float doesn't fit, wrap.
+                    if (float_right_x < container_width and float_right_x - child_border_width < 0) {
+                        float_right_line_y = float_right_bottom;
+                        float_right_x = container_width;
+                    }
+                    const y = @max(cursor, float_right_line_y);
+                    const x = @max(0, float_right_x - child_border_width);
+                    subtree.items(.offset)[child] = .{ .x = x, .y = y };
+                    float_right_x = x;
+                    float_right_bottom = @max(float_right_bottom, y + child_height);
                 },
                 .none => {
                     if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
@@ -930,6 +978,42 @@ pub fn offsetChildBlocks(
         .escaped_margin_top = escaped_margin_top,
     };
 }
+
+/// Compute the content-dependent width for a floated element.
+/// CSS §10.3.5: floated elements with auto width use shrink-to-fit.
+/// Approximation: measure the rightmost edge of all direct children,
+/// but use their IFC-based content width (skip==1 leaf blocks) or
+/// recurse into block children.
+fn floatContentWidth(subtree: Subtree.View, child: Subtree.Size, child_skip: Subtree.Size, bo: BoxTree.BoxOffsets) Unit {
+    const skips_slice = subtree.items(.skip);
+    var max_content_right: Unit = 0;
+    var gc = child + 1;
+    const child_end = child + child_skip;
+    while (gc < child_end) {
+        if (!subtree.items(.out_of_flow)[gc]) {
+            const gc_skip = skips_slice[gc];
+            const gbo = subtree.items(.box_offsets)[gc];
+            const goff = subtree.items(.offset)[gc];
+            const gc_x = goff.x + gbo.border_pos.x;
+            if (gc_skip == 1) {
+                // Leaf block: its border_size.w is the actual content width.
+                max_content_right = @max(max_content_right, gc_x + gbo.border_size.w);
+            } else {
+                // Non-leaf block: recurse to find content width.
+                const inner_w = floatContentWidth(subtree, gc, gc_skip, gbo);
+                max_content_right = @max(max_content_right, gc_x + inner_w);
+            }
+        }
+        gc += skips_slice[gc];
+    }
+    const left_edge = bo.content_pos.x;
+    if (max_content_right > 0) {
+        return max_content_right + left_edge;
+    }
+    // No descendants: use the element's own border-box width.
+    return bo.border_pos.x + bo.border_size.w;
+}
+
 
 /// Offset children of a table row: all children at offset {0,0} (horizontal
 /// positioning is handled by border_pos.x set during cell sizing).
