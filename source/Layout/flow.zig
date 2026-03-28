@@ -47,27 +47,20 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 parent_info.is_flex_container and !parent_info.flex_is_column
             else
                 false;
-            const flex_grow_val: f32 = if (parent_is_flex_row)
-                computer.getSpecifiedValue(.box_gen, .box_style).flex_grow
-            else
-                0.0;
-            // DEBUG: Log flex child creation
-            if (parent_is_flex_row) {
-                const css_cbw = @divTrunc(containing_block_size.width, 4);
-                if (css_cbw < 2000) {
-                    std.log.err("[FLEX-CHILD-DEBUG] Creating flex child: flex_grow={d:.2}, container_width={d}px", .{flex_grow_val, css_cbw});
-                }
-            }
-            const layout_width: ContainingBlockWidth = if (parent_is_flex_row and flex_grow_val > 0.0) blk: {
-                // For flex-grow items, estimate width by counting flex children.
-                // Count DOM children of the parent node to estimate sibling count.
+            const layout_width: ContainingBlockWidth = if (parent_is_flex_row) blk: {
+                // For flex row items, estimate width by dividing equally.
+                // Non-grow items will be shrunk to content width later.
+                // Grow items will be expanded by distributeFlexGrow.
                 const env = box_gen.getLayout().inputs.env;
                 const parent_node = box_gen.stacks.block_info.top.?.node;
                 var flex_child_count: u32 = 0;
                 if (parent_node.firstChild(env)) |first| {
                     var sib: ?NodeId = first;
                     while (sib) |s| {
-                        flex_child_count += 1;
+                        // Only count element nodes, not text nodes
+                        if (env.getNodeProperty(.category, s) == .element) {
+                            flex_child_count += 1;
+                        }
                         sib = s.nextSibling(env);
                     }
                 }
@@ -1017,6 +1010,13 @@ pub fn offsetChildBlocksFlex(
 
     if (child_count == 0) return 0;
 
+    // Pre-shrink non-grow items to content width BEFORE line splitting.
+    // Without this, items have their initial layout width (container/N) which
+    // causes incorrect line breaks when flex-wrap is enabled.
+    if (!flex_is_column) {
+        shrinkNonGrowChildren(subtree, children[0..child_count]);
+    }
+
     // --- Phase 3: Break children into lines ---
     const MAX_LINES = 32;
     var line_starts: [MAX_LINES + 1]usize = undefined;
@@ -1102,9 +1102,10 @@ pub fn offsetChildBlocksFlex(
         }
         if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
 
-        // Shrink non-grow items when overflowing
-        const overflows = line_total_main > container_main;
-        if (overflows and !flex_is_column) {
+        // Shrink non-grow items to content width.
+        // CSS flex: items without flex-grow size to their content,
+        // then remaining space is distributed via flex-grow.
+        if (!flex_is_column) {
             shrinkNonGrowChildren(subtree, children[ls..le]);
             line_total_main = 0;
             for (ls..le) |ci| {
