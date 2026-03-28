@@ -1091,24 +1091,33 @@ pub fn offsetChildBlocksFlex(
     const wrapping = flex_wrap != .nowrap;
 
     // --- Phase 1: Collect in-flow children ---
+    // Per CSS Flexbox §4, whitespace-only anonymous flex items are not rendered.
+    // In our box tree, inter-element whitespace generates IFC containers as direct
+    // children of the flex container. These inflate cross sizes with their line-
+    // height even though they contain only collapsible whitespace. Skip them,
+    // matching grid.zig:114 which does the same for grid items.
     var children: [MAX_CHILDREN]Subtree.Size = undefined;
     var child_count: usize = 0;
+    const block_types = subtree.items(.type);
     {
         var child = index + 1;
         while (child < end) {
-            if (!out_of_flow_flags[child]) {
+            if (out_of_flow_flags[child]) {
+                subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+            } else if (block_types[child] == .ifc_container) {
+                // IFC containers as direct children of a flex container are
+                // inter-element whitespace text nodes. Real text content is
+                // inside block children as nested IFCs, not at this level.
+                subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+            } else {
                 if (child_count < MAX_CHILDREN) {
                     children[child_count] = child;
                     child_count += 1;
                 }
-            } else {
-                subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
             }
             child += skips[child];
         }
     }
-
-    if (child_count == 0) return 0;
 
     // --- Phase 2 (§9.2): Determine flex base size and hypothetical main size ---
     const flex_basis_values = subtree.items(.flex_basis_px);

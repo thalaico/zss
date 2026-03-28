@@ -111,8 +111,28 @@ fn endMode(box_gen: *BoxGen) !Result {
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width);
 
+    // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
+    // whitespace-only text content does not generate boxes. Detect whitespace-
+    // only IFCs by checking if total glyph advance is negligible (a single
+    // collapsed space). Without this, every whitespace text node between block
+    // elements adds ~line-height of empty space.
+    var effective_height = line_split_result.height;
+    // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
+    // whitespace-only text content does not generate boxes. Detect whitespace-
+    // only IFCs: single line, very narrow content (just a collapsed space).
+    // Without this, every whitespace text node between block elements adds
+    // ~line-height of empty space, inflating layout of deeply nested HTML.
+    if (ifc.ptr.line_boxes.items.len <= 1) {
+        const content_w = line_split_result.longest_line_box_length;
+        // A single collapsed space is ~4px = ~16 internal units.
+        // Anything narrower than 1em (~56 internal units at 14px) is whitespace.
+        if (content_w <= 60) {
+            effective_height = 0;
+        }
+    }
+
     box_gen.inline_context.popIfc();
-    box_gen.popIfc(ifc.ptr.id, containing_block_width, line_split_result.height);
+    box_gen.popIfc(ifc.ptr.id, containing_block_width, effective_height);
 
     return .{
         .min_width = line_split_result.longest_line_box_length,
