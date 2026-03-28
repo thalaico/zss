@@ -285,12 +285,30 @@ fn resolveTrackSizes(
                 auto_count += 1;
             },
             .minmax => {
-                // Use min as base, will grow with fr/auto later
-                sizes[i] = track.value; // min value (fixed)
-                fixed_total += track.value;
-                if (track.max_kind == .fr) {
-                    total_fr += track.maxFrValue();
-                    fr_count += 1;
+                // minmax(min, max): resolve based on max track sizing function
+                sizes[i] = track.value; // start at min value
+                switch (track.max_kind) {
+                    .fr => {
+                        // minmax(fixed, fr): participate in fr distribution (pass 2)
+                        fixed_total += track.value;
+                        total_fr += track.maxFrValue();
+                        fr_count += 1;
+                    },
+                    .fixed => {
+                        // minmax(fixed, fixed): clamp to max value
+                        const max_val = track.max_value;
+                        sizes[i] = if (max_val > track.value) max_val else track.value;
+                        fixed_total += sizes[i];
+                    },
+                    .auto, .min_content, .max_content => {
+                        // minmax(fixed, auto/content): treat as auto with a floor
+                        fixed_total += track.value;
+                        auto_count += 1;
+                    },
+                    .minmax => {
+                        // Nested minmax not valid CSS; treat as fixed at min
+                        fixed_total += track.value;
+                    },
                 }
             },
         }
@@ -330,8 +348,11 @@ fn resolveTrackSizes(
             const per_auto = @divFloor(auto_space, @as(Unit, auto_count));
             for (0..count) |i| {
                 const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
-                if (track.kind == .auto or track.kind == .min_content or track.kind == .max_content) {
-                    sizes[i] = per_auto;
+                const is_auto = track.kind == .auto or track.kind == .min_content or track.kind == .max_content;
+                const is_minmax_auto = track.kind == .minmax and (track.max_kind == .auto or track.max_kind == .min_content or track.max_kind == .max_content);
+                if (is_auto or is_minmax_auto) {
+                    const floor = if (is_minmax_auto) track.value else 0;
+                    sizes[i] = @max(per_auto, floor);
                 }
             }
         }
