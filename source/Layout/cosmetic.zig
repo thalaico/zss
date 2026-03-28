@@ -200,6 +200,9 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                     ifc.text_decoration = text_decoration;
                     ifc.text_align = text_align;
                     ifc.line_height = line_height;
+                    // Propagate visibility to IFC container block entry so
+                    // renderInlineFormattingContexts can check it directly.
+                    subtree.items(.visibility)[i] = block_visibility;
                 },
                 else => {},
             }
