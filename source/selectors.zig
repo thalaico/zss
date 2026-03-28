@@ -94,7 +94,7 @@ pub const Combinator = enum(u8) { descendant, child, next_sibling, subsequent_si
 
 pub const PseudoElement = enum { before, after, unrecognized };
 
-pub const PseudoClass = enum { root, link, visited, hover, active, focus, unrecognized, ignored };
+pub const PseudoClass = enum { root, link, visited, hover, active, focus, first_child, last_child, only_child, enabled, disabled, checked, empty, first_of_type, unrecognized, ignored };
 
 pub const AttributeOperator = enum { equals, list_contains, equals_or_prefix_dash, starts_with, ends_with, contains };
 
@@ -329,6 +329,60 @@ fn matchCompoundSelector(
                     .visited => return false,
                     // :hover, :active, :focus never match in static rendering
                     .hover, .active, .focus => return false,
+                    .first_child => {
+                        // :first-child — no preceding element sibling
+                        var sib = element.previousSibling(env);
+                        while (sib) |s| : (sib = s.previousSibling(env)) {
+                            if (env.getNodeProperty(.category, s) == .element) return false;
+                        }
+                    },
+                    .last_child => {
+                        // :last-child — no following element sibling
+                        var sib = element.nextSibling(env);
+                        while (sib) |s| : (sib = s.nextSibling(env)) {
+                            if (env.getNodeProperty(.category, s) == .element) return false;
+                        }
+                    },
+                    .only_child => {
+                        // :only-child — both first-child and last-child
+                        var prev = element.previousSibling(env);
+                        while (prev) |s| : (prev = s.previousSibling(env)) {
+                            if (env.getNodeProperty(.category, s) == .element) return false;
+                        }
+                        var next = element.nextSibling(env);
+                        while (next) |s| : (next = s.nextSibling(env)) {
+                            if (env.getNodeProperty(.category, s) == .element) return false;
+                        }
+                    },
+                    .first_of_type => {
+                        // :first-of-type — no preceding sibling with the same type
+                        const my_type = env.getNodeProperty(.type, element);
+                        var sib = element.previousSibling(env);
+                        while (sib) |s| : (sib = s.previousSibling(env)) {
+                            if (env.getNodeProperty(.category, s) == .element) {
+                                if (matchTypeSelector(my_type, env.getNodeProperty(.type, s))) return false;
+                            }
+                        }
+                    },
+                    .enabled => {
+                        // :enabled matches interactive form elements without 'disabled' attr.
+                        if (!isFormElement(env, element)) return false;
+                        if (env.nodeHasAttributeByName(element, "disabled")) return false;
+                    },
+                    .disabled => {
+                        // :disabled — form element with disabled attribute
+                        if (!isFormElement(env, element)) return false;
+                        if (!env.nodeHasAttributeByName(element, "disabled")) return false;
+                    },
+                    .checked => {
+                        // :checked — check for the 'checked' HTML attribute
+                        if (!env.nodeHasAttributeByName(element, "checked")) return false;
+                    },
+                    .empty => {
+                        // :empty — element has no children (or only whitespace text nodes)
+                        const first = element.firstChild(env);
+                        if (first != null) return false;
+                    },
                     .unrecognized => return false,
                     // Functional pseudo-classes (:not(), :is(), :where(), etc.)
                     // treated as always-matching until properly implemented.
@@ -347,6 +401,19 @@ fn matchCompoundSelector(
         }
     }
     return true;
+}
+
+/// Check if element is a form element (input, button, select, textarea, fieldset).
+/// Used by :enabled and :disabled pseudo-class matchers.
+fn isFormElement(env: *const Environment, element: NodeId) bool {
+    const type_info = env.getNodeProperty(.type, element);
+    const name_index = @intFromEnum(type_info.name);
+    // Check each form element type with a fresh iterator
+    inline for (.{ "input", "button", "select", "textarea", "fieldset" }) |tag| {
+        var it = env.type_names.iterator(name_index);
+        if (it.eql(tag)) return true;
+    }
+    return false;
 }
 
 fn matchTypeSelector(selector_type: ElementType, element_type: ElementType) bool {

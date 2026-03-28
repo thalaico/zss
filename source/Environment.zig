@@ -652,6 +652,19 @@ pub fn nodeHasAttribute(env: *const Environment, node: NodeId, name: AttributeNa
     return env.nodeGetAttributeValue(node, name) != null;
 }
 
+/// Return true if the node has an attribute whose interned name matches the given string.
+/// Used by pseudo-class matchers (:enabled, :disabled, :checked) that need to check
+/// for specific attribute names without interning (const Environment constraint).
+/// Assumes name_str is lowercase (HTML attribute names from Lexbor are always lowercase).
+pub fn nodeHasAttributeByName(env: *const Environment, node: NodeId, name_str: []const u8) bool {
+    const attrs = env.nodes_to_attributes.get(node) orelse return false;
+    for (attrs) |attr| {
+        var it = env.attribute_names.iterator(@intFromEnum(attr.name));
+        if (it.eql(name_str)) return true;
+    }
+    return false;
+}
+
 pub const Testing = struct {
     pub fn expectEqualTypeNames(testing: *const Testing, expected: []const u8, type_name: TypeName) !void {
         const env: *const Environment = @alignCast(@fieldParentPtr("testing", testing));

@@ -269,7 +269,7 @@ const RuleProcessor = struct {
         };
 
         if (!media.evaluate(condition, viewport)) {
-            return; // Media condition doesn't match — skip this block.
+            return; // Media condition doesn't match -- skip this block.
         }
 
         // Condition matches — process the contained rules.

@@ -600,12 +600,19 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
     switch (main_component_tag) {
         .token_ident => {
             if (pseudo == .class) {
+                // Try mapIdentifierEnum for single-word pseudo-classes first
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass)) |pc| {
                     switch (pc) {
-                        .root, .link, .visited, .hover, .active, .focus => return pc,
+                        .root, .link, .visited, .hover, .active, .focus,
+                        .enabled, .disabled, .checked, .empty,
+                        => return pc,
                         .unrecognized, .ignored => {},
+                        // Hyphenated names won't match via mapIdentifierEnum
+                        else => {},
                     }
                 }
+                // Check hyphenated pseudo-class names manually
+                if (matchHyphenatedPseudoClass(parser, main_component_index)) |pc| return pc;
             } else {
                 // pseudo == .element or .legacy_element
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoElement)) |pe| {
@@ -630,6 +637,33 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
         else => {},
     }
     parser.sequence.reset(main_component_index);
+    return null;
+}
+
+/// Match hyphenated pseudo-class names like :first-child, :last-child, :only-child, :first-of-type.
+/// These can't be matched by mapIdentifierEnum because it uses enum field names (underscores).
+fn matchHyphenatedPseudoClass(parser: *Parser, index: Ast.Index) ?selectors.PseudoClass {
+    var it = parser.source_code.identTokenIterator(index.location(parser.ast));
+    // Read into a small buffer for comparison
+    var buf: [20]u8 = undefined;
+    var len: usize = 0;
+    while (it.next()) |cp| {
+        if (cp > 127 or len >= buf.len) return null; // Not ASCII or too long
+        buf[len] = @intCast(cp | 0x20); // Lowercase
+        len += 1;
+    }
+    const name = buf[0..len];
+    const map = .{
+        .{ "first-child", selectors.PseudoClass.first_child },
+        .{ "last-child", selectors.PseudoClass.last_child },
+        .{ "only-child", selectors.PseudoClass.only_child },
+        .{ "first-of-type", selectors.PseudoClass.first_of_type },
+        .{ "focus-visible", selectors.PseudoClass.focus }, // treat focus-visible as focus (never matches in static)
+        .{ "read-only", selectors.PseudoClass.ignored }, // :read-only - treat as always-matching
+    };
+    inline for (map) |entry| {
+        if (std.mem.eql(u8, name, entry[0])) return entry[1];
+    }
     return null;
 }
 
