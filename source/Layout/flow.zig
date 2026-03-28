@@ -110,9 +110,25 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 const info = &box_gen.stacks.block_info.top.?;
                 info.flex_grow = box_style_specified.flex_grow;
                 info.flex_shrink = box_style_specified.flex_shrink;
-                // Resolve flex_basis to layout units (4 units per CSS pixel); -1 = auto
+                // §9.2: Resolve flex-basis to layout units (4 per CSS px).
+                //   - Definite flex-basis → use directly.
+                //   - flex-basis: auto + definite width → use width (§9.2D).
+                //   - flex-basis: auto + width: auto → -1 (content measurement).
                 info.flex_basis_px = switch (box_style_specified.flex_basis) {
-                    .auto => -1,
+                    .auto => blk: {
+                        const cw = computer.getSpecifiedValue(.box_gen, .content_width);
+                        break :blk switch (cw.width) {
+                            .px => |v| @as(i32, @intFromFloat(@round(v * 4.0))),
+                            .em => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedFontSizePx(.box_gen) * 4.0))),
+                            // Percentage and auto widths: use content measurement.
+                            // Percentage widths on flex items resolve against the
+                            // flex container, but for flex-basis:auto the spec says
+                            // to use the main size property.  When that's a percentage,
+                            // treat as content-based to avoid items claiming the full
+                            // container width as their flex base.
+                            .percentage, .auto => @as(i32, -1),
+                        };
+                    },
                     .px => |v| @intFromFloat(@round(v * 4.0)),
                     .percentage => |pct| @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct / 100.0)),
                 };
@@ -1397,9 +1413,9 @@ fn resolveFlexibleLengths(
         const ci = line_children[i];
 
         if (growing) {
-            frozen[i] = (flex_grows[ci] == 0.0) or (flex_base[i] >= hypothetical[i]);
+            frozen[i] = (flex_grows[ci] == 0.0) or (flex_base[i] > hypothetical[i]);
         } else {
-            frozen[i] = (flex_shrinks[ci] == 0.0) or (flex_base[i] <= hypothetical[i]);
+            frozen[i] = (flex_shrinks[ci] == 0.0) or (flex_base[i] < hypothetical[i]);
         }
 
         if (frozen[i]) {
