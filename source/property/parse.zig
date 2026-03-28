@@ -102,7 +102,14 @@ pub fn @"z-index"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"z-
 pub fn overflow(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.overflow) {
     ctx.initDecl(declaration_index);
     const value = values.parse.overflow(ctx) orelse return null;
-    if (!ctx.empty()) return null;
+    // CSS Overflow L3: `overflow` accepts one or two keywords.
+    // `overflow: hidden auto` means overflow-x: hidden, overflow-y: auto.
+    // We store a single overflow value; consume and discard a second keyword.
+    if (!ctx.empty()) {
+        // Try to consume the second keyword; if it's valid, accept the declaration.
+        _ = values.parse.overflow(ctx);
+        if (!ctx.empty()) return null;
+    }
     return .{ .box_style = .{ .overflow = .{ .declared = value } } };
 }
 
