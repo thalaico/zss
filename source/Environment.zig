@@ -373,16 +373,16 @@ pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Alloc
     const range = range_entry;
     
     // Collect string from segmented storage into a contiguous buffer
-    var result = std.ArrayList(u8).init(allocator);
-    errdefer result.deinit();
-    try result.ensureTotalCapacity(range.len);
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+    try result.ensureTotalCapacity(allocator, range.len);
     
     var it = interner.string.iterator(range.position, range.len);
     while (it.next()) |segment| {
         result.appendSliceAssumeCapacity(segment);
     }
     
-    return try result.toOwnedSlice();
+    return try result.toOwnedSlice(allocator);
 }
 
 pub const Texts = struct {

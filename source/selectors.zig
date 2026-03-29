@@ -235,6 +235,7 @@ pub fn matchElement(
     complex_selector_index: Data.ListIndex,
     env: *const Environment,
     match_candidate: NodeId,
+    allocator: std.mem.Allocator,
 ) bool {
     switch (env.getNodeProperty(.category, match_candidate)) {
         .element => {},
@@ -242,7 +243,7 @@ pub fn matchElement(
     }
 
     const last_trailing = data[complex_selector_index].next_complex_selector - 1;
-    return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, match_candidate);
+    return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, match_candidate, allocator);
 }
 
 fn matchComplexSelector(
@@ -251,11 +252,12 @@ fn matchComplexSelector(
     last_trailing: Data.ListIndex,
     env: *const Environment,
     match_candidate: NodeId,
+    allocator: std.mem.Allocator,
 ) bool {
     var trailing_index = last_trailing;
     var trailing = data[trailing_index].trailing;
     var element: ?NodeId = match_candidate;
-    if (!matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?)) return false;
+    if (!matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) return false;
     compound_loop: while (trailing.compound_selector_start != first_compound) {
         trailing_index = trailing.compound_selector_start - 1;
         trailing = data[trailing_index].trailing;
@@ -267,7 +269,7 @@ fn matchComplexSelector(
                         .element => {},
                         .text => unreachable,
                     }
-                    if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e)) continue :compound_loop;
+                    if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e, allocator)) continue :compound_loop;
                 } else return false;
             },
             .child => {
@@ -278,7 +280,7 @@ fn matchComplexSelector(
                         .text => unreachable,
                     }
                 } else return false;
-                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?)) continue :compound_loop;
+                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) continue :compound_loop;
                 return false;
             },
             .subsequent_sibling => {
@@ -286,7 +288,7 @@ fn matchComplexSelector(
                 while (element) |e| : (element = e.previousSibling(env)) {
                     switch (env.getNodeProperty(.category, e)) {
                         .element => {
-                            if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e)) continue :compound_loop;
+                            if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e, allocator)) continue :compound_loop;
                         },
                         .text => {},
                     }
@@ -300,7 +302,7 @@ fn matchComplexSelector(
                         .text => {},
                     }
                 } else return false;
-                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?)) continue :compound_loop;
+                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) continue :compound_loop;
                 return false;
             },
             .column => panic("TODO: Unsupported selector combinator: {s}\n", .{@tagName(trailing.combinator)}),
@@ -315,6 +317,7 @@ fn matchCompoundSelector(
     end: Data.ListIndex,
     env: *const Environment,
     element: NodeId,
+    allocator: std.mem.Allocator,
 ) bool {
     var index = start;
     while (index < end) : (index += 1) {
@@ -352,8 +355,59 @@ fn matchCompoundSelector(
                         .equals => {
                             if (!env.eqlAttributeValues(case, node_value, selector_value)) return false;
                         },
-                        // TODO: implement substring attribute operators (list_contains, starts_with, etc.)
-                        .list_contains, .equals_or_prefix_dash, .starts_with, .ends_with, .contains => return false,
+                        .list_contains => {
+                            // [attr~=val] matches if attr contains val as whitespace-separated word
+                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
+                            defer allocator.free(node_str);
+                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+                            defer allocator.free(selector_str);
+                            
+                            var it = std.mem.splitScalar(u8, node_str, ' ');
+                            while (it.next()) |word| {
+                                if (std.mem.eql(u8, word, selector_str)) break;
+                            } else return false;
+                        },
+                        .starts_with => {
+                            // [attr^=val] matches if attr starts with val
+                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
+                            defer allocator.free(node_str);
+                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+                            defer allocator.free(selector_str);
+                            if (!std.mem.startsWith(u8, node_str, selector_str)) return false;
+                        },
+                        .ends_with => {
+                            // [attr$=val] matches if attr ends with val
+                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
+                            defer allocator.free(node_str);
+                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+                            defer allocator.free(selector_str);
+                            if (!std.mem.endsWith(u8, node_str, selector_str)) return false;
+                        },
+                        .contains => {
+                            // [attr*=val] matches if attr contains val anywhere
+                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
+                            defer allocator.free(node_str);
+                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+                            defer allocator.free(selector_str);
+                            if (std.mem.indexOf(u8, node_str, selector_str) == null) return false;
+                        },
+                        .equals_or_prefix_dash => {
+                            // [attr|=val] matches if attr is val or starts with val-
+                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
+                            defer allocator.free(node_str);
+                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+                            defer allocator.free(selector_str);
+                            
+                            if (std.mem.eql(u8, node_str, selector_str)) {
+                                // Exact match
+                            } else if (std.mem.startsWith(u8, node_str, selector_str) and 
+                                       node_str.len > selector_str.len and 
+                                       node_str[selector_str.len] == '-') {
+                                // Prefix followed by dash
+                            } else {
+                                return false;
+                            }
+                        },
                     }
                 } else {
                     // [attr] — attribute just needs to exist

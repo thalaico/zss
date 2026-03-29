@@ -346,7 +346,7 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
             }
             if (node.firstChild(env)) |first_child| try ctx.document_node_stack.push(allocator, first_child);
 
-            if (zss.selectors.matchElement(source.selector_data.items, selector, env, node)) {
+            if (zss.selectors.matchElement(source.selector_data.items, selector, env, node, allocator)) {
                 if (pseudo_element) |pe| {
                     try ctx.appendPseudoDeclBlock(node, pe, block, importance);
                 } else {
