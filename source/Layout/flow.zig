@@ -1005,8 +1005,11 @@ pub fn offsetChildBlocks(
         child += skips[child];
     }
 
-    // Include the last normal-flow child's bottom margin in auto height.
-    const normal_height = cursor + prev_margin;
+    // Include the last normal-flow child's bottom margin in auto height,
+    // but only if at least one child contributed non-zero height. When all
+    // children are self-collapsing (cursor == 0), their collapsed margins
+    // do not contribute to the parent's content height (CSS 2.1 §10.6.3).
+    const normal_height = if (cursor > 0) cursor + prev_margin else cursor;
     return .{
         .auto_height = @max(normal_height, @max(float_left_bottom, float_right_bottom)),
         .escaped_margin_top = escaped_margin_top,
