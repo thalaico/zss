@@ -189,12 +189,18 @@ pub fn layoutGridChildren(
             }
         }
 
-        // Track actual child height for auto-sized rows
+        // Track actual child height for auto-sized rows.
+        // Only use non-spanning items (span_rows == 1) for row sizing.
+        // Spanning items' contributions are complex (CSS Grid §11.5) and
+        // would require distributing their height across spanned tracks.
+        // Skipping them is safe when non-spanning items exist in those rows.
         const child_border_h = box_offsets[child].border_pos.y + box_offsets[child].border_size.h;
-        if (row_sizes[placed_row] == 0 or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .auto) or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .min_content)) {
-            // Auto or min-content row: grow to fit content
-            if (child_border_h > row_sizes[placed_row]) {
-                row_sizes[placed_row] = child_border_h;
+        if (span_rows == 1) {
+            if (row_sizes[placed_row] == 0 or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .auto) or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .min_content)) {
+                // Auto or min-content row: grow to fit content
+                if (child_border_h > row_sizes[placed_row]) {
+                    row_sizes[placed_row] = child_border_h;
+                }
             }
         }
 
