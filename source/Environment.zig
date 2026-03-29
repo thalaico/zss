@@ -357,6 +357,34 @@ pub fn eqlAttributeValues(env: *const Environment, case: Utf8StringInterner.Case
     }
 }
 
+/// Helper to extract attribute value string for substring matching.
+/// Allocates a temporary buffer — caller must free the returned slice.
+pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Allocator, value: AttributeValue, case: Utf8StringInterner.Case) ![]u8 {
+    const interner = switch (env.case_options.attribute_values) {
+        .insensitive => &env.attribute_values_insensitive,
+        .sensitive => switch (case) {
+            .sensitive => &env.attribute_values_sensitive,
+            .insensitive => &env.attribute_values_insensitive,
+        },
+    };
+    
+    const index = @intFromEnum(value);
+    const range_entry = interner.indexer.entries.items(.value)[index];
+    const range = range_entry;
+    
+    // Collect string from segmented storage into a contiguous buffer
+    var result = std.ArrayList(u8).init(allocator);
+    errdefer result.deinit();
+    try result.ensureTotalCapacity(range.len);
+    
+    var it = interner.string.iterator(range.position, range.len);
+    while (it.next()) |segment| {
+        result.appendSliceAssumeCapacity(segment);
+    }
+    
+    return try result.toOwnedSlice();
+}
+
 pub const Texts = struct {
     list: std.ArrayListUnmanaged([]const u8) = .empty,
     arena: std.heap.ArenaAllocator.State = .{},
