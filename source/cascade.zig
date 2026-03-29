@@ -194,6 +194,14 @@ pub const Database = struct {
                     },
                 }
             }
+            
+            // Apply custom properties from this declaration block
+            const block_id = @intFromEnum(block);
+            if (decls.custom_props_map.get(block_id)) |custom_props| {
+                for (custom_props.items) |prop| {
+                    try storage.custom_properties.put(allocator, prop.name, prop.value);
+                }
+            }
         }
 
         /// If there is a cascaded value for the value group `group`, returns a pointer to it. Otherwise returns `null`.
@@ -273,6 +281,17 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         const node = entry.key_ptr.*;
         const cascaded_values = try env.cascade_db.addStorage(env.allocator, node);
         cascaded_values.reset();
+        
+        // Inherit custom properties from parent
+        if (node.parent(env)) |parent_node| {
+            if (env.cascade_db.getStorage(parent_node)) |parent_storage| {
+                // Copy parent's custom properties
+                var prop_it = parent_storage.custom_properties.iterator();
+                while (prop_it.next()) |prop_entry| {
+                    try cascaded_values.custom_properties.put(env.allocator, prop_entry.key_ptr.*, prop_entry.value_ptr.*);
+                }
+            }
+        }
         for (entry.value_ptr.*.items) |item| {
             try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
         }
