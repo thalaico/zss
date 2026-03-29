@@ -973,10 +973,16 @@ pub fn @"grid-template"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType
     // Try parsing: <row-tracks> / <column-tracks>
     // Also handle area strings interleaved with row tracks.
     const result = values.parse.gridTemplate(ctx) orelse return null;
+    // Only set grid-template-areas if the shorthand actually contained area strings.
+    // Per CSS spec, `grid-template: <rows> / <columns>` (without area strings)
+    // resets grid-template-areas. But our cascade uses reverse-order first-write-wins,
+    // so setting areas to empty here would overwrite a separately-declared
+    // grid-template-areas that was parsed first. Only declare areas when present.
+    const has_areas = result.areas.count > 0;
     return .{ .grid_template = .{
         .rows = .{ .declared = result.rows },
         .columns = .{ .declared = result.columns },
-        .areas = .{ .declared = result.areas },
+        .areas = if (has_areas) .{ .declared = result.areas } else .undeclared,
     } };
 }
 
