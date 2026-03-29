@@ -9,6 +9,7 @@ pub const syntax = @import("syntax.zig");
 pub const unicode = @import("unicode.zig");
 pub const values = @import("values.zig");
 pub const zml = @import("zml.zig");
+pub const resolve_vars = @import("resolve_vars.zig");
 
 
 pub const BoxTree = @import("BoxTree.zig");
