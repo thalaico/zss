@@ -728,7 +728,7 @@ pub fn popFlowBlock(
     const auto_height = if (block_info.is_flex_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
-        break :blk flow.offsetChildBlocksFlex(layout.box_tree.ptr, subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
+        break :blk flow.offsetChildBlocksFlex(layout, subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
     } else if (block_info.is_grid_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);

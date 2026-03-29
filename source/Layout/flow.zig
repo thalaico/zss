@@ -966,18 +966,24 @@ pub fn offsetChildBlocks(
                         // escapes through the parent (which has no border/padding-top,
                         // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
                         if (is_empty_box) {
-                            // Empty first child: collapsed margin escapes.
-                            // max(top, bottom) becomes the escaped margin.
-                            escaped_margin_top = @max(margin_top, margin_bottom);
+                            // Empty first child: its collapsed margin escapes and is
+                            // accumulated into escaped_margin_top. The parent-child
+                            // collapsing opportunity carries forward to the next
+                            // non-empty child, so first_normal_child stays true.
+                            // CSS 2.1 §8.3.1: collapsing is transitive through
+                            // self-collapsing boxes between parent and first content.
+                            escaped_margin_top = @max(escaped_margin_top, margin_top, margin_bottom);
                             subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
-                            // cursor stays at 0, prev_margin = 0 since both margins
-                            // were absorbed into escaped_margin_top.
-                            prev_margin = 0;
+                            // cursor stays at 0, prev_margin = escaped_margin_top so
+                            // the next non-empty child collapses with it.
+                            prev_margin = escaped_margin_top;
+                            // first_normal_child stays true: next child can still escape.
                         } else {
-                            escaped_margin_top = margin_top;
+                            escaped_margin_top = @max(escaped_margin_top, margin_top);
                             subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
                             cursor = border_box_h;
                             prev_margin = margin_bottom;
+                            first_normal_child = false;
                         }
                     } else {
                         if (is_empty_box) {
@@ -996,8 +1002,8 @@ pub fn offsetChildBlocks(
                             cursor = border_box_y + border_box_h;
                             prev_margin = margin_bottom;
                         }
+                        first_normal_child = false;
                     }
-                    first_normal_child = false;
                 },
             }
         }
@@ -1099,7 +1105,7 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
 ///   §9.5-9.6: Positions items with justify-content and align-items
 /// Returns auto height: total cross extent of all lines.
 pub fn offsetChildBlocksFlex(
-    box_tree: *BoxTree,
+    layout: *zss.Layout,
     subtree: Subtree.View,
     index: Subtree.Size,
     skip: Subtree.Size,
@@ -1111,6 +1117,7 @@ pub fn offsetChildBlocksFlex(
     flex_is_column: bool,
     flex_wrap: zss.values.types.FlexWrap,
 ) Unit {
+    const box_tree = layout.box_tree.ptr;
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const end = index + skip;
@@ -1233,7 +1240,7 @@ pub fn offsetChildBlocksFlex(
                 bo.content_size.w = @max(0, resolved_w - left_edge * 2);
 
                 // Re-layout IFC (text) containers at the new width
-                relayoutIfcAtWidth(box_tree, subtree, child_idx, bo.content_size.w);
+                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w);
             }
         }
     }
@@ -1543,54 +1550,59 @@ fn resolveFlexibleLengths(
     }
 }
 
-/// Re-layout IFC containers within a flex item at the new resolved width.
-/// Adjusts IFC container box dimensions to match actual content width.
+/// Re-layout IFC containers within a flex item at the new resolved flex width.
+/// Clears existing line boxes and re-splits glyphs at new_content_w, then
+/// updates IFC container and parent item heights to match the re-flowed content.
 fn relayoutIfcAtWidth(
-    box_tree: *BoxTree,
+    layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
     item_idx: Subtree.Size,
-    _: Unit,  // new_content_w — reserved for future text re-layout
+    new_content_w: Unit,
 ) void {
+    const inline_layout = @import("./inline.zig");
     const types_slice = subtree.items(.type);
     const item_skip = subtree.items(.skip)[item_idx];
     const item_end = item_idx + item_skip;
 
+    // Walk direct children of the flex item, looking for IFC containers.
+    // A flex item typically has one IFC container wrapping all its inline content.
+    var total_ifc_height: Unit = 0;
     var gc = item_idx + 1;
     while (gc < item_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
             switch (types_slice[gc]) {
                 .ifc_container => |ifc_id| {
-                    const ifc = box_tree.getIfc(ifc_id);
-                    if (ifc.glyphs.len > 0) {
-                        var max_line_width: Unit = 0;
-                        for (ifc.line_boxes.items) |line_box| {
-                            var line_width: Unit = 0;
-                            var gi = line_box.elements[0];
-                            while (gi < line_box.elements[1]) {
-                                line_width += ifc.glyphs.items(.metrics)[gi].advance;
-                                const glyph_idx = ifc.glyphs.items(.index)[gi];
-                                gi += 1;
-                                if (glyph_idx == 0 and gi < line_box.elements[1]) gi += 1;
-                            }
-                            max_line_width = @max(max_line_width, line_width);
-                        }
-                        const bo = &subtree.items(.box_offsets)[gc];
-                        const left_edge = bo.content_pos.x;
-                        bo.border_size.w = max_line_width + left_edge * 2;
-                        bo.content_size.w = max_line_width;
-                    } else {
-                        const bo = &subtree.items(.box_offsets)[gc];
-                        bo.border_size.w = 0;
-                        bo.content_size.w = 0;
-                    }
+                    const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                    // Clear existing line boxes; re-split at the new width.
+                    ifc.line_boxes.clearRetainingCapacity();
+                    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                        // On allocation failure, leave line_boxes empty; height = 0.
+                        break;
+                    };
+                    // Update IFC container dimensions.
+                    const bo = &subtree.items(.box_offsets)[gc];
+                    bo.border_size.w = new_content_w;
+                    bo.content_size.w = new_content_w;
+                    bo.border_size.h = result.height;
+                    bo.content_size.h = result.height;
+                    total_ifc_height += result.height;
                 },
                 else => {},
             }
         }
         gc += subtree.items(.skip)[gc];
     }
-}
 
+    // Update the flex item's own border/content height to fit its re-flowed children.
+    // Without this, cross-size Phase 5 reads a stale height from the initial layout.
+    if (total_ifc_height > 0) {
+        const item_bo = &subtree.items(.box_offsets)[item_idx];
+        const pad_top = item_bo.content_pos.y;
+        const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
+        item_bo.content_size.h = total_ifc_height;
+        item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
+    }
+}
 fn childMainSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) Unit {
     const bo = subtree.items(.box_offsets)[child];
     return if (flex_is_column) bo.border_size.h else bo.border_size.w;

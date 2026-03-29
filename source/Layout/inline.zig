@@ -1163,7 +1163,7 @@ pub const IFCLineSplitResult = struct {
     longest_line_box_length: Unit,
 };
 
-fn splitIntoLineBoxes(
+pub fn splitIntoLineBoxes(
     layout: *Layout,
     subtree: Subtree.View,
     ifc: *Ifc,
