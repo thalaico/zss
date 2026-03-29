@@ -42,11 +42,23 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 headers: Headers = .{},
 meta: std.ArrayListUnmanaged(Meta) = .empty,
 arena: ArenaAllocator.State = .{},
+/// Custom properties per block. Each block can declare --name: value pairs.
+custom_props_map: std.AutoHashMapUnmanaged(std.meta.Tag(Block), CustomPropsBlock) = .empty,
 current: struct {
     block: std.meta.Tag(Block) = 0,
     meta: Meta = undefined,
+    /// Custom properties being added to current block
+    custom_props: CustomPropsBlock = .empty,
 } = .{},
 debug: Debug = .{},
+
+/// Storage for custom CSS properties (--name: value)
+pub const CustomProp = struct {
+    name: []const u8,  // Property name without -- prefix
+    value: []const u8, // Unparsed value string
+};
+
+pub const CustomPropsBlock = std.ArrayListUnmanaged(CustomProp);
 
 pub const Block = enum(u32) {
     _,
@@ -111,19 +123,35 @@ pub fn deinit(decls: *Declarations, allocator: Allocator) void {
     inline for (std.meta.fields(Headers)) |field| {
         @field(decls.headers, field.name).deinit(allocator);
     }
+    
+    // Deinit custom properties
+    var it = decls.custom_props_map.valueIterator();
+    while (it.next()) |block| {
+        block.deinit(allocator);
+    }
+    decls.custom_props_map.deinit(allocator);
 }
 
 pub fn openBlock(decls: *Declarations, allocator: Allocator) !Block {
     decls.debug.openBlock();
     if (decls.current.block == std.math.maxInt(std.meta.Tag(Block))) return error.OutOfDeclBlockIds;
     decls.current.meta = .{};
+    decls.current.custom_props = .empty; // Reset custom props for new block
     try decls.meta.ensureUnusedCapacity(allocator, 1);
+    try decls.custom_props_map.ensureUnusedCapacity(allocator, 1); // Pre-allocate for closeBlock
     return @enumFromInt(decls.current.block);
 }
 
 pub fn closeBlock(decls: *Declarations) void {
     decls.debug.closeBlock();
     decls.meta.appendAssumeCapacity(decls.current.meta);
+    
+    // Store custom properties for this block if any were added
+    if (decls.current.custom_props.items.len > 0) {
+        const block_id = decls.current.block;
+        decls.custom_props_map.putAssumeCapacity(block_id, decls.current.custom_props);
+    }
+    
     decls.current.block += 1;
     decls.current.meta = undefined;
 }
@@ -132,6 +160,34 @@ pub const Importance = enum {
     normal,
     important,
 };
+
+pub fn addCustomProperty(
+    decls: *Declarations,
+    allocator: Allocator,
+    importance: Importance,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    decls.debug.assertBlockOpened();
+    
+    // For now, ignore importance and just store all custom properties
+    // TODO: Handle importance properly (separate normal/important)
+    _ = importance;
+    
+    // Allocate copies of name and value in arena
+    var arena = decls.arena.promote(allocator);
+    defer decls.arena = arena.state;
+    const arena_allocator = arena.allocator();
+    
+    const name_copy = try arena_allocator.dupe(u8, name);
+    const value_copy = try arena_allocator.dupe(u8, value);
+    
+    // Add to current block's custom properties
+    try decls.current.custom_props.append(allocator, .{
+        .name = name_copy,
+        .value = value_copy,
+    });
+}
 
 /// Add values to the currently open declaration block.
 /// See also: `addAll`.

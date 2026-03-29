@@ -349,6 +349,67 @@ pub fn parseDeclarationsFromAst(
     return block;
 }
 
+fn parseCustomProperty(
+    env: *Environment,
+    ctx: *ValueContext,
+    declaration_index: Ast.Index,
+    importance: Importance,
+) !void {
+    // Extract property name (skip --)
+    const name_location = declaration_index.location(ctx.ast);
+    // Get the property name by iterating over identifier
+    var name_buf: [256]u8 = undefined;
+    var name_len: usize = 0;
+    var name_it = ctx.source_code.identTokenIterator(name_location);
+    // Skip first two characters (--)
+    _ = name_it.next();
+    _ = name_it.next();
+    while (name_it.next()) |cp| {
+        if (name_len >= name_buf.len) break;
+        if (cp <= 0x7F) {
+            name_buf[name_len] = @intCast(cp);
+            name_len += 1;
+        } else {
+            // For non-ASCII, encode as UTF-8
+            const encoded_len = std.unicode.utf8Encode(cp, name_buf[name_len..]) catch break;
+            name_len += encoded_len;
+        }
+    }
+    if (name_len == 0) return; // Invalid custom property
+    
+    // Get the value sequence
+    ctx.initDecl(declaration_index);
+    
+    // Extract value as raw text from source
+    // We need to find the start and end of the value in the source
+    const children = declaration_index.children(ctx.ast);
+    if (children.start == children.end) return; // No value
+    
+    const first_token_loc = children.start.location(ctx.ast);
+    var last_token_loc = first_token_loc;
+    var seq = children;
+    while (seq.nextKeepSpaces(ctx.ast)) |idx| {
+        last_token_loc = idx.location(ctx.ast);
+    }
+    
+    // Approximate: use location range
+    const value_start = @intFromEnum(first_token_loc);
+    const value_end = @intFromEnum(last_token_loc) + 10; // +10 to include last token
+    const value_slice = if (value_end <= ctx.source_code.text.len)
+        ctx.source_code.text[value_start..value_end]
+    else
+        ctx.source_code.text[value_start..];
+    
+    // Add to current declaration block
+    try env.decls.addCustomProperty(
+        env.allocator,
+        importance,
+        name_buf[0..name_len],
+        value_slice,
+    );
+}
+
+
 fn parseDeclaration(
     env: *Environment,
     ctx: *ValueContext,
@@ -366,8 +427,8 @@ fn parseDeclaration(
         ctx.source_code.text[prop_start] == '-' and
         ctx.source_code.text[prop_start + 1] == '-')
     {
-        // Custom property - store name and value for cascade
-        // For now, just return (will implement storage in next task)
+        // Custom property - extract name and value
+        try parseCustomProperty(env, ctx, declaration_index, importance);
         return;
     }
     
