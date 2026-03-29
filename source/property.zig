@@ -127,7 +127,7 @@ pub const Property = enum {
             .@"flex-direction"         => &.{.{.box_style       , &.{.flex_direction} }},
             .@"justify-content"        => &.{.{.box_style       , &.{.justify_content}}},
             .@"align-items"            => &.{.{.box_style       , &.{.align_items}   }},
-            .gap                       => &.{.{.box_style       , &.{.gap}           }},
+            .gap                       => &.{.{.box_style       , &.{.column_gap, .row_gap} }},
             .@"flex-grow"              => &.{.{.box_style       , &.{.flex_grow}     }},
             .@"flex-shrink"            => &.{.{.box_style       , &.{.flex_shrink}   }},
             .@"flex-basis"             => &.{.{.box_style       , &.{.flex_basis}    }},
@@ -241,8 +241,8 @@ pub const Property = enum {
             .@"grid-template-areas"    => &.{.{.grid_template   , &.{.areas}         }},
             .@"grid-template"          => &.{.{.grid_template   , &.{.columns, .rows, .areas} }},
             .@"grid-area"              => &.{.{.box_style       , &.{.grid_area}     }},
-            .@"column-gap"             => &.{.{.box_style       , &.{.gap}           }},
-            .@"row-gap"                => &.{.{.box_style       , &.{.gap}           }},
+            .@"column-gap"             => &.{.{.box_style       , &.{.column_gap}    }},
+            .@"row-gap"                => &.{.{.box_style       , &.{.row_gap}       }},
             .content                   => &.{.{.generated_content, &.{.content}      }},
         };
         // zig fmt: on

@@ -136,9 +136,12 @@ pub fn @"align-items"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
 
 pub fn gap(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.gap) {
     ctx.initDecl(declaration_index);
-    const value = values.parse.gap(ctx) orelse return null;
+    const row_value = values.parse.gap(ctx) orelse return null;
+    // CSS gap shorthand: <row-gap> <column-gap>?
+    // If only one value, it applies to both.
+    const col_value = values.parse.gap(ctx) orelse row_value;
     if (!ctx.empty()) return null;
-    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+    return .{ .box_style = .{ .column_gap = .{ .declared = col_value }, .row_gap = .{ .declared = row_value } } };
 }
 
 pub fn @"flex-grow"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"flex-grow") {
@@ -997,14 +1000,14 @@ pub fn @"column-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@
     ctx.initDecl(declaration_index);
     const value = values.parse.gap(ctx) orelse return null;
     if (!ctx.empty()) return null;
-    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+    return .{ .box_style = .{ .column_gap = .{ .declared = value } } };
 }
 
 pub fn @"row-gap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"row-gap") {
     ctx.initDecl(declaration_index);
     const value = values.parse.gap(ctx) orelse return null;
     if (!ctx.empty()) return null;
-    return .{ .box_style = .{ .gap = .{ .declared = value } } };
+    return .{ .box_style = .{ .row_gap = .{ .declared = value } } };
 }
 
 pub fn content(ctx: *Context, declaration_index: Ast.Index, env: *@import("../zss.zig").Environment) !?ReturnType(.content) {

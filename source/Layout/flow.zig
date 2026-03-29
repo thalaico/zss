@@ -91,14 +91,15 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     .stretch => .stretch,
                     else => .stretch,
                 };
-                info.flex_gap = box_style_specified.gap;
+                info.flex_gap = box_style_specified.column_gap;
                 info.flex_wrap = box_style_specified.flex_wrap;
             }
+            if (inner_block == .grid) std.log.err("FLOW GRID_ENTERED for node", .{});
             if (inner_block == .grid) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_grid_container = true;
-                info.grid_column_gap = box_style_specified.gap;
-                info.grid_row_gap = box_style_specified.gap;
+                info.grid_column_gap = box_style_specified.column_gap;
+                info.grid_row_gap = box_style_specified.row_gap;
                 // Read grid template properties from cascade
                 const grid_tmpl = computer.getSpecifiedValue(.box_gen, .grid_template);
                 info.grid_columns = grid_tmpl.columns;
@@ -955,21 +956,47 @@ pub fn offsetChildBlocks(
                     float_right_bottom = @max(float_right_bottom, y + child_height);
                 },
                 .none => {
+                    // CSS 2.1 §8.3.1: Empty box margin collapsing.
+                    // When a box has zero border-box height (no content, no
+                    // padding, no border), its top and bottom margins collapse
+                    // through it into a single margin of max(top, bottom).
+                    const is_empty_box = (border_box_h == 0);
+
                     if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
                         // Parent-child margin collapsing: first child's top margin
                         // escapes through the parent (which has no border/padding-top,
                         // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
-                        escaped_margin_top = margin_top;
-                        subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
-                        cursor = border_box_h;
-                        prev_margin = margin_bottom;
+                        if (is_empty_box) {
+                            // Empty first child: collapsed margin escapes.
+                            // max(top, bottom) becomes the escaped margin.
+                            escaped_margin_top = @max(margin_top, margin_bottom);
+                            subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                            // cursor stays at 0, prev_margin = 0 since both margins
+                            // were absorbed into escaped_margin_top.
+                            prev_margin = 0;
+                        } else {
+                            escaped_margin_top = margin_top;
+                            subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                            cursor = border_box_h;
+                            prev_margin = margin_bottom;
+                        }
                     } else {
-                        // Collapse this child's top margin with previous sibling's bottom margin.
-                        const collapsed = @max(prev_margin, margin_top);
-                        const border_box_y = cursor + collapsed;
-                        subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
-                        cursor = border_box_y + border_box_h;
-                        prev_margin = margin_bottom;
+                        if (is_empty_box) {
+                            // Empty box: top and bottom margins collapse through.
+                            // The resulting margin is max(prev, top, bottom) and
+                            // carries forward as prev_margin. Cursor doesn't move.
+                            const self_collapsed = @max(margin_top, margin_bottom);
+                            prev_margin = @max(prev_margin, self_collapsed);
+                            // Place at current cursor so the box occupies zero space.
+                            subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin - margin_top };
+                        } else {
+                            // Collapse this child's top margin with previous sibling's bottom margin.
+                            const collapsed = @max(prev_margin, margin_top);
+                            const border_box_y = cursor + collapsed;
+                            subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
+                            cursor = border_box_y + border_box_h;
+                            prev_margin = margin_bottom;
+                        }
                     }
                     first_normal_child = false;
                 },
