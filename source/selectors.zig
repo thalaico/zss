@@ -45,6 +45,18 @@ pub const Data = union {
     attribute_selector_value: AttributeValue,
     pseudo_class_selector: PseudoClass,
     pseudo_element_selector: PseudoElement,
+    /// :is() pseudo-class with nested selector list
+    is_selector_list: NestedSelectorList,
+    /// :where() pseudo-class with nested selector list
+    where_selector_list: NestedSelectorList,
+
+    /// Reference to a list of nested selectors (for :is/:where)
+    pub const NestedSelectorList = packed struct {
+        /// Index of first complex selector in the nested list
+        start: ListIndex,
+        /// Number of complex selectors in the list
+        count: u8,
+    };
 
     pub const ListIndex = u24;
 
@@ -80,6 +92,10 @@ pub const Data = union {
         not_type,
         /// :not() negation: next Data is a `pseudo_class_selector` to negate
         not_pseudo_class,
+        /// :is() pseudo-class: next Data is an `is_selector_list`
+        is,
+        /// :where() pseudo-class: next Data is a `where_selector_list`
+        where,
     };
 
     pub const AttributeOperatorCase = struct {
@@ -154,7 +170,7 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
                 };
             },
             // Skip over other simple selectors (they have a data payload)
-            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type, .not_pseudo_class => { i += 1; },
+            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type, .not_pseudo_class, .is, .where => { i += 1; },
             .attribute => {
                 i += 1;
                 if (data[i - 1].simple_selector_tag.attribute != null) i += 1;
@@ -451,7 +467,37 @@ fn matchCompoundSelector(
                     .unrecognized => return false,
                 }
             },
-        }
+            .is => {
+                index += 1;
+                const list = data[index].is_selector_list;
+                // Try matching element against each selector in the :is() list (OR logic)
+                var matched = false;
+                var i: Data.ListIndex = 0;
+                while (i < list.count) : (i += 1) {
+                    const selector_index = list.start + i;
+                    if (matchComplexSelector(data, selector_index + 1, data[selector_index].next_complex_selector - 1, env, element, allocator)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) return false;
+            },
+            .where => {
+                index += 1;
+                const list = data[index].where_selector_list;
+                // Same as :is() but with zero specificity (already handled during parsing)
+                var matched = false;
+                var i: Data.ListIndex = 0;
+                while (i < list.count) : (i += 1) {
+                    const selector_index = list.start + i;
+                    if (matchComplexSelector(data, selector_index + 1, data[selector_index].next_complex_selector - 1, env, element, allocator)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (!matched) return false;
+            },
+    }
     }
     return true;
 }
