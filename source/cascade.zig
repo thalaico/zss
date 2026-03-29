@@ -79,6 +79,16 @@ pub const Database = struct {
     };
 
     pub fn deinit(db: *Database, allocator: Allocator) void {
+        // Deinit custom properties hashmaps
+        var node_it = db.node_map.valueIterator();
+        while (node_it.next()) |storage| {
+            storage.custom_properties.deinit(allocator);
+        }
+        var pseudo_it = db.pseudo_map.valueIterator();
+        while (pseudo_it.next()) |storage| {
+            storage.custom_properties.deinit(allocator);
+        }
+
         db.node_map.deinit(allocator);
         db.pseudo_map.deinit(allocator);
 
@@ -116,6 +126,9 @@ pub const Database = struct {
         group_map: Map = .{},
         /// The cascaded value for the 'all' CSS property.
         all: ?CssWideKeyword = null,
+        /// Custom properties (CSS variables) declared on this element.
+        /// Keys are property names (without --), values are unparsed token sequences.
+        custom_properties: std.StringHashMapUnmanaged([]const u8) = .{},
 
         pub const Map = std.EnumMap(groups.Tag, usize);
 

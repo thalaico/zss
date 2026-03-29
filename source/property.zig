@@ -359,6 +359,18 @@ fn parseDeclaration(
 ) !void {
     // TODO: If this property has already been declared, skip parsing a value entirely.
     const location = declaration_index.location(ctx.ast);
+    
+    // Check if it's a custom property (starts with --)
+    const prop_start = @intFromEnum(location);
+    if (prop_start + 2 <= ctx.source_code.text.len and
+        ctx.source_code.text[prop_start] == '-' and
+        ctx.source_code.text[prop_start + 1] == '-')
+    {
+        // Custom property - store name and value for cascade
+        // For now, just return (will implement storage in next task)
+        return;
+    }
+    
     const property = ctx.source_code.mapIdentifierEnum(location, Property) orelse {
         return;
     };
