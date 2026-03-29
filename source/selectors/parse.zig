@@ -406,16 +406,29 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
                     // :not() specificity = specificity of its argument (CSS Selectors Level 3)
                     return;
                 }
+                // Check for :is() or :where()
+                const fn_name = parser.source_code.mapIdentifierValue(fn_loc, []const u8, &.{
+                    .{ "is", "is" },
+                    .{ "where", "where" },
+                }) orelse {
+                    // Not :not/:is/:where — reset and fall through
+                    parser.sequence.reset(after_colon_index);
+                    const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
+                    try data_list.appendSlice(&.{
+                        .{ .simple_selector_tag = .pseudo_class },
+                        .{ .pseudo_class_selector = pseudo_class },
+                    });
+                    parser.addSpecificity(.pseudo_class);
+                    return;
+                };
+                if (std.mem.eql(u8, fn_name, "is")) {
+                    try parseIsOrWhereFunction(parser, data_list, after_colon_index, true);
+                    return;
+                } else {
+                    try parseIsOrWhereFunction(parser, data_list, after_colon_index, false);
+                    return;
+                }
             }
-            // Not :not() — reset and delegate to parsePseudo for other pseudo-classes
-            parser.sequence.reset(after_colon_index);
-            const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
-            try data_list.appendSlice(&.{
-                .{ .simple_selector_tag = .pseudo_class },
-                .{ .pseudo_class_selector = pseudo_class },
-            });
-            parser.addSpecificity(.pseudo_class);
-            return;
         },
         else => {},
     }
@@ -564,6 +577,70 @@ fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index:
         // Unsupported :not() argument (compound selectors, attribute selectors, etc.)
         // Treat as ignored — the selector still participates in the cascade.
         else => return,
+    }
+}
+
+/// Parse :is() or :where() with a selector list argument.
+/// Stores nested selectors in data_list and emits a NestedSelectorList reference.
+fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, is_is: bool) Allocator.Error!void {
+    const saved_sequence = parser.sequence;
+    defer parser.sequence = saved_sequence;
+    parser.sequence = function_index.children(parser.ast);
+
+    // Remember where nested selectors start
+    const nested_start: selectors.Data.ListIndex = @intCast(data_list.len());
+    var selector_count: u8 = 0;
+
+    // Parse first selector
+    _ = parser.skipSpaces();
+    const saved_specificities_len = parser.specificities.items.len;
+    if ((parseComplexSelector(parser, data_list) catch return) != null) {} else return;
+    selector_count += 1;
+
+    // Parse additional selectors (comma-separated)
+    while (true) {
+        _ = parser.skipSpaces();
+        const next_tag, _ = parser.next() orelse break;
+        if (next_tag != .token_comma) break;
+        _ = parser.skipSpaces();
+        if ((parseComplexSelector(parser, data_list) catch break) != null) {} else break;
+        selector_count += 1;
+        if (selector_count == 255) break; // u8 max
+    }
+
+    // Emit the nested selector list reference
+    const tag: Data.SimpleSelectorTag = if (is_is) .is else .where;
+    const list_data = if (is_is)
+        Data{ .is_selector_list = .{ .start = nested_start, .count = selector_count } }
+    else
+        Data{ .where_selector_list = .{ .start = nested_start, .count = selector_count } };
+
+    try data_list.appendSlice(&.{
+        .{ .simple_selector_tag = tag },
+        list_data,
+    });
+
+    // Specificity handling:
+    // :is() takes the highest specificity of its arguments (CSS Selectors Level 4)
+    // :where() has zero specificity
+    if (is_is) {
+        // Find maximum specificity from all nested selectors
+        var max_a: u8 = 0;
+        var max_b: u8 = 0;
+        var max_c: u8 = 0;
+        var i = saved_specificities_len;
+        while (i < parser.specificities.items.len) : (i += 1) {
+            const spec = parser.specificities.items[i];
+            if (spec.a > max_a) max_a = spec.a;
+            if (spec.b > max_b) max_b = spec.b;
+            if (spec.c > max_c) max_c = spec.c;
+        }
+        // Remove nested specificities and add the maximum
+        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+        try parser.specificities.append(parser.allocator, .{ .a = max_a, .b = max_b, .c = max_c });
+    } else {
+        // :where() has zero specificity - remove all nested specificities
+        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
     }
 }
 
