@@ -22,8 +22,6 @@ fn endMode(box_gen: *BoxGen) void {
 
 pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyle.InnerBlock, position: BoxTree.BoxStyle.Position) !void {
     const layout = box_gen.getLayout();
-    const std = @import("std");
-    std.log.err("[INITIAL-DEBUG] Root element: viewport.w={d}, viewport.h={d}", .{layout.viewport.w, layout.viewport.h});
     const sizes = flow.solveAllSizes(&layout.computer, position, .{ .normal = layout.viewport.w }, layout.viewport.h);
     const stacking_context = rootBlockSolveStackingContext(&layout.computer);
     layout.computer.commitNode(.box_gen);

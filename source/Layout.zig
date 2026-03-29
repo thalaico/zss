@@ -91,7 +91,6 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         .w = width_units,
         .h = height_units,
     };
-    std.log.err("[VIEWPORT-DEBUG] Viewport set to: {d}x{d} internal units ({d}x{d} CSS pixels)", .{width_units, height_units, layout.inputs.width, layout.inputs.height});
 
     var box_tree = BoxTree{ .allocator = allocator };
     errdefer box_tree.deinit();

@@ -94,7 +94,6 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 info.flex_gap = box_style_specified.column_gap;
                 info.flex_wrap = box_style_specified.flex_wrap;
             }
-            if (inner_block == .grid) std.log.err("FLOW GRID_ENTERED for node", .{});
             if (inner_block == .grid) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_grid_container = true;
