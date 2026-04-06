@@ -616,7 +616,20 @@ fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_
     defer parser.last_pseudo_element = saved_pe;
     parser.sequence = function_index.children(parser.ast);
 
-    // Remember where nested selectors start
+    // Emit the :is/:where tag and list placeholder FIRST, before nested selector data.
+    // This ensures matchCompoundSelector encounters the tag before the inline nested data.
+    // The placeholder start/count will be updated after parsing the nested selectors.
+    const tag: Data.SimpleSelectorTag = if (is_is) .is else .where;
+    const list_index: selectors.Data.ListIndex = @intCast(data_list.len());
+    try data_list.appendSlice(&.{
+        .{ .simple_selector_tag = tag },
+        if (is_is)
+            Data{ .is_selector_list = .{ .start = undefined, .count = undefined } }
+        else
+            Data{ .where_selector_list = .{ .start = undefined, .count = undefined } },
+    });
+
+    // Remember where nested selectors start (right after the tag + list entries)
     const nested_start: selectors.Data.ListIndex = @intCast(data_list.len());
     var selector_count: u8 = 0;
 
@@ -637,17 +650,11 @@ fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_
         if (selector_count == 255) break; // u8 max
     }
 
-    // Emit the nested selector list reference
-    const tag: Data.SimpleSelectorTag = if (is_is) .is else .where;
-    const list_data = if (is_is)
-        Data{ .is_selector_list = .{ .start = nested_start, .count = selector_count } }
+    // Update the placeholder with the actual nested data location and count
+    if (is_is)
+        data_list.list.items[list_index + 1] = Data{ .is_selector_list = .{ .start = nested_start, .count = selector_count } }
     else
-        Data{ .where_selector_list = .{ .start = nested_start, .count = selector_count } };
-
-    try data_list.appendSlice(&.{
-        .{ .simple_selector_tag = tag },
-        list_data,
-    });
+        data_list.list.items[list_index + 1] = Data{ .where_selector_list = .{ .start = nested_start, .count = selector_count } };
 
     // Specificity handling:
     // :is() takes the highest specificity of its arguments (CSS Selectors Level 4)

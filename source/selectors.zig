@@ -486,6 +486,14 @@ fn matchCompoundSelector(
                     sel_idx = next;
                 }
                 if (!matched) return false;
+                // Skip past inline nested selector data that follows this entry.
+                // The parser places the nested data after the is_selector_list entry.
+                // Traverse the chain to find the extent.
+                var skip_idx = list.start;
+                for (0..list.count) |_| {
+                    skip_idx = data[skip_idx].next_complex_selector;
+                }
+                index = skip_idx - 1; // -1 compensates for the while loop increment
             },
             .where => {
                 index += 1;
@@ -504,6 +512,12 @@ fn matchCompoundSelector(
                     sel_idx = next;
                 }
                 if (!matched) return false;
+                // Skip past inline nested selector data (same as .is case).
+                var skip_idx = list.start;
+                for (0..list.count) |_| {
+                    skip_idx = data[skip_idx].next_complex_selector;
+                }
+                index = skip_idx - 1;
             },
     }
     }
