@@ -108,7 +108,19 @@ comptime {
     if (!zss.debug.runtime_safety) assert(@sizeOf(Data) == 4);
 }
 
-pub const Combinator = enum(u8) { descendant, child, next_sibling, subsequent_sibling, column };
+pub const Combinator = enum(u8) {
+    descendant,
+    child,
+    next_sibling,
+    subsequent_sibling,
+    column,
+    /// Used only in the last trailing of a complex selector to indicate no pseudo-element.
+    end_none,
+    /// Used only in the last trailing of a complex selector to indicate ::before.
+    end_before,
+    /// Used only in the last trailing of a complex selector to indicate ::after.
+    end_after,
+};
 
 pub const PseudoElement = enum { before, after, unrecognized };
 
@@ -154,30 +166,17 @@ test "Specificity.order" {
 
 /// Extract the pseudo-element (::before/::after) from the rightmost compound selector.
 /// Returns null if no pseudo-element is present or if it's unrecognized.
+/// The pseudo-element is encoded in the combinator field of the last trailing, set during parsing.
 pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.ListIndex) ?PseudoElement {
     const last_trailing = data[complex_selector_index].next_complex_selector - 1;
     const trailing = data[last_trailing].trailing;
-    // Scan the rightmost compound selector for a pseudo-element tag
-    var i = trailing.compound_selector_start;
-    while (i < last_trailing) : (i += 1) {
-        switch (data[i].simple_selector_tag) {
-            .pseudo_element => {
-                i += 1;
-                const pe = data[i].pseudo_element_selector;
-                return switch (pe) {
-                    .before, .after => pe,
-                    .unrecognized => null,
-                };
-            },
-            // Skip over other simple selectors (they have a data payload)
-            .type, .id, .class, .pseudo_class, .not_class, .not_id, .not_type, .not_pseudo_class, .is, .where => { i += 1; },
-            .attribute => {
-                i += 1;
-                if (data[i - 1].simple_selector_tag.attribute != null) i += 1;
-            },
-        }
-    }
-    return null;
+    return switch (trailing.combinator) {
+        .end_before => .before,
+        .end_after => .after,
+        .end_none => null,
+        // Older data or non-last trailing: no pseudo-element.
+        else => null,
+    };
 }
 
 
@@ -322,6 +321,8 @@ fn matchComplexSelector(
                 return false;
             },
             .column => panic("TODO: Unsupported selector combinator: {s}\n", .{@tagName(trailing.combinator)}),
+            // end_* values only appear in the last trailing and are never reached in this loop.
+            .end_none, .end_before, .end_after => unreachable,
         }
     }
     return true;
@@ -470,30 +471,37 @@ fn matchCompoundSelector(
             .is => {
                 index += 1;
                 const list = data[index].is_selector_list;
-                // Try matching element against each selector in the :is() list (OR logic)
+                // Try matching element against each selector in the :is() list (OR logic).
+                // Nested selectors are stored as a linked list via next_complex_selector;
+                // traverse the chain rather than using list.start + i (which is incorrect).
                 var matched = false;
-                var i: Data.ListIndex = 0;
+                var sel_idx = list.start;
+                var i: u8 = 0;
                 while (i < list.count) : (i += 1) {
-                    const selector_index = list.start + i;
-                    if (matchComplexSelector(data, selector_index + 1, data[selector_index].next_complex_selector - 1, env, element, allocator)) {
+                    const next = data[sel_idx].next_complex_selector;
+                    if (matchComplexSelector(data, sel_idx + 1, next - 1, env, element, allocator)) {
                         matched = true;
                         break;
                     }
+                    sel_idx = next;
                 }
                 if (!matched) return false;
             },
             .where => {
                 index += 1;
                 const list = data[index].where_selector_list;
-                // Same as :is() but with zero specificity (already handled during parsing)
+                // Same as :is() but with zero specificity (already handled during parsing).
+                // Use chain traversal, not list.start + i.
                 var matched = false;
-                var i: Data.ListIndex = 0;
+                var sel_idx = list.start;
+                var i: u8 = 0;
                 while (i < list.count) : (i += 1) {
-                    const selector_index = list.start + i;
-                    if (matchComplexSelector(data, selector_index + 1, data[selector_index].next_complex_selector - 1, env, element, allocator)) {
+                    const next = data[sel_idx].next_complex_selector;
+                    if (matchComplexSelector(data, sel_idx + 1, next - 1, env, element, allocator)) {
                         matched = true;
                         break;
                     }
+                    sel_idx = next;
                 }
                 if (!matched) return false;
             },

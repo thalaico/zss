@@ -30,6 +30,10 @@ pub const Parser = struct {
     allocator: Allocator,
     valid: bool = undefined,
     specificity: Specificity = undefined,
+    /// Tracks the pseudo-element of the most recently parsed compound selector.
+    /// Reset before each compound, set by parsePseudoElementSelector.
+    /// Used to encode pseudo-element info in the last trailing of a complex selector.
+    last_pseudo_element: selectors.PseudoElement = .unrecognized,
 
     pub fn init(
         env: *Environment,
@@ -168,7 +172,9 @@ const DataListManaged = struct {
     /// `start` is the value previously returned by `beginComplexSelector`
     fn endComplexSelector(data_list: DataListManaged, start: Data.ListIndex) void {
         data_list.list.items[start] = .{ .next_complex_selector = data_list.len() };
-        data_list.list.items[data_list.len() - 1].trailing.combinator = undefined;
+        // NOTE: We do NOT overwrite the last trailing's combinator here.
+        // parseComplexSelector encodes the pseudo-element of the rightmost compound
+        // in the last trailing's combinator field (using end_none/end_before/end_after).
     }
 
     fn reset(data_list: DataListManaged, complex_selector_start: Data.ListIndex) void {
@@ -184,24 +190,43 @@ fn parseComplexSelector(parser: *Parser, data_list: DataListManaged) !?void {
 
     var compound_start = complex_start + 1;
     _ = parser.skipSpaces();
+    parser.last_pseudo_element = .unrecognized;
     (try parseCompoundSelector(parser, data_list)) orelse return parser.fail();
+    // Track the PE of the most recently successfully parsed compound.
+    var last_valid_pe = parser.last_pseudo_element;
 
     while (true) {
         const combinator = parseCombinator(parser) orelse {
-            try data_list.append(.{ .trailing = .{ .combinator = undefined, .compound_selector_start = compound_start } });
+            // End of complex selector: write last trailing with PE encoding.
+            const pe_combinator: selectors.Combinator = switch (last_valid_pe) {
+                .before => .end_before,
+                .after => .end_after,
+                .unrecognized => .end_none,
+            };
+            try data_list.append(.{ .trailing = .{ .combinator = pe_combinator, .compound_selector_start = compound_start } });
             break;
         };
         try data_list.append(.{ .trailing = .{ .combinator = combinator, .compound_selector_start = compound_start } });
 
         compound_start = data_list.len();
         _ = parser.skipSpaces();
+        parser.last_pseudo_element = .unrecognized;
         (try parseCompoundSelector(parser, data_list)) orelse {
             if (combinator == .descendant) {
+                // Compound failed after descendant combinator (trailing space).
+                // Update the previously written trailing to encode PE for last valid compound.
+                const pe_combinator: selectors.Combinator = switch (last_valid_pe) {
+                    .before => .end_before,
+                    .after => .end_after,
+                    .unrecognized => .end_none,
+                };
+                data_list.list.items[data_list.len() - 1].trailing.combinator = pe_combinator;
                 break;
             } else {
                 return parser.fail();
             }
         };
+        last_valid_pe = parser.last_pseudo_element;
     }
 
     if (!parser.valid) {
@@ -585,6 +610,10 @@ fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index:
 fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, is_is: bool) Allocator.Error!void {
     const saved_sequence = parser.sequence;
     defer parser.sequence = saved_sequence;
+    // Save/restore last_pseudo_element so nested selector parsing doesn't corrupt
+    // the outer compound's pseudo-element tracking.
+    const saved_pe = parser.last_pseudo_element;
+    defer parser.last_pseudo_element = saved_pe;
     parser.sequence = function_index.children(parser.ast);
 
     // Remember where nested selectors start
@@ -661,6 +690,7 @@ fn parsePseudoElementSelector(parser: *Parser, data_list: DataListManaged) !?voi
         .{ .pseudo_element_selector = pseudo_element },
     });
     parser.addSpecificity(.pseudo_element);
+    parser.last_pseudo_element = pseudo_element;
 
     while (true) {
         const class_index = parser.accept(.token_colon) orelse break;
