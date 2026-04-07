@@ -45,6 +45,19 @@ stacks: Stacks = .{},
 sct_builder: StackingContextTreeBuilder = .{},
 absolute: Absolute = .{},
 
+/// Depth counter for flex/grid container nesting.
+/// When > 0, IFC layout is deferred to after flex/grid resolution.
+flex_grid_depth: u8 = 0,
+
+/// List of IFCs deferred during Pass 1 (inside flex/grid subtrees).
+deferred_ifcs: std.ArrayListUnmanaged(DeferredIfc) = .{},
+
+const DeferredIfc = struct {
+    subtree_id: Subtree.Id,
+    ifc_container_idx: Subtree.Size,
+    ifc_ptr: *Ifc,
+    initial_cb_width: math.Unit,
+};
 const Stacks = struct {
     mode: zss.Stack(Mode) = .{},
     subtree: zss.Stack(struct {
@@ -712,6 +725,11 @@ pub fn popFlowBlock(
     var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
 
+    // Decrement flex/grid depth when leaving a flex/grid container
+    if (block_info.is_flex_container or block_info.is_grid_container) {
+        box_gen.flex_grid_depth -= 1;
+    }
+
     // If the parent is a grid container, record this child's grid-area hash
     if (box_gen.stacks.block_info.top) |*parent_info| {
         if (parent_info.is_grid_container and block_info.grid_area_hash != 0) {
@@ -753,6 +771,13 @@ pub fn popFlowBlock(
         }
         break :blk result.auto_height;
     };
+
+    // After flex/grid resolution, process any deferred IFCs
+    // at their resolved item widths.
+    if (block_info.is_flex_container or block_info.is_grid_container) {
+        box_gen.processDeferredIfcs(subtree);
+    }
+
     const width = switch (auto_width) {
         .normal => block_info.sizes.get(.inline_size).?,
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
@@ -1169,4 +1194,54 @@ fn setDataSubtreeProxy(
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
     subtree.items(.list_style_type)[index] = .none;
+}
+
+/// Process deferred IFCs after flex/grid resolution.
+/// For each deferred IFC, determine the correct content width from
+/// its parent block's resolved dimensions, then run splitIntoLineBoxes.
+pub fn processDeferredIfcs(box_gen: *BoxGen, subtree: Subtree.View) void {
+    const layout = box_gen.getLayout();
+    const inline_layout = @import("./inline.zig");
+    const box_offsets = subtree.items(.box_offsets);
+
+    for (box_gen.deferred_ifcs.items) |entry| {
+        // Find the parent block of this IFC container.
+        // The IFC container is at entry.ifc_container_idx.
+        // Its parent is the block that contains it.
+        // Walk backward from the IFC to find the parent block.
+        const ifc_idx = entry.ifc_container_idx;
+        var parent_idx: Subtree.Size = ifc_idx;
+        if (parent_idx > 0) parent_idx -= 1;
+
+        // The parent's content width determines the IFC width.
+        // After flex/grid resolution, the parent block has been resized.
+        const parent_bo = box_offsets[parent_idx];
+        const parent_content_w = parent_bo.content_size.w;
+
+        // Skip if no valid width
+        if (parent_content_w <= 0) continue;
+
+        // Clear any placeholder line boxes and re-split at correct width
+        const ifc = entry.ifc_ptr;
+        ifc.line_boxes.clearRetainingCapacity();
+        const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, parent_content_w) catch continue;
+
+        // Apply whitespace collapsing
+        var effective_height = result.height;
+        if (ifc.line_boxes.items.len <= 1) {
+            if (result.longest_line_box_length <= 60) {
+                effective_height = 0;
+            }
+        }
+
+        // Update the IFC container's dimensions
+        const bo = &box_offsets[ifc_idx];
+        bo.border_size.w = parent_content_w;
+        bo.content_size.w = parent_content_w;
+        bo.border_size.h = effective_height;
+        bo.content_size.h = effective_height;
+    }
+
+    // Clear the deferred list
+    box_gen.deferred_ifcs.clearRetainingCapacity();
 }

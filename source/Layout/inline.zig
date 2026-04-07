@@ -143,6 +143,30 @@ fn endMode(box_gen: *BoxGen) !Result {
     // Ensure font is at the cascaded size before solving metrics.
     layout.inputs.fonts.setFontSize(ifc.ptr.font, ifc.ptr.font_size);
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
+
+    // Two-pass layout: when inside a flex/grid container subtree,
+    // defer IFC line-box splitting. The flex/grid algorithm will
+    // resolve item widths first, then we split at the correct width.
+    if (box_gen.flex_grid_depth > 0) {
+        // Get the IFC container's block index before popIfc
+        const container_idx = box_gen.stacks.block.top.?.index;
+
+        // Defer this IFC for post-resolution layout
+        const allocator = layout.allocator;
+        try box_gen.deferred_ifcs.append(allocator, .{
+            .subtree_id = box_gen.currentSubtree(),
+            .ifc_container_idx = container_idx,
+            .ifc_ptr = ifc.ptr,
+            .initial_cb_width = containing_block_width,
+        });
+
+        // Pop the IFC with zero height (updated after deferred layout)
+        box_gen.inline_context.popIfc();
+        box_gen.popIfc(ifc.ptr.id, containing_block_width, 0);
+
+        return .{ .min_width = 0 };
+    }
+
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width);
 
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,

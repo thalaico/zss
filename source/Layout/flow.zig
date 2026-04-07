@@ -76,6 +76,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_flex_container = true;
+                box_gen.flex_grid_depth += 1;
                 info.flex_is_column = (box_style_specified.flex_direction == .column);
                 info.flex_justify = switch (box_style_specified.justify_content) {
                     .flex_start => .flex_start,
@@ -97,6 +98,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             if (inner_block == .grid) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_grid_container = true;
+                box_gen.flex_grid_depth += 1;
                 info.grid_column_gap = box_style_specified.column_gap;
                 info.grid_row_gap = box_style_specified.row_gap;
                 // Read grid template properties from cascade
