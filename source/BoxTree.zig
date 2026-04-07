@@ -320,6 +320,7 @@ pub const InlineFormattingContext = struct {
     font_family: values.types.FontFamily = .serif, // CSS initial: depends on UA; Chrome uses serif
     font_size: f32 = 16.0, // Computed font-size in px
     font_weight: values.types.FontWeight = .normal,
+    font_style: values.types.FontStyle = .normal,
     /// Per-run font properties for mixed-weight/style inline content.
     /// Each run records a glyph index range and the font weight for that range.
     /// When empty, the IFC-level font_weight applies to all glyphs.
@@ -338,6 +339,7 @@ pub const InlineFormattingContext = struct {
         glyph_start: u32,
         glyph_end: u32,
         font_weight: values.types.FontWeight,
+        font_style: values.types.FontStyle,
         /// Cascaded font-size in px for this run (for per-run metrics and rendering).
         font_size: f32,
     };

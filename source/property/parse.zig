@@ -767,6 +767,13 @@ pub fn @"font-weight"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     return .{ .font = .{ .font_weight = .{ .declared = value } } };
 }
 
+pub fn @"font-style"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-style") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.fontStyle(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .font_style = .{ .declared = value } } };
+}
+
 pub fn @"text-decoration"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"text-decoration") {
     ctx.initDecl(declaration_index);
     const value = values.parse.textDecoration(ctx) orelse return null;

@@ -249,6 +249,7 @@ pub const Font = struct {
     font_family: types.FontFamily,
     font_size: types.FontSize,
     font_weight: types.FontWeight,
+    font_style: types.FontStyle,
     text_decoration: types.TextDecoration,
     text_align: types.TextAlign,
     vertical_align: types.VerticalAlign,
@@ -262,6 +263,7 @@ pub const Font = struct {
         .font_family = .sans_serif,
         .font_size = .{ .px = 16.0 }, // 16px default
         .font_weight = .normal,
+        .font_style = .normal,
         .text_decoration = .none,
         .text_align = .left,
         .vertical_align = .baseline,

@@ -468,6 +468,11 @@ pub const FontWeight = enum {
     bold,
 };
 
+pub const FontStyle = enum {
+    normal,
+    italic,
+    oblique,
+};
 pub const FontFamily = enum {
     sans_serif,
     serif,

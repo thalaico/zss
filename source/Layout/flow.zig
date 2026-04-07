@@ -255,6 +255,7 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
             .font_family = font.font_family,
             .font_size = font.font_size,
             .font_weight = font.font_weight,
+            .font_style = font.font_style,
         });
         assert(box_gen.stacks.mode.pop() == .@"inline");
     }

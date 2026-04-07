@@ -169,6 +169,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     const font_family = specified.font.font_family;
     const font_size_px: f32 = layout.computer.resolvedFontSizePx(.cosmetic);
     const font_weight = specified.font.font_weight;
+    const font_style = specified.font.font_style;
     const text_decoration = specified.font.text_decoration;
     const text_align = specified.font.text_align;
     const line_height = specified.font.line_height;
@@ -179,6 +180,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
             ifc.font_family = font_family;
             ifc.font_size = font_size_px;
             ifc.font_weight = font_weight;
+            ifc.font_style = font_style;
             ifc.text_decoration = text_decoration;
             ifc.text_align = text_align;
             ifc.line_height = line_height;
@@ -197,6 +199,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                     ifc.font_family = font_family;
                     ifc.font_size = font_size_px;
                     ifc.font_weight = font_weight;
+                    ifc.font_style = font_style;
                     ifc.text_decoration = text_decoration;
                     ifc.text_align = text_align;
                     ifc.line_height = line_height;

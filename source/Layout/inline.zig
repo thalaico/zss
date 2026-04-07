@@ -72,9 +72,10 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
                 .glyph_start = glyph_start,
                 .glyph_end = glyph_end,
                 .font_weight = font_props.font_weight,
+                .font_style = font_props.font_style,
                 .font_size = font_props.font_size.px_val(),
             });
-        }
+    }
     }
 
     // Solve metrics, split into line boxes, finalize IFC
@@ -86,6 +87,7 @@ pub const FontProps = struct {
     font_family: zss.values.types.FontFamily,
     font_size: zss.values.types.FontSize,
     font_weight: zss.values.types.FontWeight,
+    font_style: zss.values.types.FontStyle,
 };
 
 pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: ContainingBlockSize) !void {
@@ -244,6 +246,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     const runs = &ifc.ptr.font_runs;
                     if (runs.items.len > 0 and
                         runs.items[runs.items.len - 1].font_weight == font.font_weight and
+                        runs.items[runs.items.len - 1].font_style == font.font_style and
                         runs.items[runs.items.len - 1].font_size == font.font_size.px_val() and
                         runs.items[runs.items.len - 1].glyph_end == glyph_start)
                     {
@@ -253,6 +256,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             .glyph_start = glyph_start,
                             .glyph_end = glyph_end,
                             .font_weight = font.font_weight,
+                            .font_style = font.font_style,
                             .font_size = font.font_size.px_val(),
                         });
                     }

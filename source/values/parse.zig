@@ -940,6 +940,14 @@ pub fn fontWeight(ctx: *Context) ?types.FontWeight {
     });
 }
 
+pub fn fontStyle(ctx: *Context) ?types.FontStyle {
+    return keyword(ctx, types.FontStyle, &.{
+        .{ "normal", .normal },
+        .{ "italic", .italic },
+        .{ "oblique", .oblique },
+    });
+}
+
 pub fn textDecoration(ctx: *Context) ?types.TextDecoration {
     return keyword(ctx, types.TextDecoration, &.{
         .{ "none", .none },
