@@ -74,6 +74,13 @@ pub const BorderColors = struct {
     top: math.Color = .transparent,
     bottom: math.Color = .transparent,
 };
+pub const BorderRadii = struct {
+    top_left: math.Unit = 0,
+    top_right: math.Unit = 0,
+    bottom_right: math.Unit = 0,
+    bottom_left: math.Unit = 0,
+};
+
 
 pub const Margins = struct {
     left: math.Unit = 0,
@@ -241,6 +248,7 @@ pub const Subtree = struct {
         // TODO: rename to `relative_insets`, so it's not confused with absolute insets.
         insets: Insets,
         border_colors: BorderColors,
+        border_radii: BorderRadii,
         background: BlockBoxBackground,
         overflow: values.types.Overflow,
         opacity: values.types.Opacity,

@@ -341,6 +341,9 @@ pub const BorderWidth = union(enum) {
     thick,
 };
 
+pub const BorderRadius = union(enum) {
+    px: f32,
+};
 pub const BorderStyle = enum {
     none,
     hidden,

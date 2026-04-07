@@ -647,6 +647,25 @@ pub fn @"border-style"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(
     }
 }
 
+
+pub fn @"border-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-radius") {
+    ctx.initDecl(declaration_index);
+    var radii: [4]types.BorderRadius = undefined;
+    var num: u3 = 0;
+    for (0..4) |i| {
+        radii[i] = values.parse.borderRadius(ctx) orelse break;
+        num += 1;
+    }
+    if (!ctx.empty()) return null;
+    switch (num) {
+        0 => return null,
+        1 => return .{ .border_radii = .{ .top_left = .{ .declared = radii[0] }, .top_right = .{ .declared = radii[0] }, .bottom_right = .{ .declared = radii[0] }, .bottom_left = .{ .declared = radii[0] } } },
+        2 => return .{ .border_radii = .{ .top_left = .{ .declared = radii[0] }, .top_right = .{ .declared = radii[1] }, .bottom_right = .{ .declared = radii[0] }, .bottom_left = .{ .declared = radii[1] } } },
+        3 => return .{ .border_radii = .{ .top_left = .{ .declared = radii[0] }, .top_right = .{ .declared = radii[1] }, .bottom_right = .{ .declared = radii[2] }, .bottom_left = .{ .declared = radii[1] } } },
+        4 => return .{ .border_radii = .{ .top_left = .{ .declared = radii[0] }, .top_right = .{ .declared = radii[1] }, .bottom_right = .{ .declared = radii[2] }, .bottom_left = .{ .declared = radii[3] } } },
+        else => unreachable,
+    }
+}
 pub fn color(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.color) {
     ctx.initDecl(declaration_index);
     const value = values.parse.color(ctx) orelse return null;

@@ -230,6 +230,19 @@ pub fn borderColors(border_colors: SpecifiedValues(.border_colors), current_colo
     };
 }
 
+pub fn borderRadii(border_radii: SpecifiedValues(.border_radii)) BoxTree.BorderRadii {
+    return .{
+        .top_left = resolveRadiusValue(border_radii.top_left),
+        .top_right = resolveRadiusValue(border_radii.top_right),
+        .bottom_right = resolveRadiusValue(border_radii.bottom_right),
+        .bottom_left = resolveRadiusValue(border_radii.bottom_left),
+    };
+}
+
+fn resolveRadiusValue(radius: types.BorderRadius) Unit {
+    return positiveLength(.px, radius.px);
+}
+
 pub fn borderStyles(border_styles: SpecifiedValues(.border_styles)) void {
     const ns = struct {
         fn solveOne(border_style: types.BorderStyle) void {

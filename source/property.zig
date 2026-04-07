@@ -67,6 +67,7 @@ pub const Property = enum {
     @"border-top-style",
     @"border-bottom-style",
     @"border-style",
+    @"border-radius",
     color,
     @"background-color",
     @"background-image",
@@ -186,6 +187,7 @@ pub const Property = enum {
             .@"border-style"          => &.{
                 .{.border_styles, &.{.top, .right, .bottom, .left}},
             },
+            .@"border-radius"         => &.{.{.border_radii, &.{.top_left, .top_right, .bottom_right, .bottom_left}}},
             .color                    => &.{.{.color           , &.{.color}         }},
             .@"background-color"      => &.{.{.background_color, &.{.color}         }},
             .@"background-image"      => &.{.{.background      , &.{.image}         }},

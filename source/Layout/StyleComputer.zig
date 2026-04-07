@@ -48,6 +48,7 @@ const CosmeticComputedValues = struct {
     box_style: ?ComputedValues(.box_style) = null,
     border_colors: ?ComputedValues(.border_colors) = null,
     border_styles: ?ComputedValues(.border_styles) = null,
+    border_radii: ?ComputedValues(.border_radii) = null,
     background_color: ?ComputedValues(.background_color) = null,
     background_clip: ?ComputedValues(.background_clip) = null,
     background: ?ComputedValues(.background) = null,

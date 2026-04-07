@@ -1155,6 +1155,24 @@ pub fn borderWidth(ctx: *Context) ?types.BorderWidth {
         });
 }
 
+pub fn borderRadius(ctx: *Context) ?types.BorderRadius {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .token_dimension) {
+        if (genericLength(ctx, types.BorderRadius, item.index)) |result| {
+            if (result.px < 0) return null;
+            return result;
+        }
+    }
+    // CSS spec: unitless 0 is valid for lengths.
+    if (item.tag == .token_integer) {
+        if (item.index.extra(ctx.ast).integer) |i| {
+            if (i == 0) return .{ .px = 0 };
+        }
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
 // Spec: CSS Backgrounds and Borders Level 3
 // Syntax: <line-style> = none | hidden | dotted | dashed | solid | double | groove | ridge | inset | outset
 pub fn borderStyle(ctx: *Context) ?types.BorderStyle {

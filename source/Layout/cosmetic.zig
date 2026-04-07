@@ -150,6 +150,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .color = layout.computer.getSpecifiedValue(.cosmetic, .color),
         .border_colors = layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
         .border_styles = layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
+        .border_radii = layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
         .background_color = layout.computer.getSpecifiedValue(.cosmetic, .background_color),
         // DEBUG: Check what we got from getSpecifiedValue
         // .background_color will be logged below
@@ -272,6 +273,11 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     solve.borderStyles(specified.border_styles);
 
     {
+        const border_radii_ptr = &subtree.items(.border_radii)[ref.index];
+        border_radii_ptr.* = solve.borderRadii(specified.border_radii);
+    }
+
+    {
         const background_ptr = &subtree.items(.background)[ref.index];
         try blockBoxBackgrounds(
             layout.box_tree,
@@ -298,6 +304,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     // TODO: Pretending that specified values are computed values...
     layout.computer.setComputedValue(.cosmetic, .border_colors, specified.border_colors);
     layout.computer.setComputedValue(.cosmetic, .border_styles, specified.border_styles);
+    layout.computer.setComputedValue(.cosmetic, .border_radii, specified.border_radii);
     layout.computer.setComputedValue(.cosmetic, .background_color, specified.background_color);
     layout.computer.setComputedValue(.cosmetic, .background_clip, specified.background_clip);
     layout.computer.setComputedValue(.cosmetic, .background, specified.background);
@@ -569,6 +576,7 @@ fn blockBoxBackgrounds(
 fn anonymousBlockBoxCosmeticLayout(box_tree: Layout.BoxTreeManaged, ref: BlockRef) void {
     const subtree = box_tree.ptr.getSubtree(ref.subtree).view();
     subtree.items(.border_colors)[ref.index] = .{};
+    subtree.items(.border_radii)[ref.index] = .{};
     subtree.items(.background)[ref.index] = .{};
     subtree.items(.insets)[ref.index] = .{ .x = 0, .y = 0 };
     subtree.items(.overflow)[ref.index] = .visible;
@@ -588,6 +596,7 @@ fn inlineBoxCosmeticLayout(
         .color = layout.computer.getSpecifiedValue(.cosmetic, .color),
         .border_colors = layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
         .border_styles = layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
+        .border_radii = layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
         .background_color = layout.computer.getSpecifiedValue(.cosmetic, .background_color),
         .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
         .background = layout.computer.getSpecifiedValue(.cosmetic, .background), // TODO: Inline boxes don't need background
@@ -638,6 +647,7 @@ fn inlineBoxCosmeticLayout(
     // TODO: Pretending that specified values are computed values...
     layout.computer.setComputedValue(.cosmetic, .border_colors, specified.border_colors);
     layout.computer.setComputedValue(.cosmetic, .border_styles, specified.border_styles);
+    layout.computer.setComputedValue(.cosmetic, .border_radii, specified.border_radii);
     layout.computer.setComputedValue(.cosmetic, .background_color, specified.background_color);
     layout.computer.setComputedValue(.cosmetic, .background_clip, specified.background_clip);
     layout.computer.setComputedValue(.cosmetic, .background, specified.background);

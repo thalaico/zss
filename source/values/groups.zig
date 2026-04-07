@@ -23,6 +23,7 @@ pub const Tag = enum {
     insets,
     border_colors,
     border_styles,
+    border_radii,
     background_color,
     background_clip,
     background,
@@ -44,6 +45,7 @@ pub const Tag = enum {
             .insets => Insets,
             .border_colors => BorderColors,
             .border_styles => BorderStyles,
+            .border_radii => BorderRadii,
             .background_color => BackgroundColor,
             .background_clip => BackgroundClip,
             .background => Background,
@@ -68,6 +70,7 @@ pub const Tag = enum {
             .insets,
             .border_colors,
             .border_styles,
+            .border_radii,
             .background_color,
             .background_clip,
             .background,
@@ -95,6 +98,7 @@ pub const Tag = enum {
             .insets,
             .border_colors,
             .border_styles,
+            .border_radii,
             .background_color,
             .color,
             .font, // TODO: should probably be multi
@@ -475,6 +479,24 @@ pub const BorderStyles = struct {
         .right = .none,
         .top = .none,
         .bottom = .none,
+    };
+};
+
+/// top_left      -> border-top-left-radius
+/// top_right     -> border-top-right-radius
+/// bottom_right  -> border-bottom-right-radius
+/// bottom_left   -> border-bottom-left-radius
+pub const BorderRadii = struct {
+    top_left: types.BorderRadius,
+    top_right: types.BorderRadius,
+    bottom_right: types.BorderRadius,
+    bottom_left: types.BorderRadius,
+
+    pub const initial_values = BorderRadii{
+        .top_left = .{ .px = 0 },
+        .top_right = .{ .px = 0 },
+        .bottom_right = .{ .px = 0 },
+        .bottom_left = .{ .px = 0 },
     };
 };
 
