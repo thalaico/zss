@@ -130,7 +130,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                         };
                     },
                     .px => |v| @intFromFloat(@round(v * 4.0)),
-                    .percentage => |pct| @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct / 100.0)),
+                    .percentage => |pct| @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct)),
                 };
                 info.grid_area_hash = box_style_specified.grid_area;
                 // CSS spec: float and clear have no effect on flex/grid items.
@@ -1159,6 +1159,8 @@ pub fn offsetChildBlocksFlex(
 
     // --- Phase 2 (§9.2): Determine flex base size and hypothetical main size ---
     const flex_basis_values = subtree.items(.flex_basis_px);
+    const flex_grows = subtree.items(.flex_grow);
+    const flex_shrinks = subtree.items(.flex_shrink);
     var flex_base_sizes: [MAX_CHILDREN]Unit = undefined;
     var hypothetical_main_sizes: [MAX_CHILDREN]Unit = undefined;
 
@@ -1209,9 +1211,6 @@ pub fn offsetChildBlocksFlex(
 
     // --- Phase 3b (§9.7): Resolve flexible lengths per line ---
     var used_main_sizes: [MAX_CHILDREN]Unit = undefined;
-    const flex_grows = subtree.items(.flex_grow);
-    const flex_shrinks = subtree.items(.flex_shrink);
-
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
         const le = line_starts[line_idx + 1];
