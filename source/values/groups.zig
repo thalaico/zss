@@ -256,6 +256,7 @@ pub const Font = struct {
     visibility: types.Visibility,
     border_spacing: types.BorderSpacing,
     line_height: types.LineHeight,
+    text_transform: types.TextTransform,
     white_space: types.WhiteSpace,
     list_style_type: types.ListStyleType,
     pub const initial_values = Font{
@@ -264,6 +265,7 @@ pub const Font = struct {
         .font_size = .{ .px = 16.0 }, // 16px default
         .font_weight = .normal,
         .font_style = .normal,
+        .text_transform = .none,
         .text_decoration = .none,
         .text_align = .left,
         .vertical_align = .baseline,

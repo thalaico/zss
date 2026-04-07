@@ -486,6 +486,13 @@ pub const TextDecoration = enum {
     line_through,
 };
 
+pub const TextTransform = enum {
+    none,
+    uppercase,
+    lowercase,
+    capitalize,
+};
+
 pub const TextAlign = enum {
     left,
     right,

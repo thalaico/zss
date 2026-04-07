@@ -781,6 +781,13 @@ pub fn @"text-decoration"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTy
     return .{ .font = .{ .text_decoration = .{ .declared = value } } };
 }
 
+pub fn @"text-transform"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"text-transform") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.textTransform(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .text_transform = .{ .declared = value } } };
+}
+
 pub fn @"text-align"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"text-align") {
     ctx.initDecl(declaration_index);
     const value = values.parse.textAlign(ctx) orelse return null;

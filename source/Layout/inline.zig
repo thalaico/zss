@@ -36,6 +36,30 @@ const Subtree = BoxTree.Subtree;
 
 const hb = @import("harfbuzz").c;
 
+const TransformMode = enum { upper, lower, capitalize };
+
+fn transformCase(allocator: std.mem.Allocator, text: []const u8, mode: TransformMode) ![]const u8 {
+    const result = try allocator.dupe(u8, text);
+    switch (mode) {
+        .upper => {
+            for (result) |*ch| ch.* = std.ascii.toUpper(ch.*);
+        },
+        .lower => {
+            for (result) |*ch| ch.* = std.ascii.toLower(ch.*);
+        },
+        .capitalize => {
+            var prev_was_space = true;
+            for (result) |*ch| {
+                if (prev_was_space and std.ascii.isAlphabetic(ch.*)) {
+                    ch.* = std.ascii.toUpper(ch.*);
+                }
+                prev_was_space = std.ascii.isWhitespace(ch.*);
+            }
+        },
+    }
+    return result;
+}
+
 pub const Result = struct {
     min_width: Unit,
 };
@@ -65,7 +89,13 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
     layout.inputs.fonts.setFontSize(handle, font_props.font_size.px_val());
     if (layout.inputs.fonts.get(handle)) |hb_font| {
         const glyph_start: u32 = @intCast(ifc.glyphs.len);
-        try ifcAddText(layout.box_tree, ifc, text, hb_font);
+        const transformed = switch (font_props.text_transform) {
+            .none => text,
+            .uppercase => try transformCase(layout.allocator, text, .upper),
+            .lowercase => try transformCase(layout.allocator, text, .lower),
+            .capitalize => try transformCase(layout.allocator, text, .capitalize),
+        };
+        try ifcAddText(layout.box_tree, ifc, transformed, hb_font);
         const glyph_end: u32 = @intCast(ifc.glyphs.len);
         if (glyph_end > glyph_start) {
             try ifc.font_runs.append(layout.allocator, .{
@@ -73,6 +103,7 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
                 .glyph_end = glyph_end,
                 .font_weight = font_props.font_weight,
                 .font_style = font_props.font_style,
+                .text_transform = font_props.text_transform,
                 .font_size = font_props.font_size.px_val(),
             });
     }
@@ -88,6 +119,7 @@ pub const FontProps = struct {
     font_size: zss.values.types.FontSize,
     font_weight: zss.values.types.FontWeight,
     font_style: zss.values.types.FontStyle,
+    text_transform: zss.values.types.TextTransform,
 };
 
 pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: ContainingBlockSize) !void {
@@ -238,7 +270,13 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             if (layout.inputs.fonts.get(handle)) |hb_font| {
                 // Record glyph range for this text node's font run.
                 const glyph_start: u32 = @intCast(ifc.ptr.glyphs.len);
-                const text = layout.computer.getText();
+                const raw_text = layout.computer.getText();
+                const text = switch (font.text_transform) {
+                    .none => raw_text,
+                    .uppercase => try transformCase(layout.allocator, raw_text, .upper),
+                    .lowercase => try transformCase(layout.allocator, raw_text, .lower),
+                    .capitalize => try transformCase(layout.allocator, raw_text, .capitalize),
+                };
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
                 const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
                 if (glyph_end > glyph_start) {
@@ -247,6 +285,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     if (runs.items.len > 0 and
                         runs.items[runs.items.len - 1].font_weight == font.font_weight and
                         runs.items[runs.items.len - 1].font_style == font.font_style and
+                        runs.items[runs.items.len - 1].text_transform == font.text_transform and
                         runs.items[runs.items.len - 1].font_size == font.font_size.px_val() and
                         runs.items[runs.items.len - 1].glyph_end == glyph_start)
                     {
@@ -257,6 +296,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             .glyph_end = glyph_end,
                             .font_weight = font.font_weight,
                             .font_style = font.font_style,
+                            .text_transform = font.text_transform,
                             .font_size = font.font_size.px_val(),
                         });
                     }

@@ -957,6 +957,16 @@ pub fn textDecoration(ctx: *Context) ?types.TextDecoration {
     });
 }
 
+pub fn textTransform(ctx: *Context) ?types.TextTransform {
+    return keyword(ctx, types.TextTransform, &.{
+        .{ "none", .none },
+        .{ "uppercase", .uppercase },
+        .{ "lowercase", .lowercase },
+        .{ "capitalize", .capitalize },
+    });
+}
+
+
 pub fn textAlign(ctx: *Context) ?types.TextAlign {
     return keyword(ctx, types.TextAlign, &.{
         .{ "left", .left },
