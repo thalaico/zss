@@ -19,6 +19,7 @@ const MAX_TRACKS = types.MAX_GRID_TRACKS;
 ///
 /// Returns the total height of the grid in layout units.
 pub fn layoutGridChildren(
+    _: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
     index: Subtree.Size,
     skip: Subtree.Size,
@@ -36,6 +37,7 @@ pub fn layoutGridChildren(
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const box_offsets = subtree.items(.box_offsets);
     const offsets = subtree.items(.offset);
+    const block_types = subtree.items(.type);
     const end = index + skip;
 
     // --- Phase 1: Determine grid dimensions ---
@@ -74,16 +76,68 @@ pub fn layoutGridChildren(
     if (num_cols == 0) num_cols = 1;
     if (num_rows == 0) num_rows = 1;
 
+    // --- Phase 1b: Pre-place items and measure intrinsic column widths ---
+    // CSS Grid §12.4: Intrinsic track sizes must be resolved before fr distribution.
+    // We need to know which items go in which columns to measure min-content widths.
+    var intrinsic_col_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
+    var has_intrinsic_tracks = false;
+    for (0..num_cols) |i| {
+        const track = if (i < template_columns.count) template_columns.tracks[i] else types.GridTrackSize{};
+        if (track.kind == .min_content or track.kind == .max_content or track.kind == .auto or
+            (track.kind == .minmax and (track.max_kind == .auto or track.max_kind == .min_content or track.max_kind == .max_content)))
+        {
+            has_intrinsic_tracks = true;
+            break;
+        }
+    }
+
+    if (has_intrinsic_tracks) {
+        // Pre-scan: determine column placement for each grid item
+        var pre_idx: u8 = 0;
+        var pre_child = index + 1;
+        while (pre_child < end and pre_idx < child_count) {
+            if (out_of_flow_flags[pre_child] or block_types[pre_child] == .ifc_container) {
+                pre_child += skips[pre_child];
+                continue;
+            }
+            var col: u8 = 0;
+            if (pre_idx < child_count) {
+                const area_hash = child_area_hashes[pre_idx];
+                if (area_hash != 0) {
+                    if (template_areas.findArea(area_hash)) |area| {
+                        col = area.col_start;
+                    }
+                }
+            }
+            pre_idx +|= 1;
+
+            // Check if this column needs intrinsic measurement
+            if (col < num_cols) {
+                const track = if (col < template_columns.count) template_columns.tracks[col] else types.GridTrackSize{};
+                const needs_measure = track.kind == .min_content or track.kind == .max_content or track.kind == .auto or
+                    (track.kind == .minmax and (track.max_kind == .auto or track.max_kind == .min_content or track.max_kind == .max_content));
+                if (needs_measure) {
+                    // Measure intrinsic width of this item
+                    const item_w = measureGridItemWidth(subtree, pre_child);
+                    if (item_w > intrinsic_col_sizes[col]) {
+                        intrinsic_col_sizes[col] = item_w;
+                    }
+                }
+            }
+            pre_child += skips[pre_child];
+        }
+    }
+
     // --- Phase 2: Resolve column track sizes ---
     var col_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
-    resolveTrackSizes(&col_sizes, num_cols, &template_columns, container_width, column_gap);
+    resolveTrackSizes(&col_sizes, num_cols, &template_columns, container_width, column_gap, &intrinsic_col_sizes);
 
     // --- Phase 3: Resolve row track sizes ---
     // For rows, we need content heights. First pass: use specified sizes.
     // min-content and auto rows will be sized after children are laid out.
     const available_height = container_height orelse 0;
     var row_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
-    resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap);
+    resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap, null);
 
     // --- Phase 4: Place children and size rows ---
     // Record placement info so we can reposition after row sizes are finalized.
@@ -105,7 +159,7 @@ pub fn layoutGridChildren(
     var auto_col: u8 = 0;
     var child_index: u8 = 0; // index into child_area_hashes
 
-    const block_types = subtree.items(.type);
+
     var child = index + 1;
     while (child < end and child_index < child_count) {
         // Skip out-of-flow and anonymous inline formatting context boxes.
@@ -187,6 +241,9 @@ pub fn layoutGridChildren(
             if (content_w > 0) {
                 box_offsets[child].content_size.w = content_w;
             }
+            // TODO: IFC relayout for text reflow at new column width.
+            // Currently causes VP regression. Grid item children that are
+            // block containers need their nested content re-laid-out.
         }
 
         // Track actual child height for auto-sized rows.
@@ -256,6 +313,7 @@ fn resolveTrackSizes(
     template: *const types.GridTrackList,
     available_space: Unit,
     gap_size: Unit,
+    intrinsic_sizes: ?*const [MAX_TRACKS]Unit,
 ) void {
     if (count == 0) return;
 
@@ -284,10 +342,15 @@ fn resolveTrackSizes(
             },
             .min_content, .auto => {
                 auto_count += 1;
-                sizes[i] = 0; // Will be resolved from content
+                // Use pre-measured intrinsic width if available
+                const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
+                sizes[i] = intrinsic;
+                fixed_total += intrinsic;
             },
             .max_content => {
-                sizes[i] = 0; // Will be resolved from content
+                const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
+                sizes[i] = intrinsic;
+                fixed_total += intrinsic;
                 auto_count += 1;
             },
             .minmax => {
@@ -307,8 +370,11 @@ fn resolveTrackSizes(
                         fixed_total += sizes[i];
                     },
                     .auto, .min_content, .max_content => {
-                        // minmax(fixed, auto/content): treat as auto with a floor
-                        fixed_total += track.value;
+                        // minmax(fixed, auto/content): use intrinsic width with floor
+                        const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
+                        const resolved = @max(intrinsic, track.value);
+                        sizes[i] = resolved;
+                        fixed_total += resolved;
                         auto_count += 1;
                     },
                     .minmax => {
@@ -345,7 +411,8 @@ fn resolveTrackSizes(
         }
     }
 
-    // Third pass: auto tracks get equal share of any remaining space
+    // Third pass: auto tracks may grow if remaining space exists
+    // Don't shrink below intrinsic sizes already set in pass 1.
     if (auto_count > 0) {
         var used: Unit = 0;
         for (0..count) |i| used += sizes[i];
@@ -358,9 +425,91 @@ fn resolveTrackSizes(
                 const is_minmax_auto = track.kind == .minmax and (track.max_kind == .auto or track.max_kind == .min_content or track.max_kind == .max_content);
                 if (is_auto or is_minmax_auto) {
                     const floor = if (is_minmax_auto) track.value else 0;
-                    sizes[i] = @max(per_auto, floor);
+                    sizes[i] = @max(per_auto, @max(sizes[i], floor));
                 }
             }
         }
+    }
+}
+
+/// Measure the intrinsic content width of a grid item.
+/// Uses the same approach as flex measureContentMainSize:
+/// for blocks, recurse to find the maximum content width of children;
+/// for IFC containers, measure the widest line.
+fn measureGridItemWidth(subtree: Subtree.View, child_idx: Subtree.Size) Unit {
+    const bo = subtree.items(.box_offsets)[child_idx];
+    const child_skip = subtree.items(.skip)[child_idx];
+    const child_end = child_idx + child_skip;
+    const types_slice = subtree.items(.type);
+
+    // IFC container: measure widest line
+    switch (types_slice[child_idx]) {
+        .ifc_container => |_| {
+            // For IFC, border_size.w is the container width. We want content width.
+            // Use content_size.w which was set during layout.
+            return bo.border_size.w;
+        },
+        else => {},
+    }
+
+    // Block container: recurse to find max intrinsic child width
+    var max_child_intrinsic: Unit = 0;
+    var has_children = false;
+    var gc = child_idx + 1;
+    while (gc < child_end) {
+        if (!subtree.items(.out_of_flow)[gc]) {
+            has_children = true;
+            const w = measureGridItemWidth(subtree, gc);
+            max_child_intrinsic = @max(max_child_intrinsic, w);
+        }
+        gc += subtree.items(.skip)[gc];
+    }
+
+    if (!has_children) {
+        return bo.border_size.w;
+    }
+
+    // Add this block's own edges
+    const left_edge = bo.content_pos.x;
+    const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
+    return left_edge + max_child_intrinsic + right_edge;
+}
+
+/// Re-layout IFC text content inside a grid item at a new width.
+/// Mirrors flow.relayoutIfcAtWidth but adapted for grid item children.
+fn relayoutGridItemIfc(layout: *@import("../zss.zig").Layout, subtree: Subtree.View, item_idx: Subtree.Size, new_content_w: Unit) void {
+    const inline_layout = @import("./inline.zig");
+    const types_slice = subtree.items(.type);
+    const item_skip = subtree.items(.skip)[item_idx];
+    const item_end = item_idx + item_skip;
+
+    var gc = item_idx + 1;
+    while (gc < item_end) {
+        if (!subtree.items(.out_of_flow)[gc]) {
+            switch (types_slice[gc]) {
+                .ifc_container => |ifc_id| {
+                    const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                    ifc.line_boxes.clearRetainingCapacity();
+                    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                        break;
+                    };
+                    const bo = &subtree.items(.box_offsets)[gc];
+                    bo.border_size.w = new_content_w;
+                    bo.content_size.w = new_content_w;
+                    bo.border_size.h = result.height;
+                    bo.content_size.h = result.height;
+                },
+                else => {
+                    // Recurse into block children to find nested IFCs
+                    const child_bo = subtree.items(.box_offsets)[gc];
+                    const child_content_x = child_bo.content_pos.x;
+                    const child_content_w = new_content_w - child_content_x * 2;
+                    if (child_content_w > 0) {
+                        relayoutGridItemIfc(layout, subtree, gc, child_content_w);
+                    }
+                },
+            }
+        }
+        gc += subtree.items(.skip)[gc];
     }
 }
