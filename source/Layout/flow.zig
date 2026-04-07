@@ -1410,21 +1410,14 @@ fn measureIfcContentWidth(box_tree: *BoxTree, ifc_id: anytype, subtree: Subtree.
     const ifc = box_tree.getIfc(ifc_id);
     if (ifc.glyphs.len == 0) return 0;
 
-    var max_line_width: Unit = 0;
-    for (ifc.line_boxes.items) |line_box| {
-        var line_width: Unit = 0;
-        var i = line_box.elements[0];
-        while (i < line_box.elements[1]) {
-            line_width += ifc.glyphs.items(.metrics)[i].advance;
-            const glyph_idx = ifc.glyphs.items(.index)[i];
-            i += 1;
-            if (glyph_idx == 0 and i < line_box.elements[1]) i += 1;
-        }
-        max_line_width = @max(max_line_width, line_width);
-    }
+    // Use glyph-based max-content width instead of reading line boxes.
+    // This works even before splitIntoLineBoxes has run, which is needed
+    // for the measure pass in flex/grid algorithms.
+    const inline_layout = @import("./inline.zig");
+    const max_content = inline_layout.computeMaxContentWidth(ifc);
 
     const left_edge = subtree.items(.box_offsets)[child_idx].content_pos.x;
-    return max_line_width + left_edge * 2;
+    return max_content + left_edge * 2;
 }
 
 /// CSS Flexbox §9.7: Resolve Flexible Lengths.

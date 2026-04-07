@@ -19,7 +19,7 @@ const MAX_TRACKS = types.MAX_GRID_TRACKS;
 ///
 /// Returns the total height of the grid in layout units.
 pub fn layoutGridChildren(
-    _: *@import("../zss.zig").Layout,
+    layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
     index: Subtree.Size,
     skip: Subtree.Size,
@@ -118,7 +118,7 @@ pub fn layoutGridChildren(
                     (track.kind == .minmax and (track.max_kind == .auto or track.max_kind == .min_content or track.max_kind == .max_content));
                 if (needs_measure) {
                     // Measure intrinsic width of this item
-                    const item_w = measureGridItemWidth(subtree, pre_child);
+                    const item_w = measureGridItemWidth(layout.box_tree.ptr, subtree, pre_child);
                     if (item_w > intrinsic_col_sizes[col]) {
                         intrinsic_col_sizes[col] = item_w;
                     }
@@ -437,18 +437,21 @@ fn resolveTrackSizes(
 /// Uses the same approach as flex measureContentMainSize:
 /// for blocks, recurse to find the maximum content width of children;
 /// for IFC containers, measure the widest line.
-fn measureGridItemWidth(subtree: Subtree.View, child_idx: Subtree.Size) Unit {
+fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Subtree.Size) Unit {
     const bo = subtree.items(.box_offsets)[child_idx];
     const child_skip = subtree.items(.skip)[child_idx];
     const child_end = child_idx + child_skip;
     const types_slice = subtree.items(.type);
 
-    // IFC container: measure widest line
+    // IFC container: compute max-content from shaped glyphs
     switch (types_slice[child_idx]) {
-        .ifc_container => |_| {
-            // For IFC, border_size.w is the container width. We want content width.
-            // Use content_size.w which was set during layout.
-            return bo.border_size.w;
+        .ifc_container => |ifc_id| {
+            const ifc = box_tree.getIfc(ifc_id);
+            if (ifc.glyphs.len == 0) return 0;
+            const inline_layout = @import("./inline.zig");
+            const max_content = inline_layout.computeMaxContentWidth(ifc);
+            const left_edge = bo.content_pos.x;
+            return max_content + left_edge * 2;
         },
         else => {},
     }
@@ -460,7 +463,7 @@ fn measureGridItemWidth(subtree: Subtree.View, child_idx: Subtree.Size) Unit {
     while (gc < child_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
             has_children = true;
-            const w = measureGridItemWidth(subtree, gc);
+            const w = measureGridItemWidth(box_tree, subtree, gc);
             max_child_intrinsic = @max(max_child_intrinsic, w);
         }
         gc += subtree.items(.skip)[gc];

@@ -1086,6 +1086,66 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
     }
 }
 
+/// Compute the max-content inline size of an IFC from its shaped glyphs.
+/// CSS Box Sizing §5: max-content = size if no soft wrap opportunities were taken.
+/// This is the sum of all glyph advances — everything on one line.
+pub fn computeMaxContentWidth(ifc: *const Ifc) Unit {
+    if (ifc.glyphs.len == 0) return 0;
+    const glyphs = ifc.glyphs.slice();
+    const indices = glyphs.items(.index);
+    const metrics = glyphs.items(.metrics);
+
+    var total: Unit = 0;
+    var i: usize = 0;
+    while (i < glyphs.len) : (i += 1) {
+        const gi = indices[i];
+        if (gi == 0) {
+            // Special glyph — skip the second element of the pair
+            i += 1;
+            continue;
+        }
+        total += metrics[i].advance;
+    }
+    return total;
+}
+
+/// Compute the min-content inline size of an IFC from its shaped glyphs.
+/// CSS Box Sizing §5: min-content = size if all soft wrap opportunities were taken.
+/// For text with whitespace collapsing, word boundaries are at space glyphs.
+/// Space glyphs have width=0 (no ink) but advance>0 (they take horizontal room).
+/// We track word segments between spaces and return the widest word's advance.
+pub fn computeMinContentWidth(ifc: *const Ifc) Unit {
+    if (ifc.glyphs.len == 0) return 0;
+    const glyphs = ifc.glyphs.slice();
+    const indices = glyphs.items(.index);
+    const metrics = glyphs.items(.metrics);
+
+    var max_word_width: Unit = 0;
+    var current_word_width: Unit = 0;
+    var i: usize = 0;
+    while (i < glyphs.len) : (i += 1) {
+        const gi = indices[i];
+        if (gi == 0) {
+            // Special glyph — skip the second element of the pair
+            i += 1;
+            continue;
+        }
+        const m = metrics[i];
+        if (m.width == 0 and m.advance > 0) {
+            // Space glyph (ink-width=0 but positive advance).
+            // End current word, start a new one.
+            max_word_width = @max(max_word_width, current_word_width);
+            current_word_width = 0;
+        } else {
+            current_word_width += m.advance;
+        }
+    }
+    // Don't forget the last word
+    max_word_width = @max(max_word_width, current_word_width);
+
+    return max_word_width;
+}
+
 /// Fill only offset (x_bearing) and width (ink width) from glyph extents.
 /// Advance is already stored from HarfBuzz shaped output — do not overwrite.
 fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font: *hb.hb_font_t, glyph_index: GlyphIndex) void {
