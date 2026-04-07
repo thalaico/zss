@@ -795,6 +795,13 @@ pub fn whiteSpace(ctx: *Context) ?types.WhiteSpace {
     });
 }
 
+pub fn overflowWrap(ctx: *Context) ?types.OverflowWrap {
+    return keyword(ctx, types.OverflowWrap, &.{
+        .{ "normal", .normal },
+        .{ "break-word", .break_word },
+    });
+}
+
 pub fn listStyleType(ctx: *Context) ?types.ListStyleType {
     return keyword(ctx, types.ListStyleType, &.{
         .{ "disc", .disc },

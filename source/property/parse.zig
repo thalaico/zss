@@ -262,11 +262,25 @@ pub fn @"white-space"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     return .{ .font = .{ .white_space = .{ .declared = value } } };
 }
 
+pub fn @"overflow-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"overflow-wrap") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.overflowWrap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .overflow_wrap = .{ .declared = value } } };
+}
+
 pub fn @"list-style-type"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"list-style-type") {
     ctx.initDecl(declaration_index);
     const value = values.parse.listStyleType(ctx) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .font = .{ .list_style_type = .{ .declared = value } } };
+}
+
+pub fn @"word-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"word-wrap") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.overflowWrap(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .overflow_wrap = .{ .declared = value } } };
 }
 
 pub fn @"list-style"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"list-style") {

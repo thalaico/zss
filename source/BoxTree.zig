@@ -330,8 +330,8 @@ pub const InlineFormattingContext = struct {
     font_weight: values.types.FontWeight = .normal,
     font_style: values.types.FontStyle = .normal,
     text_transform: values.types.TextTransform = .none,
+    overflow_wrap: values.types.OverflowWrap = .normal,
     /// Per-run font properties for mixed-weight/style inline content.
-    /// Each run records a glyph index range and the font weight for that range.
     /// When empty, the IFC-level font_weight applies to all glyphs.
     font_runs: ArrayListUnmanaged(FontRun) = .{},
     text_decoration: values.types.TextDecoration = .none,

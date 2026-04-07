@@ -167,6 +167,11 @@ pub const WhiteSpace = enum {
     pre_line,
 };
 
+pub const OverflowWrap = enum {
+    normal,
+    break_word,
+};
+
 pub const ListStyleType = enum {
     disc,
     circle,

@@ -1288,7 +1288,9 @@ pub fn splitIntoLineBoxes(
         }
 
         // TODO: (Bug) A glyph with a width of zero but an advance that is non-zero may overflow the width of the containing block
-        if (s.cursor > 0 and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > max_line_box_length and s.line_box.elements[1] > s.line_box.elements[0]) {
+        // overflow-wrap: break-word allows breaking within words when the line would otherwise overflow.
+        const overflow_break_word = ifc.overflow_wrap == .break_word;
+        if (s.cursor > 0 and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > max_line_box_length and (s.line_box.elements[1] > s.line_box.elements[0] or overflow_break_word)) {
             s.finishLineBox();
             try layout.box_tree.appendLineBox(ifc, s.line_box);
             s.newLineBox(0);

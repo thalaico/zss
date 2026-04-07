@@ -262,6 +262,7 @@ pub const Font = struct {
     line_height: types.LineHeight,
     text_transform: types.TextTransform,
     white_space: types.WhiteSpace,
+    overflow_wrap: types.OverflowWrap,
     list_style_type: types.ListStyleType,
     pub const initial_values = Font{
         .font = .default,
@@ -277,6 +278,7 @@ pub const Font = struct {
         .border_spacing = 8, // 2px default (CSS border-collapse: separate)
         .line_height = 0, // 0 = normal (1.2 * font-size)
         .white_space = .normal,
+        .overflow_wrap = .normal,
         .list_style_type = .disc,
     };
 };
