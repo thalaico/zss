@@ -241,9 +241,10 @@ pub fn layoutGridChildren(
             if (content_w > 0) {
                 box_offsets[child].content_size.w = content_w;
             }
-            // TODO: IFC relayout for text reflow at new column width.
-            // Currently causes VP regression. Grid item children that are
-            // block containers need their nested content re-laid-out.
+            // IFC relayout disabled: reflowing text at narrower width changes
+            // item heights, causing downstream layout shifts that increase VP.
+            // The correct fix requires two-pass layout: first determine column
+            // sizes, then lay out items at their column widths.
         }
 
         // Track actual child height for auto-sized rows.
@@ -476,13 +477,16 @@ fn measureGridItemWidth(subtree: Subtree.View, child_idx: Subtree.Size) Unit {
 }
 
 /// Re-layout IFC text content inside a grid item at a new width.
-/// Mirrors flow.relayoutIfcAtWidth but adapted for grid item children.
+/// Mirrors flow.relayoutIfcAtWidth: only relayouts direct IFC children.
+/// Does NOT recurse into block children — they retain their original layout.
 fn relayoutGridItemIfc(layout: *@import("../zss.zig").Layout, subtree: Subtree.View, item_idx: Subtree.Size, new_content_w: Unit) void {
     const inline_layout = @import("./inline.zig");
     const types_slice = subtree.items(.type);
     const item_skip = subtree.items(.skip)[item_idx];
     const item_end = item_idx + item_skip;
 
+    // Walk direct children of the grid item, looking for IFC containers.
+    var total_ifc_height: Unit = 0;
     var gc = item_idx + 1;
     while (gc < item_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
@@ -498,18 +502,20 @@ fn relayoutGridItemIfc(layout: *@import("../zss.zig").Layout, subtree: Subtree.V
                     bo.content_size.w = new_content_w;
                     bo.border_size.h = result.height;
                     bo.content_size.h = result.height;
+                    total_ifc_height += result.height;
                 },
-                else => {
-                    // Recurse into block children to find nested IFCs
-                    const child_bo = subtree.items(.box_offsets)[gc];
-                    const child_content_x = child_bo.content_pos.x;
-                    const child_content_w = new_content_w - child_content_x * 2;
-                    if (child_content_w > 0) {
-                        relayoutGridItemIfc(layout, subtree, gc, child_content_w);
-                    }
-                },
+                else => {},
             }
         }
         gc += subtree.items(.skip)[gc];
+    }
+
+    // Update the grid item's own border/content height to fit its re-flowed children.
+    if (total_ifc_height > 0) {
+        const item_bo = &subtree.items(.box_offsets)[item_idx];
+        const pad_top = item_bo.content_pos.y;
+        const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
+        item_bo.content_size.h = total_ifc_height;
+        item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
     }
 }
