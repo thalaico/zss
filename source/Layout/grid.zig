@@ -6,6 +6,7 @@ const Unit = zss.math.Unit;
 const types = zss.values.types;
 
 const Subtree = BoxTree.Subtree;
+const flow = @import("./flow.zig");
 
 /// Resolved track sizes in pixels (layout units).
 const MAX_TRACKS = types.MAX_GRID_TRACKS;
@@ -235,16 +236,30 @@ pub fn layoutGridChildren(
             }
         }
         if (cell_width > 0) {
-            box_offsets[child].border_size.w = cell_width;
             const content_x = box_offsets[child].content_pos.x;
             const content_w = cell_width - content_x * 2;
-            if (content_w > 0) {
-                box_offsets[child].content_size.w = content_w;
+            const old_w = box_offsets[child].border_size.w;
+            if (content_w > 0 and cell_width != old_w) {
+                // Two-pass layout: relayoutSubtree propagates resolved widths
+                // into the grid item's subtree and re-lays out IFC text.
+                const child_skip = subtree.items(.skip)[child];
+                relayoutSubtree(layout, subtree, child, content_w);
+
+                // Re-run offsetChildBlocks to recompute vertical positions
+                // with margin collapsing and get correct auto_height.
+                const offset_result = flow.offsetChildBlocks(
+                    subtree, child, child_skip, content_w, box_offsets[child].content_pos.y,
+                );
+                const edge_top = box_offsets[child].content_pos.y;
+                const edge_bot = box_offsets[child].border_size.h - edge_top - box_offsets[child].content_size.h;
+                box_offsets[child].content_size.h = offset_result.auto_height;
+                box_offsets[child].border_size.h = edge_top + offset_result.auto_height + edge_bot;
+            } else {
+                box_offsets[child].border_size.w = cell_width;
+                if (content_w > 0) {
+                    box_offsets[child].content_size.w = content_w;
+                }
             }
-            // IFC relayout disabled: reflowing text at narrower width changes
-            // item heights, causing downstream layout shifts that increase VP.
-            // The correct fix requires two-pass layout: first determine column
-            // sizes, then lay out items at their column widths.
         }
 
         // Track actual child height for auto-sized rows.
@@ -479,46 +494,98 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
     return left_edge + max_child_intrinsic + right_edge;
 }
 
-/// Re-layout IFC text content inside a grid item at a new width.
-/// Mirrors flow.relayoutIfcAtWidth: only relayouts direct IFC children.
-/// Does NOT recurse into block children — they retain their original layout.
-fn relayoutGridItemIfc(layout: *@import("../zss.zig").Layout, subtree: Subtree.View, item_idx: Subtree.Size, new_content_w: Unit) void {
+/// Two-pass layout: after the grid algorithm resolves a grid item's width,
+/// walk its entire subtree and re-lay out all content at the correct widths.
+///
+/// Sets block widths, re-runs splitIntoLineBoxes for IFCs, follows
+/// subtree_proxy entries. Height propagation is handled by the caller
+/// re-running offsetChildBlocks after this returns.
+fn relayoutSubtree(
+    layout: *@import("../zss.zig").Layout,
+    subtree: Subtree.View,
+    block_idx: Subtree.Size,
+    available_content_w: Unit,
+) void {
     const inline_layout = @import("./inline.zig");
+    const box_offsets = subtree.items(.box_offsets);
     const types_slice = subtree.items(.type);
-    const item_skip = subtree.items(.skip)[item_idx];
-    const item_end = item_idx + item_skip;
+    const bo = &box_offsets[block_idx];
 
-    // Walk direct children of the grid item, looking for IFC containers.
-    var total_ifc_height: Unit = 0;
-    var gc = item_idx + 1;
-    while (gc < item_end) {
-        if (!subtree.items(.out_of_flow)[gc]) {
-            switch (types_slice[gc]) {
-                .ifc_container => |ifc_id| {
-                    const ifc = layout.box_tree.ptr.getIfc(ifc_id);
-                    ifc.line_boxes.clearRetainingCapacity();
-                    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
-                        break;
-                    };
-                    const bo = &subtree.items(.box_offsets)[gc];
-                    bo.border_size.w = new_content_w;
-                    bo.content_size.w = new_content_w;
-                    bo.border_size.h = result.height;
-                    bo.content_size.h = result.height;
-                    total_ifc_height += result.height;
-                },
-                else => {},
-            }
+    // Compute edges from OLD sizes before updating.
+    const left_edge = bo.content_pos.x;
+    const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
+
+    // Set new width.
+    bo.border_size.w = left_edge + available_content_w + right_edge;
+    bo.content_size.w = available_content_w;
+
+    // Walk children.
+    const block_skip = subtree.items(.skip)[block_idx];
+    const block_end = block_idx + block_skip;
+
+    var gc: Subtree.Size = block_idx + 1;
+    while (gc < block_end) {
+        const gc_skip = subtree.items(.skip)[gc];
+        defer gc += gc_skip;
+
+        if (subtree.items(.out_of_flow)[gc]) continue;
+
+        switch (types_slice[gc]) {
+            .block => {
+                const child_bo = box_offsets[gc];
+                const child_left = child_bo.content_pos.x;
+                const child_right = child_bo.border_size.w - child_bo.content_pos.x - child_bo.content_size.w;
+                const child_content_w = available_content_w - child_left - child_right;
+                if (child_content_w > 0) {
+                    relayoutSubtree(layout, subtree, gc, child_content_w);
+                }
+            },
+            .ifc_container => |ifc_id| {
+                const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                ifc.line_boxes.clearRetainingCapacity();
+                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, available_content_w) catch continue;
+
+                var effective_height = result.height;
+                if (ifc.line_boxes.items.len <= 1) {
+                    if (result.longest_line_box_length <= 60) {
+                        effective_height = 0;
+                    }
+                }
+
+                const ifc_bo = &box_offsets[gc];
+                ifc_bo.border_size.w = available_content_w;
+                ifc_bo.content_size.w = available_content_w;
+                ifc_bo.border_size.h = effective_height;
+                ifc_bo.content_size.h = effective_height;
+            },
+            .subtree_proxy => |child_subtree_id| {
+                const proxy_bo = box_offsets[gc];
+                const proxy_left = proxy_bo.content_pos.x;
+                const proxy_right = proxy_bo.border_size.w - proxy_bo.content_pos.x - proxy_bo.content_size.w;
+                const child_content_w = available_content_w - proxy_left - proxy_right;
+                if (child_content_w > 0) {
+                    const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
+                    relayoutSubtree(layout, child_subtree, 0, child_content_w);
+
+                    // Re-run offsetChildBlocks on child subtree for correct heights.
+                    const child_skip = child_subtree.items(.skip)[0];
+                    const child_offset_result = flow.offsetChildBlocks(
+                        child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y,
+                    );
+                    const child_root = &child_subtree.items(.box_offsets)[0];
+                    const child_top = child_root.content_pos.y;
+                    const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
+                    child_root.content_size.h = child_offset_result.auto_height;
+                    child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+
+                    // Update the proxy to match child subtree's new height.
+                    const proxy_top = proxy_bo.content_pos.y;
+                    const proxy_bot = proxy_bo.border_size.h - proxy_bo.content_pos.y - proxy_bo.content_size.h;
+                    const proxy_bo_mut = &box_offsets[gc];
+                    proxy_bo_mut.content_size.h = child_root.border_size.h;
+                    proxy_bo_mut.border_size.h = proxy_top + child_root.border_size.h + proxy_bot;
+                }
+            },
         }
-        gc += subtree.items(.skip)[gc];
-    }
-
-    // Update the grid item's own border/content height to fit its re-flowed children.
-    if (total_ifc_height > 0) {
-        const item_bo = &subtree.items(.box_offsets)[item_idx];
-        const pad_top = item_bo.content_pos.y;
-        const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
-        item_bo.content_size.h = total_ifc_height;
-        item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
     }
 }
