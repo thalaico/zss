@@ -5,7 +5,7 @@ const zss = @import("../zss.zig");
 const BlockRef = zss.BoxTree.BlockRef;
 const BoxStyle = zss.BoxTree.BoxStyle;
 const NodeId = zss.Environment.NodeId;
-const Position = zss.values.types.Position;
+const Position = BoxStyle.Position;
 
 const Absolute = @This();
 
@@ -35,6 +35,7 @@ pub const Block = struct {
     containing_block: ContainingBlock.Id,
     node: NodeId,
     inner_box_style: BoxStyle.InnerBlock,
+    position: Position,
 };
 
 const Tag = enum {
@@ -85,9 +86,11 @@ pub fn fixupContainingBlock(absolute: *Absolute, id: ContainingBlock.Id, ref: Bl
     slice.items(.ref)[index] = ref;
 }
 
-pub fn addBlock(absolute: *Absolute, allocator: Allocator, node: NodeId, inner_box_style: BoxStyle.InnerBlock) !void {
-    const index = absolute.current_containing_block_index;
+pub fn addBlock(absolute: *Absolute, allocator: Allocator, node: NodeId, inner_box_style: BoxStyle.InnerBlock, position: Position) !void {
+    // Fixed-position elements use the initial containing block (viewport),
+    // not the nearest positioned ancestor.
+    const index: u32 = if (position == .fixed) 0 else absolute.current_containing_block_index;
     const slice = absolute.containing_blocks.slice();
     const id = slice.items(.id)[index];
-    try absolute.blocks.append(allocator, .{ .containing_block = id, .node = node, .inner_box_style = inner_box_style });
+    try absolute.blocks.append(allocator, .{ .containing_block = id, .node = node, .inner_box_style = inner_box_style, .position = position });
 }

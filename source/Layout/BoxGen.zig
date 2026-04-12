@@ -146,7 +146,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         const containing_block_height = containing_block_size.h;
         const sizes = flow.solveAllSizes(
             &layout.computer,
-            .absolute,
+            block.position,
             .{ .normal = containing_block_width },
             containing_block_height,
         );
@@ -279,7 +279,7 @@ fn dispatch(
             // Add to absolute positioning list for out-of-flow layout
             const inner_box_style = box_style.outer.absolute;
             const allocator = box_gen.getLayout().allocator;
-            try box_gen.absolute.addBlock(allocator, node, inner_box_style);
+            try box_gen.absolute.addBlock(allocator, node, inner_box_style, box_style.position);
             // Advance to next node without laying out in normal flow
             box_gen.getLayout().advanceNode();
         },
@@ -882,8 +882,8 @@ pub fn fixupAbsoluteContainingBlock(box_gen: *BoxGen, id: Absolute.ContainingBlo
     return box_gen.absolute.fixupContainingBlock(id, ref);
 }
 
-pub fn addAbsoluteBlock(box_gen: *BoxGen, node: NodeId, inner_box_style: BoxTree.BoxStyle.InnerBlock) !void {
-    return box_gen.absolute.addBlock(box_gen.getLayout().allocator, node, inner_box_style);
+pub fn addAbsoluteBlock(box_gen: *BoxGen, node: NodeId, inner_box_style: BoxTree.BoxStyle.InnerBlock, position: BoxTree.BoxStyle.Position) !void {
+    return box_gen.absolute.addBlock(box_gen.getLayout().allocator, node, inner_box_style, position);
 }
 
 pub const BlockComputedSizes = struct {

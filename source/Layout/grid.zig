@@ -528,7 +528,10 @@ fn relayoutSubtree(
         const gc_skip = subtree.items(.skip)[gc];
         defer gc += gc_skip;
 
-        if (subtree.items(.out_of_flow)[gc]) continue;
+
+        if (subtree.items(.out_of_flow)[gc]) {
+            continue;
+        }
 
         switch (types_slice[gc]) {
             .block => {
