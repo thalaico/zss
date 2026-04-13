@@ -1560,7 +1560,11 @@ fn relayoutIfcAtWidth(
 
     // Walk direct children of the flex item, looking for IFC containers.
     // A flex item typically has one IFC container wrapping all its inline content.
+    // If the flex item has non-IFC block children too (it's a grid/flex container
+    // or a block with inter-element whitespace), it has its own computed auto_height
+    // which we MUST NOT clobber. Only a pure-IFC item gets its height updated here.
     var total_ifc_height: Unit = 0;
+    var has_non_ifc_child = false;
     var gc = item_idx + 1;
     while (gc < item_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
@@ -1581,7 +1585,9 @@ fn relayoutIfcAtWidth(
                     bo.content_size.h = result.height;
                     total_ifc_height += result.height;
                 },
-                else => {},
+                else => {
+                    has_non_ifc_child = true;
+                },
             }
         }
         gc += subtree.items(.skip)[gc];
@@ -1589,7 +1595,10 @@ fn relayoutIfcAtWidth(
 
     // Update the flex item's own border/content height to fit its re-flowed children.
     // Without this, cross-size Phase 5 reads a stale height from the initial layout.
-    if (total_ifc_height > 0) {
+    // Guarded: only for pure-IFC items. Grid/flex/block-with-siblings have their own
+    // auto_height from their respective layout algorithms — overwriting it with just
+    // the sum of IFC heights loses all the block layout work.
+    if (total_ifc_height > 0 and !has_non_ifc_child) {
         const item_bo = &subtree.items(.box_offsets)[item_idx];
         const pad_top = item_bo.content_pos.y;
         const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
