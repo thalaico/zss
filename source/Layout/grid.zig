@@ -519,6 +519,42 @@ fn relayoutSubtree(
     bo.border_size.w = left_edge + available_content_w + right_edge;
     bo.content_size.w = available_content_w;
 
+    // If the entry node is itself a subtree_proxy, we must follow the proxy
+    // into the referenced child subtree — otherwise the block.skip is 1 and
+    // the child-walk below does nothing, leaving the proxied content at its
+    // stale (often viewport-width) border_size. Reported 2026-04-13: this
+    // causes grid-item background widths to overflow ~1279px on Wikipedia.
+    switch (types_slice[block_idx]) {
+        .subtree_proxy => |child_subtree_id| {
+            const proxy_left = bo.content_pos.x;
+            const proxy_right = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
+            const child_content_w = available_content_w - proxy_left - proxy_right;
+            if (child_content_w > 0) {
+                const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
+                relayoutSubtree(layout, child_subtree, 0, child_content_w);
+
+                // Re-run offsetChildBlocks on child subtree for correct heights.
+                const child_skip = child_subtree.items(.skip)[0];
+                const child_offset_result = flow.offsetChildBlocks(
+                    child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y,
+                );
+                const child_root = &child_subtree.items(.box_offsets)[0];
+                const child_top = child_root.content_pos.y;
+                const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
+                child_root.content_size.h = child_offset_result.auto_height;
+                child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+
+                // Update this proxy's outer height to match the child subtree's new height.
+                const proxy_top = bo.content_pos.y;
+                const proxy_bot = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+                bo.content_size.h = child_root.border_size.h;
+                bo.border_size.h = proxy_top + child_root.border_size.h + proxy_bot;
+            }
+            return;
+        },
+        else => {},
+    }
+
     // Walk children.
     const block_skip = subtree.items(.skip)[block_idx];
     const block_end = block_idx + block_skip;
