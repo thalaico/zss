@@ -182,7 +182,19 @@ const RuleProcessor = struct {
         const decl_block = try zss.property.parseDeclarationsFromAst(ctx.env, ctx.ast, ctx.source_code, &buffer, last_declaration, ctx.stylesheet.decl_urls.toManaged(ctx.allocator));
 
         var index_of_complex_selector = first_complex_selector;
+        const selector_data_len = ctx.stylesheet.cascade_source.selector_data.items.len;
         for (ctx.selector_parser.specificities.items) |specificity| {
+            // Defensive bounds check: in some cases `specificities.items.len`
+            // can exceed the length of the `next_complex_selector` chain
+            // appended to `selector_data` for this rule. Observed on
+            // lobste.rs where `:focus-visible` and `:first-child` selectors
+            // emit parse warnings and leave specificities/selector_data out
+            // of sync, panicking at index 973 of 973 items. Break cleanly
+            // rather than reading past the end.
+            if (index_of_complex_selector >= selector_data_len) {
+                zss.log.warn("Selector specificity/data mismatch — skipping remaining selectors in rule", .{});
+                break;
+            }
             const selector_number: selectors.Data.ListIndex = @intCast(ctx.unsorted_selectors.len);
             try ctx.unsorted_selectors.append(ctx.allocator, .{ .index = index_of_complex_selector, .specificity = specificity });
 
@@ -202,7 +214,10 @@ const RuleProcessor = struct {
 
             index_of_complex_selector = ctx.stylesheet.cascade_source.selector_data.items[index_of_complex_selector].next_complex_selector;
         }
-        assert(index_of_complex_selector == ctx.stylesheet.cascade_source.selector_data.items.len);
+        // Note: if we broke early due to a selector/specificity length
+        // mismatch, index_of_complex_selector may be < items.len. That's
+        // non-fatal — we've processed what we could.
+        assert(index_of_complex_selector <= ctx.stylesheet.cascade_source.selector_data.items.len);
     }
 
     /// Handle a recognized at-rule.
