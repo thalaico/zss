@@ -470,10 +470,11 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
             if (!in_whitespace) {
                 // End non-whitespace run before this first whitespace char.
                 try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
-                // Emit a single collapsed space.
+                // Emit a single collapsed space. This space glyph is the
+                // soft-wrap break opportunity for splitIntoLineBoxes.
                 hb.hb_buffer_add_latin1(buffer, " ", 1, 0, 1);
                 if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
-                try ifcAddTextRun(box_tree, ifc, buffer, font);
+                try ifcAddTextRun(box_tree, ifc, buffer, font, true);
                 assert(hb.hb_buffer_set_length(buffer, 0) != 0);
                 in_whitespace = true;
             }
@@ -491,12 +492,12 @@ fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: 
     if (run_end > run_begin) {
         hb.hb_buffer_add_utf8(buffer, text.ptr, @intCast(text.len), @intCast(run_begin), @intCast(run_end - run_begin));
         if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
-        try ifcAddTextRun(box_tree, ifc, buffer, font);
+        try ifcAddTextRun(box_tree, ifc, buffer, font, false);
         assert(hb.hb_buffer_set_length(buffer, 0) != 0);
     }
 }
 
-fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t) !void {
+fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, is_break_opportunity: bool) !void {
     hb.hb_shape(font, buffer, null, 0);
     var glyph_count: c_uint = 0;
     const glyph_infos = hb.hb_buffer_get_glyph_infos(buffer, &glyph_count);
@@ -529,6 +530,14 @@ fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, f
                 .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
             });
         }
+    }
+
+    // Record a break opportunity at the LAST glyph of this run if it's a
+    // CSS-collapsed space sequence. splitIntoLineBoxes consults this list
+    // to prefer word-boundary breaks over character-level ones.
+    if (is_break_opportunity and glyph_count > 0 and ifc.glyphs.len > 0) {
+        const last_glyph_index: u32 = @intCast(ifc.glyphs.len - 1);
+        try ifc.break_opportunities.append(box_tree.ptr.allocator, last_glyph_index);
     }
 }
 
@@ -1315,6 +1324,28 @@ pub fn splitIntoLineBoxes(
 
     const glyphs = ifc.glyphs.slice();
 
+    // Word-boundary break-opportunity tracking (Option P).
+    // We walk `ifc.break_opportunities` in parallel with the glyph stream
+    // and capture state at each break glyph so that a later overflow can
+    // rewind to the word boundary instead of breaking mid-word.
+    //
+    // CRITICAL: we also capture `current_inline_box` and the inline-box
+    // stack depth at the break point. If the stack state has changed by
+    // the time an overflow occurs (i.e. we crossed a BoxStart or BoxEnd
+    // between the break opportunity and the overflow glyph), the rewind
+    // is UNSAFE because the recursive inline box state would be inconsistent
+    // after re-processing the moved glyphs. In that case we fall back to
+    // the char-level break path (same as pre-fix behavior). This protects
+    // against the 2026-04-14 popInlineBox assertion crash observed on
+    // real-wikipedia / real-lobsters paragraphs with <i>, <b>, <a> inlines.
+    const break_ops = ifc.break_opportunities.items;
+    var next_break_op_idx: usize = 0;
+    var last_break_i: ?usize = null;
+    var last_break_cursor: Unit = 0;
+    var last_break_elements_1: usize = 0;
+    var last_break_current_inline_box: Ifc.Size = 0;
+    var last_break_stack_depth: usize = 0;
+
     {
         const gi = glyphs.items(.index)[0];
         assert(gi == 0);
@@ -1351,9 +1382,38 @@ pub fn splitIntoLineBoxes(
         // overflow-wrap: break-word allows breaking within words when the line would otherwise overflow.
         const overflow_break_word = ifc.overflow_wrap == .break_word;
         if (s.cursor > 0 and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > max_line_box_length and (s.line_box.elements[1] > s.line_box.elements[0] or overflow_break_word)) {
-            s.finishLineBox();
-            try layout.box_tree.appendLineBox(ifc, s.line_box);
-            s.newLineBox(0);
+            // Prefer rewinding to the last word-boundary break opportunity.
+            // SAFETY: only rewind if the inline-box state (current_inline_box
+            // and stack depth) is the SAME as it was at the break opportunity.
+            // If it's changed, we crossed a BoxStart/BoxEnd between the break
+            // and the overflow — re-processing the moved glyphs would corrupt
+            // the inline-box stack and panic in popInlineBox. In that case we
+            // fall through to the char-break path (pre-fix behavior).
+            var rewound = false;
+            if (!overflow_break_word) {
+                if (last_break_i) |bi| {
+                    if (last_break_elements_1 > s.line_box.elements[0]
+                        and s.current_inline_box == last_break_current_inline_box
+                        and s.inline_box_stack.items.len == last_break_stack_depth)
+                    {
+                        s.cursor = last_break_cursor;
+                        s.line_box.elements[1] = last_break_elements_1;
+                        s.finishLineBox();
+                        try layout.box_tree.appendLineBox(ifc, s.line_box);
+                        s.newLineBox(0);
+                        i = bi; // loop's i+=1 will advance past the break glyph
+                        last_break_i = null;
+                        rewound = true;
+                    }
+                }
+            }
+            if (!rewound) {
+                s.finishLineBox();
+                try layout.box_tree.appendLineBox(ifc, s.line_box);
+                s.newLineBox(0);
+                last_break_i = null;
+            }
+            if (rewound) continue;
         }
 
         if (gi == 0) {
@@ -1385,6 +1445,22 @@ pub fn splitIntoLineBoxes(
         }
 
         s.cursor += metrics.advance;
+
+        // Record break-opportunity state AFTER processing the glyph (so
+        // last_break_cursor/elements_1 reflect the line state with the
+        // break glyph included). Also capture the inline-box stack state
+        // for the rewind safety check.
+        while (next_break_op_idx < break_ops.len and break_ops[next_break_op_idx] < i) {
+            next_break_op_idx += 1;
+        }
+        if (next_break_op_idx < break_ops.len and break_ops[next_break_op_idx] == i) {
+            last_break_i = i;
+            last_break_cursor = s.cursor;
+            last_break_elements_1 = s.line_box.elements[1];
+            last_break_current_inline_box = s.current_inline_box;
+            last_break_stack_depth = s.inline_box_stack.items.len;
+            next_break_op_idx += 1;
+        }
     }
 
     if (s.line_box.elements[1] > s.line_box.elements[0]) {
