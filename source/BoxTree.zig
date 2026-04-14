@@ -328,13 +328,6 @@ pub const InlineFormattingContext = struct {
         metrics: Metrics,
     }) = .{},
 
-    /// Sorted list of glyph indices (into `glyphs`) that represent
-    /// soft-wrap break opportunities. Populated at text-shaping time
-    /// from CSS-collapsed space runs in `ifcAddText`. Each entry is the
-    /// index of the LAST glyph in a space run — i.e. a valid position
-    /// to end a line box on when the next glyph would overflow.
-    break_opportunities: ArrayListUnmanaged(u32) = .{},
-
     line_boxes: ArrayListUnmanaged(LineBox) = .{},
 
     font: zss.Fonts.Handle = .invalid,
@@ -455,7 +448,6 @@ pub const InlineFormattingContext = struct {
 
     fn deinit(ifc: *InlineFormattingContext, allocator: Allocator) void {
         ifc.glyphs.deinit(allocator);
-        ifc.break_opportunities.deinit(allocator);
         ifc.line_boxes.deinit(allocator);
         ifc.font_runs.deinit(allocator);
         ifc.inline_boxes.deinit(allocator);
