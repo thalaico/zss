@@ -773,7 +773,11 @@ pub fn popFlowBlock(
             block_info.sizes.padding_block_end = @max(0, block_info.sizes.padding_block_end - shift);
         }
     }
-    setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow);
+    const inner_block: BoxTree.BoxStyle.InnerBlock =
+        if (block_info.is_flex_container) .flex
+        else if (block_info.is_grid_container) .grid
+        else .flow;
+    setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
     subtree.items(.visibility)[block.index] = .visible;
@@ -828,7 +832,8 @@ pub fn popStfFlowBlock2(
     const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, auto_height);
-    setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false);
+    // STF flow block: always flow (this is the split-text-flow subtree path).
+    setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false, .flow);
 
     const ref: BlockRef = .{ .subtree = subtree_id, .index = block.index };
     if (stacking_context_id) |id| box_gen.sct_builder.setBlock(id, box_tree.ptr, ref);
@@ -1060,6 +1065,7 @@ fn setDataBlock(
     stacking_context: ?StackingContextTree.Id,
     node: NodeId,
     out_of_flow: bool,
+    inner_block: BoxTree.BoxStyle.InnerBlock,
 ) void {
     subtree.items(.skip)[index] = skip;
     subtree.items(.type)[index] = .block;
@@ -1075,6 +1081,7 @@ fn setDataBlock(
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
     subtree.items(.list_style_type)[index] = .none;
+    subtree.items(.inner_block)[index] = inner_block;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];

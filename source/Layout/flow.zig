@@ -1544,9 +1544,28 @@ fn resolveFlexibleLengths(
     }
 }
 
-/// Re-layout IFC containers within a flex item at the new resolved flex width.
-/// Clears existing line boxes and re-splits glyphs at new_content_w, then
-/// updates IFC container and parent item heights to match the re-flowed content.
+/// Re-layout the flow-subtree rooted at a flex item at the new resolved flex
+/// width. Re-splits IFC containers and recurses into flow block children so
+/// their inner IFCs are also re-split; subsequent siblings are shifted down
+/// by the accumulated height delta from preceding siblings.
+///
+/// Gated on the item's own `inner_block` type:
+///   - `.flow`: do the full recursive walk — the item is a normal block and
+///     its children stack in flow order, so growing one shifts the rest.
+///   - `.flex` / `.grid`: DON'T descend into children. Those layout models
+///     have their own independent positioning that must not be disturbed by
+///     a flow-style walk. The item still gets its own IFC children (rare
+///     for grid/flex containers but possible with anonymous blocks) handled,
+///     but block children are left alone. This protects the 2026-04-14
+///     Wikipedia header regression where `.vector-header-container` is a
+///     flex container whose item `.mw-header` is a grid container — walking
+///     into the grid items as if they were flow blocks previously corrupted
+///     the header height (+109px on I-exact-wiki-rules).
+///
+/// The item's own height is grown by the accumulated delta (never shrunk)
+/// so cross-size Phase 5 can see the new extent, matching CSS
+/// "auto cross size = max-content of children" for the grow case while
+/// preserving any pre-existing height for the no-growth case.
 fn relayoutIfcAtWidth(
     layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
@@ -1555,55 +1574,125 @@ fn relayoutIfcAtWidth(
 ) void {
     const inline_layout = @import("./inline.zig");
     const types_slice = subtree.items(.type);
+    const inner_blocks = subtree.items(.inner_block);
     const item_skip = subtree.items(.skip)[item_idx];
     const item_end = item_idx + item_skip;
 
-    // Walk direct children of the flex item, looking for IFC containers.
-    // A flex item typically has one IFC container wrapping all its inline content.
-    // If the flex item has non-IFC block children too (it's a grid/flex container
-    // or a block with inter-element whitespace), it has its own computed auto_height
-    // which we MUST NOT clobber. Only a pure-IFC item gets its height updated here.
-    var total_ifc_height: Unit = 0;
-    var has_non_ifc_child = false;
+    // Update this item's own width first. Keep border edges consistent with
+    // the new content width.
+    {
+        const item_bo = &subtree.items(.box_offsets)[item_idx];
+        const left_edge = item_bo.content_pos.x;
+        const right_edge = item_bo.border_size.w - item_bo.content_pos.x - item_bo.content_size.w;
+        item_bo.border_size.w = left_edge + new_content_w + right_edge;
+        item_bo.content_size.w = new_content_w;
+    }
+
+    // If this item is itself a grid or flex container, its children were
+    // positioned by those layout algorithms. We must NOT recurse into block
+    // children, and we must NOT shift their y positions. We still re-split
+    // any direct IFC containers at the new width (handles anonymous inline
+    // boxes that can appear under a grid container for whitespace), but
+    // we do not grow the item's height from the IFC delta either (the grid
+    // algorithm owns that).
+    const item_inner = inner_blocks[item_idx];
+    const is_flow = (item_inner == .flow);
+
+    if (!is_flow) {
+        // Legacy direct-children IFC walk for pure-IFC flex items, preserving
+        // the prior behavior that made A/B/C/D/F/G/H/I header-isolation tests
+        // pass. Only update IFC heights; don't touch anything else.
+        var total_ifc_height: Unit = 0;
+        var has_non_ifc_child = false;
+        var g = item_idx + 1;
+        while (g < item_end) {
+            if (!subtree.items(.out_of_flow)[g]) {
+                switch (types_slice[g]) {
+                    .ifc_container => |ifc_id| {
+                        const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                        ifc.line_boxes.clearRetainingCapacity();
+                        const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                            break;
+                        };
+                        const bo = &subtree.items(.box_offsets)[g];
+                        bo.border_size.w = new_content_w;
+                        bo.content_size.w = new_content_w;
+                        bo.border_size.h = result.height;
+                        bo.content_size.h = result.height;
+                        total_ifc_height += result.height;
+                    },
+                    else => has_non_ifc_child = true,
+                }
+            }
+            g += subtree.items(.skip)[g];
+        }
+        // Pure-IFC fallback (no block children): update item height.
+        if (total_ifc_height > 0 and !has_non_ifc_child) {
+            const item_bo = &subtree.items(.box_offsets)[item_idx];
+            const pad_top = item_bo.content_pos.y;
+            const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
+            item_bo.content_size.h = total_ifc_height;
+            item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
+        }
+        return;
+    }
+
+    // is_flow == true: walk direct in-flow children, shift their y by any
+    // accumulated growth, re-split IFCs at the new width, recurse into
+    // nested flow blocks.
+    var accumulated_y_delta: Unit = 0;
     var gc = item_idx + 1;
     while (gc < item_end) {
-        if (!subtree.items(.out_of_flow)[gc]) {
-            switch (types_slice[gc]) {
-                .ifc_container => |ifc_id| {
-                    const ifc = layout.box_tree.ptr.getIfc(ifc_id);
-                    // Clear existing line boxes; re-split at the new width.
-                    ifc.line_boxes.clearRetainingCapacity();
-                    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
-                        // On allocation failure, leave line_boxes empty; height = 0.
-                        break;
-                    };
-                    // Update IFC container dimensions.
-                    const bo = &subtree.items(.box_offsets)[gc];
-                    bo.border_size.w = new_content_w;
-                    bo.content_size.w = new_content_w;
-                    bo.border_size.h = result.height;
-                    bo.content_size.h = result.height;
-                    total_ifc_height += result.height;
-                },
-                else => {
-                    has_non_ifc_child = true;
-                },
-            }
+        if (subtree.items(.out_of_flow)[gc]) {
+            gc += subtree.items(.skip)[gc];
+            continue;
+        }
+        if (accumulated_y_delta != 0) {
+            subtree.items(.box_offsets)[gc].border_pos.y += accumulated_y_delta;
+        }
+        switch (types_slice[gc]) {
+            .ifc_container => |ifc_id| {
+                const old_h = subtree.items(.box_offsets)[gc].border_size.h;
+                const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                ifc.line_boxes.clearRetainingCapacity();
+                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                    break;
+                };
+                const bo = &subtree.items(.box_offsets)[gc];
+                bo.border_size.w = new_content_w;
+                bo.content_size.w = new_content_w;
+                bo.border_size.h = result.height;
+                bo.content_size.h = result.height;
+                accumulated_y_delta += (result.height - old_h);
+            },
+            .block => {
+                // Recurse into nested flow blocks. The recursive call will
+                // itself gate on inner_block, so grid/flex container children
+                // are safely skipped.
+                const old_h = subtree.items(.box_offsets)[gc].border_size.h;
+                const child_bo = subtree.items(.box_offsets)[gc];
+                const child_left = child_bo.content_pos.x;
+                const child_right = child_bo.border_size.w - child_bo.content_pos.x - child_bo.content_size.w;
+                const child_new_w = new_content_w - child_left - child_right;
+                if (child_new_w > 0) {
+                    relayoutIfcAtWidth(layout, subtree, gc, child_new_w);
+                }
+                const new_h = subtree.items(.box_offsets)[gc].border_size.h;
+                accumulated_y_delta += (new_h - old_h);
+            },
+            .subtree_proxy => {
+                // Subtree proxies are handled by grid's relayoutSubtree path.
+                // No delta contribution.
+            },
         }
         gc += subtree.items(.skip)[gc];
     }
 
-    // Update the flex item's own border/content height to fit its re-flowed children.
-    // Without this, cross-size Phase 5 reads a stale height from the initial layout.
-    // Guarded: only for pure-IFC items. Grid/flex/block-with-siblings have their own
-    // auto_height from their respective layout algorithms — overwriting it with just
-    // the sum of IFC heights loses all the block layout work.
-    if (total_ifc_height > 0 and !has_non_ifc_child) {
+    // Grow this item's own height by the accumulated delta. Never shrink.
+    if (accumulated_y_delta > 0) {
         const item_bo = &subtree.items(.box_offsets)[item_idx];
-        const pad_top = item_bo.content_pos.y;
-        const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
-        item_bo.content_size.h = total_ifc_height;
-        item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
+        item_bo.content_size.h += accumulated_y_delta;
+        item_bo.border_size.h += accumulated_y_delta;
     }
 }
 fn childMainSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) Unit {

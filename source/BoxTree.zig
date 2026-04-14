@@ -268,6 +268,13 @@ pub const Subtree = struct {
         flex_basis_px: math.Unit,
         /// List marker style for list-item blocks (.none = no marker)
         list_style_type: values.types.ListStyleType = .none,
+        /// Inner display type for `.block` type entries: flow (normal block layout),
+        /// flex (display:flex container), or grid (display:grid container).
+        /// Defaults to .flow. Written by BoxGen when the block is committed and
+        /// read by layout passes (e.g. flex relayout in flow.zig) to decide
+        /// whether it's safe to recurse into a block's children as if they were
+        /// flow-laid-out.
+        inner_block: BoxStyle.InnerBlock = .flow,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
