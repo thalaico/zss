@@ -382,6 +382,11 @@ pub const InlineFormattingContext = struct {
         insets: Insets,
         /// Text color for content within this inline box (set during cosmetic pass).
         font_color: math.Color = .transparent,
+        /// Per-inline-box text-decoration. When set (not .none), the renderer
+        /// draws underline/line-through under glyphs belonging to this inline
+        /// box's content. Pushed/popped on a stack at BoxStart/BoxEnd in the
+        /// same way as font_color, so nested inline boxes restore outer state.
+        text_decoration: values.types.TextDecoration = .none,
     });
     pub const Slice = InlineBoxList.Slice;
 

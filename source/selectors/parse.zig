@@ -454,6 +454,16 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
                     return;
                 }
             }
+            // Non-function pseudo-class like :link, :hover, :first-child, :checked.
+            // Reset so parsePseudo can consume the ident and return the class.
+            parser.sequence.reset(after_colon_index);
+            const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
+            try data_list.appendSlice(&.{
+                .{ .simple_selector_tag = .pseudo_class },
+                .{ .pseudo_class_selector = pseudo_class },
+            });
+            parser.addSpecificity(.pseudo_class);
+            return;
         },
         else => {},
     }

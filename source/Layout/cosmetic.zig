@@ -635,6 +635,10 @@ fn inlineBoxCosmeticLayout(
     // Store text color for per-run rendering — inline elements like <a> override
     // the block-level font_color (e.g., links are black within gray <td> text).
     ifc_slice.items(.font_color)[inline_box_index] = used_color;
+    // Store text-decoration for per-inline-box rendering. <a> elements via UA
+    // stylesheet get text-decoration: underline, which applies only to the <a>'s
+    // text content, not the surrounding paragraph text.
+    ifc_slice.items(.text_decoration)[inline_box_index] = specified.font.text_decoration;
 
     solve.borderStyles(specified.border_styles);
 
