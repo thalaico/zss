@@ -168,7 +168,15 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
 
     // Propagate text properties to IFCs
     const font_family = specified.font.font_family;
-    const font_size_px: f32 = layout.computer.resolvedFontSizePx(.cosmetic);
+    // Chrome/Blink's "default_fixed_font_size" quirk: when the cascaded font
+    // family is the monospace generic and font-size resolves to the UA
+    // default (16px), use 13px instead. This is not in the CSS spec but
+    // every browser on Linux/Mac/Windows does it, so author CSS that uses
+    // `font-family: monospace` without an explicit font-size expects it.
+    var font_size_px: f32 = layout.computer.resolvedFontSizePx(.cosmetic);
+    if (font_family == .monospace and font_size_px == 16.0) {
+        font_size_px = 13.0;
+    }
     const font_weight = specified.font.font_weight;
     const font_style = specified.font.font_style;
     const text_transform = specified.font.text_transform;
