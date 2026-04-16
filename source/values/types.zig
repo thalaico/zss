@@ -18,6 +18,7 @@ pub const Display = enum {
     table_header_group,
     table_footer_group,
     flex,
+    inline_flex,
     grid,
     list_item,
     none,
