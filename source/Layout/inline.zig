@@ -1293,18 +1293,27 @@ pub fn splitIntoLineBoxes(
         // Compute line metrics from font design units (hhea table) to avoid
         // FreeType's size->metrics ceil/floor pixel-boundary rounding, which
         // overshoots Chrome's unrounded computation by ~0.8px per line box.
+        //
+        // Chrome's line-height:normal uses the font's intrinsic leading
+        // (hhea.lineGap) distributed half-above / half-below the baseline —
+        // it widens the line-box without shifting the baseline. Omitting it
+        // leaves every line ~(line_gap/upem × font-size) px shorter than
+        // Chrome, so baselines drift upward in multi-line blocks.
         const dm = layout.inputs.fonts.getDesignMetrics(ifc.font);
         if (dm.units_per_em > 0) {
             const upem: f32 = @floatFromInt(dm.units_per_em);
             const asc_design: f32 = @floatFromInt(dm.ascender);
             const desc_design: f32 = @floatFromInt(dm.descender);
-            const total_design = asc_design + desc_design;
+            const line_gap: f32 = @floatFromInt(dm.line_gap);
+            const total_design = asc_design + desc_design + line_gap;
             // Compute total line height in layout units, rounding once at the end
             // (Chrome keeps fractional px and only rounds at paint time).
             const scale = ifc.font_size * @as(f32, @floatFromInt(units_per_pixel)) / upem;
             const total_lu: i32 = @intFromFloat(@round(total_design * scale));
-            // Split into ascender/descender proportionally to preserve baseline position.
-            ifc.ascender = @intFromFloat(@round(@as(f32, @floatFromInt(total_lu)) * asc_design / total_design));
+            // Split line-gap half above baseline, half below (CSS-aligned
+            // half-leading). Baseline stays at ascender + line_gap/2 from top.
+            const ascender_with_half_leading = asc_design + line_gap * 0.5;
+            ifc.ascender = @intFromFloat(@round(@as(f32, @floatFromInt(total_lu)) * ascender_with_half_leading / total_design));
             ifc.descender = total_lu - ifc.ascender;
         } else {
             ifc.ascender = 0;

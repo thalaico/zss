@@ -147,9 +147,16 @@ fn familyToHandle(family: types.FontFamily) Handle {
 // Raw font design metrics from the hhea table (size-independent).
 // Use these to compute line-height at any font size without FreeType's
 // ceil/floor pixel-boundary rounding (which overshoots Chrome by ~0.8px/line).
+//
+// `line_gap` is the font-intrinsic leading: per CSS line-height:normal,
+// Chrome/Firefox distribute it half-above / half-below to widen the
+// line-box without moving the baseline. Omitting it makes every text
+// line ~(line_gap/upem * font-size) px shorter than Chrome, so baselines
+// drift upward progressively in multi-line blocks.
 pub const DesignMetrics = struct {
     ascender: i16, // hhea ascent (font units, positive above baseline)
     descender: i16, // |hhea descent| (font units, positive magnitude)
+    line_gap: i16, // hhea line-gap (font units, >= 0)
     units_per_em: u16,
 };
 
@@ -159,16 +166,20 @@ pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
         .serif => 1,
         .monospace => 2,
         .system_ui => 3,
-        .invalid => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
-        _ => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
+        .invalid => return .{ .ascender = 0, .descender = 0, .line_gap = 0, .units_per_em = 0 },
+        _ => return .{ .ascender = 0, .descender = 0, .line_gap = 0, .units_per_em = 0 },
     };
     if (fonts.fonts[slot]) |entry| {
         const face = entry.ft_face[0];
+        // FreeType exposes face.height = ascender - descender + lineGap (font units).
+        // Back out lineGap: descender is negative in FT, so abs(descender) = -descender.
+        const line_gap_i32: i32 = @as(i32, face.height) - @as(i32, face.ascender) - @as(i32, -face.descender);
         return .{
             .ascender = face.ascender,
             .descender = -face.descender,
+            .line_gap = @intCast(@max(0, line_gap_i32)),
             .units_per_em = face.units_per_EM,
         };
     }
-    return .{ .ascender = 0, .descender = 0, .units_per_em = 0 };
+    return .{ .ascender = 0, .descender = 0, .line_gap = 0, .units_per_em = 0 };
 }
