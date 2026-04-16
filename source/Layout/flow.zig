@@ -69,6 +69,12 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
             // Resolve font-size em → px using parent's computed font-size.
             font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
+            // Chrome `default_fixed_font_size` quirk: monospace generic family
+            // with UA-default 16px swaps to 13px. Must happen here (box_gen)
+            // so text runs + line-box metrics use the quirked size.
+            if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
+                font_specified.font_size = .{ .px = 13.0 };
+            }
             computer.setComputedValue(.box_gen, .font, font_specified);
             computer.commitNode(.box_gen);
 
