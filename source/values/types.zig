@@ -485,6 +485,7 @@ pub const FontFamily = enum {
     sans_serif,
     serif,
     monospace,
+    system_ui,
 };
 
 pub const TextDecoration = enum {

@@ -855,6 +855,7 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
         .{ "sans-serif", .sans_serif },
         .{ "serif", .serif },
         .{ "monospace", .monospace },
+        .{ "system-ui", .system_ui },
         // Common sans-serif fonts
         .{ "verdana", .sans_serif },
         .{ "arial", .sans_serif },

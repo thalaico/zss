@@ -8,6 +8,7 @@ pub const Handle = enum(u8) {
     sans_serif,
     serif,
     monospace,
+    system_ui,
     _,
 };
 
@@ -65,7 +66,7 @@ pub fn destroyHbFont(font: *hb.hb_font_t) void {
 }
 
 /// Per-family font slots. Externally managed (caller owns the hb_font_t).
-fonts: [3]?FontEntry = .{ null, null, null },
+fonts: [4]?FontEntry = .{ null, null, null, null },
 
 pub fn init() Fonts {
     return .{};
@@ -107,6 +108,7 @@ pub fn get(fonts: Fonts, handle: Handle) ?*hb.hb_font_t {
         .sans_serif => if (fonts.fonts[0]) |e| e.hb_font else null,
         .serif => if (fonts.fonts[1]) |e| e.hb_font else null,
         .monospace => if (fonts.fonts[2]) |e| e.hb_font else null,
+        .system_ui => if (fonts.fonts[3]) |e| e.hb_font else null,
         _ => null,
     };
 }
@@ -118,6 +120,7 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         .sans_serif => 0,
         .serif => 1,
         .monospace => 2,
+        .system_ui => 3,
         .invalid => return,
         _ => return,
     };
@@ -137,6 +140,7 @@ fn familyToHandle(family: types.FontFamily) Handle {
         .sans_serif => .sans_serif,
         .serif => .serif,
         .monospace => .monospace,
+        .system_ui => .system_ui,
     };
 }
 
@@ -154,6 +158,7 @@ pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
         .sans_serif => 0,
         .serif => 1,
         .monospace => 2,
+        .system_ui => 3,
         .invalid => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
         _ => return .{ .ascender = 0, .descender = 0, .units_per_em = 0 },
     };
