@@ -712,15 +712,23 @@ pub fn popFlowBlock(
     var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
 
-    // If the parent is a grid container, record this child's grid-area hash
+    // If the parent is a grid container, record this child's grid-area hash.
+    // IFC containers (generated for inter-element whitespace) are not grid
+    // items per CSS Grid §9.1 — they must not be counted, otherwise
+    // child_area_hashes alignment breaks and later children get auto-placed
+    // into extra rows instead of their named areas.
     if (box_gen.stacks.block_info.top) |*parent_info| {
-        if (parent_info.is_grid_container and block_info.grid_area_hash != 0) {
-            if (parent_info.grid_child_count < parent_info.grid_child_area_hashes.len) {
-                parent_info.grid_child_area_hashes[parent_info.grid_child_count] = block_info.grid_area_hash;
-            }
-        }
         if (parent_info.is_grid_container) {
-            parent_info.grid_child_count +|= 1;
+            const subtree_view = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
+            const is_ifc = subtree_view.items(.type)[block.index] == .ifc_container;
+            if (!is_ifc) {
+                if (block_info.grid_area_hash != 0) {
+                    if (parent_info.grid_child_count < parent_info.grid_child_area_hashes.len) {
+                        parent_info.grid_child_area_hashes[parent_info.grid_child_count] = block_info.grid_area_hash;
+                    }
+                }
+                parent_info.grid_child_count +|= 1;
+            }
         }
     }
 
