@@ -163,7 +163,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
 
-    const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root);
+    // parent_blockifies=false: cosmetic stage doesn't affect layout decisions.
+    const computed_box_style, _ = solve.boxStyle(specified.box_style, is_root, false);
     const computed_color, const used_color = solve.colorProperty(specified.color);
 
     // Propagate text properties to IFCs
@@ -617,7 +618,7 @@ fn inlineBoxCosmeticLayout(
         .font = layout.computer.getSpecifiedValue(.cosmetic, .font),
     };
 
-    const computed_box_style, _ = solve.boxStyle(specified.box_style, .not_root);
+    const computed_box_style, _ = solve.boxStyle(specified.box_style, .not_root, false);
 
     var computed_insets: ComputedValues(.insets) = undefined;
     {

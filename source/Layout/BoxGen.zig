@@ -96,7 +96,9 @@ pub fn run(box_gen: *BoxGen) !void {
 fn analyzeAllNodes(box_gen: *BoxGen) !void {
     {
         try initial.beginMode(box_gen);
-        const root_node, const root_box_style = (try analyzeNode(box_gen.getLayout(), .root)) orelse {
+        // Root has no parent, so no blockification needed beyond what
+        // solve.boxStyle's .root branch already does.
+        const root_node, const root_box_style = (try analyzeNode(box_gen.getLayout(), .root, false)) orelse {
             try box_gen.dispatchNullNode(.root, {});
             return;
         };
@@ -104,7 +106,16 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
     }
 
     while (box_gen.stacks.mode.top) |mode| {
-        const node, const box_style = (try analyzeNode(box_gen.getLayout(), .not_root)) orelse {
+        // CSS Display §2.7 + Flexbox §4: children of flex/grid containers
+        // have their computed display blockified. We pass this flag into
+        // solve.boxStyle so inline/inline-flex children become block/flex
+        // (proper flex items) instead of landing in an inline formatting
+        // context next to their block-level siblings.
+        const parent_blockifies = if (box_gen.stacks.block_info.top) |parent_info|
+            parent_info.is_flex_container or parent_info.is_grid_container
+        else
+            false;
+        const node, const box_style = (try analyzeNode(box_gen.getLayout(), .not_root, parent_blockifies)) orelse {
             try box_gen.dispatchNullNode(.not_root, mode);
             continue;
         };
@@ -244,7 +255,9 @@ fn findContainingBlockRef(absolute: *const Absolute, id: Absolute.ContainingBloc
 }
 
 /// Returns the next node and its box style, or `null` if there is no next node.
-fn analyzeNode(layout: *Layout, comptime is_root: IsRoot) !?struct { NodeId, BoxTree.BoxStyle } {
+/// `parent_blockifies` is true when the parent block is a flex or grid
+/// container, triggering CSS Display §2.7 blockification.
+fn analyzeNode(layout: *Layout, comptime is_root: IsRoot, parent_blockifies: bool) !?struct { NodeId, BoxTree.BoxStyle } {
     const node = layout.currentNode() orelse return null;
     try layout.computer.setCurrentNode(.box_gen, node);
 
@@ -254,7 +267,7 @@ fn analyzeNode(layout: *Layout, comptime is_root: IsRoot) !?struct { NodeId, Box
         },
         .element => {
             const specified_box_style = layout.computer.getSpecifiedValue(.box_gen, .box_style);
-            const computed_box_style, const used_box_style = solve.boxStyle(specified_box_style, is_root);
+            const computed_box_style, const used_box_style = solve.boxStyle(specified_box_style, is_root, parent_blockifies);
             layout.computer.setComputedValue(.box_gen, .box_style, computed_box_style);
             return .{ node, used_box_style };
         },

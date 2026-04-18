@@ -276,10 +276,13 @@ fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specif
     switch (group) {
         .box_style => {
             const parent = node.parent(sc.env);
+            // parent_blockifies=false here: cascade-time computation doesn't
+            // know layout-time parent flex/grid context. BoxGen.analyzeNode
+            // passes the real flag when it computes used_box_style.
             const computed_value, _ = if (parent == null) // TODO: Should check for equality with the root node instead
-                solve.boxStyle(specified, .root)
+                solve.boxStyle(specified, .root, false)
             else
-                solve.boxStyle(specified, .not_root);
+                solve.boxStyle(specified, .not_root, false);
             return computed_value;
         },
         .font => {

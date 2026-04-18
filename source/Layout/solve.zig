@@ -88,7 +88,10 @@ pub fn opacity(specified: SpecifiedValues(.opacity)) f32 {
 }
 
 /// Implements the rules specified in section 9.7 of CSS2.2.
-pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.Layout.IsRoot) struct { ComputedValues(.box_style), BoxTree.BoxStyle } {
+/// `parent_blockifies` is true when the parent is a flex or grid container,
+/// per CSS Display §2.7 + Flexbox §4: children of flex/grid containers have
+/// their computed display blockified (e.g. inline-flex → flex, inline → block).
+pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.Layout.IsRoot, parent_blockifies: bool) struct { ComputedValues(.box_style), BoxTree.BoxStyle } {
     var computed: ComputedValues(.box_style) = .{
         .display = undefined,
         .position = specified.position,
@@ -141,6 +144,19 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             if (specified.float != .none) {
                 // CSS 2.1 §9.7: floated elements are blockified
                 computed.display = blockify(specified.display);
+            } else if (parent_blockifies) {
+                // CSS Display §2.7 + Flexbox §4: only *inline-level* children
+                // of flex/grid containers are blockified — internal table
+                // display values (table-cell, table-row, …) are preserved.
+                // The general blockify() is used for floats and absolutes,
+                // where CSS 2.1 §9.7 additionally maps table-cell → block;
+                // that broader mapping breaks plain <td> cells which are
+                // never flex/grid children but share the function.
+                computed.display = switch (specified.display) {
+                    .@"inline", .inline_block => .block,
+                    .inline_flex => .flex,
+                    else => specified.display,
+                };
             } else {
                 computed.display = specified.display;
             }
