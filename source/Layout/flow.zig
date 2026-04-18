@@ -126,13 +126,15 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                         break :blk switch (cw.width) {
                             .px => |v| @as(i32, @intFromFloat(@round(v * 4.0))),
                             .em => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedFontSizePx(.box_gen) * 4.0))),
-                            // Percentage and auto widths: use content measurement.
-                            // Percentage widths on flex items resolve against the
-                            // flex container, but for flex-basis:auto the spec says
-                            // to use the main size property.  When that's a percentage,
-                            // treat as content-based to avoid items claiming the full
-                            // container width as their flex base.
-                            .percentage, .auto => @as(i32, -1),
+                            // CSS Flexbox §7.2 + §9.2A: flex-basis:auto uses the main
+                            // size property. width:<percentage> resolved against a
+                            // definite containing block is itself definite, so the
+                            // flex base size = pct * container_main. This matches
+                            // Chrome; falling back to content here caused e.g.
+                            // Wikipedia's .mw-header (width:100%) to shrink to its
+                            // intrinsic content width inside .vector-header-container.
+                            .percentage => |pct| @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct))),
+                            .auto => @as(i32, -1),
                         };
                     },
                     .px => |v| @intFromFloat(@round(v * 4.0)),
