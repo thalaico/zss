@@ -152,17 +152,14 @@ fn endMode(box_gen: *BoxGen) !Result {
     // elements adds ~line-height of empty space.
     var effective_height = line_split_result.height;
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
-    // whitespace-only text content does not generate boxes. Detect whitespace-
-    // only IFCs: single line, very narrow content (just a collapsed space).
-    // Without this, every whitespace text node between block elements adds
-    // ~line-height of empty space, inflating layout of deeply nested HTML.
-    if (ifc.ptr.line_boxes.items.len <= 1) {
-        const content_w = line_split_result.longest_line_box_length;
-        // A single collapsed space is ~4px = ~16 internal units.
-        // Anything narrower than 1em (~56 internal units at 14px) is whitespace.
-        if (content_w <= 60) {
-            effective_height = 0;
-        }
+    // whitespace-only text content does not generate boxes. We track per-IFC
+    // whether ANY visible content (non-whitespace text, an inline box, an
+    // inline-block) was added; if not, the IFC contributes zero height to
+    // its containing block. This replaces the older width-heuristic that
+    // missed cases where the collapsed space rendered slightly wider than
+    // the threshold (different fonts produce 16-100 internal-unit spaces).
+    if (!ifc.has_visible_content) {
+        effective_height = 0;
     }
 
     box_gen.inline_context.popIfc();
@@ -180,6 +177,12 @@ pub const Context = struct {
         containing_block_size: ContainingBlockSize,
         percentage_base_unit: Unit,
         font_handle: ?Fonts.Handle,
+        /// CSS 2.1 §9.2.2.1: tracks whether this IFC has any non-whitespace
+        /// inline content. False means the IFC is purely whitespace text and
+        /// can be discarded between block-level siblings (no line boxes).
+        /// Set to true the moment we see ANY non-whitespace text run, ANY
+        /// inline box (which itself may contain content), or ANY inline-block.
+        has_visible_content: bool,
     }) = .init(undefined),
     inline_box: zss.Stack(InlineBox) = .init(undefined),
 
@@ -210,6 +213,7 @@ pub const Context = struct {
             .containing_block_size = containing_block_size,
             .percentage_base_unit = percentage_base_unit,
             .font_handle = null,
+            .has_visible_content = false,
         });
     }
 
@@ -277,6 +281,20 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     .lowercase => try transformCase(layout.allocator, raw_text, .lower),
                     .capitalize => try transformCase(layout.allocator, raw_text, .capitalize),
                 };
+                // Track for whitespace-only IFC discard (CSS 2.1 §9.2.2.1).
+                // If any character in this text run is not HTML whitespace, the
+                // IFC has visible content and must not be zeroed in endMode.
+                if (!ctx.ifc.top.?.has_visible_content) {
+                    for (text) |ch| {
+                        switch (ch) {
+                            ' ', '\t', '\n', '\r', 0x0c => {},
+                            else => {
+                                ctx.ifc.top.?.has_visible_content = true;
+                                break;
+                            },
+                        }
+                    }
+                }
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
                 const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
                 if (glyph_end > glyph_start) {
@@ -322,6 +340,10 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             const inline_box_index = try pushInlineBox(box_gen, node);
             const generated_box = GeneratedBox{ .inline_box = .{ .ifc_id = ifc.ptr.id, .index = inline_box_index } };
             try layout.box_tree.setGeneratedBox(node, generated_box);
+            // Inline boxes (<span>, <a>, etc.) are visible content even before
+            // we descend into their children. An empty <span> with padding/
+            // border still generates a line box per CSS 2.1.
+            ctx.ifc.top.?.has_visible_content = true;
             try layout.pushNode();
         },
         .block => |block_inner| switch (block_inner) {
@@ -334,6 +356,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
+                    // Inline-block is visible content for whitespace-only IFC discard.
+                    ctx.ifc.top.?.has_visible_content = true;
                     try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
                     try layout.pushNode();
                     return box_gen.beginFlowMode(.not_root);
@@ -347,6 +371,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .{ .stf = available_width }, stacking_context, node);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
+                    // Inline-block is visible content for whitespace-only IFC discard.
+                    ctx.ifc.top.?.has_visible_content = true;
                     try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
                     try layout.pushNode();
                     return box_gen.beginStfMode(.flow, sizes);
