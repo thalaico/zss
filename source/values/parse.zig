@@ -838,8 +838,13 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
             };
         },
         .token_integer => blk: {
-            const number = item.index.extra(ctx.ast).number orelse break :blk null;
-            if (number == 0) break :blk .{ .px = @as(f32, 0) };
+            // The extra payload for `.token_integer` is `.integer`, not
+            // `.number` — accessing the wrong variant trips a Zig union
+            // safety panic and crashes the renderer (seen on TodoMVC's
+            // React build, where some font-size declaration tokenises as
+            // an integer with no unit).
+            const int_val = item.index.extra(ctx.ast).integer orelse break :blk null;
+            if (int_val == 0) break :blk .{ .px = @as(f32, 0) };
             break :blk null;
         },
         else => null,
