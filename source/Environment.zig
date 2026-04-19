@@ -156,6 +156,14 @@ pub fn deinit(env: *Environment) void {
         }
         env.nodes_to_classes.deinit(env.allocator);
     }
+    // Free the attribute slices stored in nodes_to_attributes, then the map itself.
+    {
+        var it = env.nodes_to_attributes.valueIterator();
+        while (it.next()) |val| {
+            env.allocator.free(val.*);
+        }
+        env.nodes_to_attributes.deinit(env.allocator);
+    }
 
     env.urls_to_images.deinit(env.allocator);
 }
