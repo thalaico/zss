@@ -161,6 +161,9 @@ fn endMode(box_gen: *BoxGen) !Result {
     if (!ifc.has_visible_content) {
         effective_height = 0;
     }
+    // Persist the flag on the IFC so flex re-layout (relayoutIfcAtWidth)
+    // re-applies the same zeroing instead of resurrecting line-box height.
+    ifc.ptr.has_visible_content = ifc.has_visible_content;
 
     box_gen.inline_context.popIfc();
     box_gen.popIfc(ifc.ptr.id, containing_block_width, effective_height);

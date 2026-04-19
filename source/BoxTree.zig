@@ -336,6 +336,14 @@ pub const InlineFormattingContext = struct {
 
     line_boxes: ArrayListUnmanaged(LineBox) = .{},
 
+    /// CSS 2.1 §9.2.2.1: true if this IFC has any visible inline content
+    /// (non-whitespace text, an inline box, or an inline-block). When false,
+    /// the IFC is purely whitespace between block-level siblings and must
+    /// not contribute height to its parent. Set by inline.endMode and
+    /// consulted by flow.relayoutIfcAtWidth so flex re-layout doesn't
+    /// resurrect zeroed whitespace IFCs.
+    has_visible_content: bool = false,
+
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black
     font_family: values.types.FontFamily = .serif, // CSS initial: depends on UA; Chrome uses serif

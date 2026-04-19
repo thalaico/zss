@@ -1625,9 +1625,14 @@ fn relayoutIfcAtWidth(
                         const bo = &subtree.items(.box_offsets)[g];
                         bo.border_size.w = new_content_w;
                         bo.content_size.w = new_content_w;
-                        bo.border_size.h = result.height;
-                        bo.content_size.h = result.height;
-                        total_ifc_height += result.height;
+                        // CSS 2.1 §9.2.2.1: whitespace-only IFCs between block
+                        // siblings contribute zero. The same rule applied at
+                        // initial layout (inline.endMode) must apply here so
+                        // flex re-layout doesn't resurrect line-box height.
+                        const eff_h: Unit = if (ifc.has_visible_content) result.height else 0;
+                        bo.border_size.h = eff_h;
+                        bo.content_size.h = eff_h;
+                        total_ifc_height += eff_h;
                     },
                     else => has_non_ifc_child = true,
                 }
@@ -1669,9 +1674,10 @@ fn relayoutIfcAtWidth(
                 const bo = &subtree.items(.box_offsets)[gc];
                 bo.border_size.w = new_content_w;
                 bo.content_size.w = new_content_w;
-                bo.border_size.h = result.height;
-                bo.content_size.h = result.height;
-                accumulated_y_delta += (result.height - old_h);
+                const eff_h: Unit = if (ifc.has_visible_content) result.height else 0;
+                bo.border_size.h = eff_h;
+                bo.content_size.h = eff_h;
+                accumulated_y_delta += (eff_h - old_h);
             },
             .block => {
                 // Recurse into nested flow blocks. The recursive call will
