@@ -417,11 +417,11 @@ const NumberBuffer = struct {
         buffer.data[buffer.len] = char;
     }
 
-    fn overflow(buffer: NumberBuffer) bool {
+    fn overflow(buffer: *const NumberBuffer) bool {
         return buffer.len > buffer.data.len;
     }
 
-    fn slice(buffer: NumberBuffer) []const u8 {
+    fn slice(buffer: *const NumberBuffer) []const u8 {
         return buffer.data[0..buffer.len];
     }
 };
