@@ -599,6 +599,9 @@ pub const BlockInfo = struct {
     flex_shrink: f32 = 1.0,
     /// flex-basis resolved to layout units; -1 = auto
     flex_basis_px: math.Unit = -1,
+    /// align-self override for this item (default .auto = defer to container's
+    /// align-items). See BoxTree.Subtree.Block.align_self for full semantics.
+    align_self: zss.values.types.AlignSelf = .auto,
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -830,6 +833,7 @@ pub fn popFlowBlock(
     subtree.items(.flex_grow)[block.index] = block_info.flex_grow;
     subtree.items(.flex_shrink)[block.index] = block_info.flex_shrink;
     subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
+    subtree.items(.align_self)[block.index] = block_info.align_self;
     subtree.items(.list_style_type)[block.index] = .none;
 }
 

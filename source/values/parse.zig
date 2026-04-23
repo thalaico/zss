@@ -730,6 +730,21 @@ pub fn alignItems(ctx: *Context) ?types.AlignItems {
     });
 }
 
+/// CSS align-self: auto | stretch | flex-start | flex-end | center | baseline.
+/// `auto` (the initial value) tells the flex container's alignment logic to
+/// fall back to `align-items`. Any other value behaves like the same-named
+/// `align-items` value applied to this specific item.
+pub fn alignSelf(ctx: *Context) ?types.AlignSelf {
+    return keyword(ctx, types.AlignSelf, &.{
+        .{ "auto", .auto },
+        .{ "stretch", .stretch },
+        .{ "flex-start", .flex_start },
+        .{ "flex-end", .flex_end },
+        .{ "center", .center },
+        .{ "baseline", .baseline },
+    });
+}
+
 /// Parse a non-negative number (flex-grow or flex-shrink).
 pub fn flexFactor(ctx: *Context) ?types.FlexFactor {
     const item = ctx.next() orelse return null;

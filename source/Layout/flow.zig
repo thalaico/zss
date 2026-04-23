@@ -116,6 +116,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 const info = &box_gen.stacks.block_info.top.?;
                 info.flex_grow = box_style_specified.flex_grow;
                 info.flex_shrink = box_style_specified.flex_shrink;
+                info.align_self = box_style_specified.align_self;
                 // §9.2: Resolve flex-basis to layout units (4 per CSS px).
                 //   - Definite flex-basis → use directly.
                 //   - flex-basis: auto + definite width → use width (§9.2D).
@@ -1273,9 +1274,20 @@ pub fn offsetChildBlocksFlex(
     // this shrink-to-content to center their title + subtitle + CTA row.
     // Without it, each item is 100% wide with left-aligned text — visually
     // identical to no flex alignment at all.
-    if (flex_is_column and align_items != .stretch) {
+    if (flex_is_column) {
         for (0..child_count) |ci| {
             const child_idx = children[ci];
+            // Per §9.4, an item's cross size is its hypothetical (content)
+            // cross size unless `align-items: stretch` (or effective stretch
+            // via auto + container stretch) applies. align-self: auto
+            // inherits from align-items; any other value wins.
+            const self = subtree.items(.align_self)[child_idx];
+            const stretch_effective = switch (self) {
+                .auto => align_items == .stretch,
+                .stretch => true,
+                else => false,
+            };
+            if (stretch_effective) continue;
             const bo = &subtree.items(.box_offsets)[child_idx];
             const content_w_new = measureContentMainSize(box_tree, subtree, child_idx, false);
             const left_edge = bo.content_pos.x;
@@ -1284,9 +1296,6 @@ pub fn offsetChildBlocksFlex(
             if (border_w_new != bo.border_size.w) {
                 bo.border_size.w = border_w_new;
                 bo.content_size.w = @max(0, border_w_new - left_edge - right_edge);
-                // Re-layout IFC (text) containers at the new width so line
-                // boxes split correctly and cascaded text-align computes
-                // against the shrunken content area.
                 relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w);
             }
         }
@@ -1310,9 +1319,23 @@ pub fn offsetChildBlocksFlex(
     // centering computes offsets against the full container, not the widest
     // shrunken item. Without this, centering aligns items to each other's
     // bounding box — not to the container as the author expects.
-    if (num_lines == 1 and flex_is_column and container_cross > 0 and align_items != .stretch) {
-        line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
-        total_cross = line_cross_sizes[0];
+    if (num_lines == 1 and flex_is_column and container_cross > 0) {
+        // Pin to container cross-size whenever any item in the line wants
+        // a non-stretch alignment (from align-items or per-item align-self).
+        var any_non_stretch = align_items != .stretch;
+        if (!any_non_stretch) {
+            for (0..child_count) |ci| {
+                const s = subtree.items(.align_self)[children[ci]];
+                if (s != .auto and s != .stretch) {
+                    any_non_stretch = true;
+                    break;
+                }
+            }
+        }
+        if (any_non_stretch) {
+            line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
+            total_cross = line_cross_sizes[0];
+        }
     }
 
     // §9.4: Single-line container with definite cross size → line cross = container cross
@@ -1357,12 +1380,25 @@ pub fn offsetChildBlocksFlex(
             0;
         const total_item_gap = flex_gap + sb_gap;
 
-        // Cross-axis alignment (§9.6)
+        // Cross-axis alignment (§9.6). `align-self` on an item overrides the
+        // container's `align-items` for that specific item — `.auto` defers
+        // to the container. React.dev's hero <h1 class="self-center">
+        // (Tailwind: `align-self: center`) is the canonical case: the parent
+        // is flex-column with no explicit align-items, so the h1 wants to be
+        // horizontally centered while siblings stretch.
         for (ls..le) |ci| {
             const child_idx = children[ci];
             const box_offsets = subtree.items(.box_offsets)[child_idx];
             const child_cross_sz = childCrossSize(subtree, child_idx, flex_is_column);
-            const cross_offset: Unit = cross_cursor + switch (align_items) {
+            const effective_align: BlockInfo.FlexAlign = switch (subtree.items(.align_self)[child_idx]) {
+                .auto => align_items,
+                .stretch => .stretch,
+                .flex_start => .flex_start,
+                .flex_end => .flex_end,
+                .center => .center,
+                .baseline => .flex_start, // baseline unsupported; fall back
+            };
+            const cross_offset: Unit = cross_cursor + switch (effective_align) {
                 .flex_start => 0,
                 .flex_end => @max(0, line_cross - child_cross_sz),
                 .center => @max(0, @divFloor(line_cross - child_cross_sz, 2)),

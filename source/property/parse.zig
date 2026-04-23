@@ -134,6 +134,13 @@ pub fn @"align-items"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     return .{ .box_style = .{ .align_items = .{ .declared = value } } };
 }
 
+pub fn @"align-self"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"align-self") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.alignSelf(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .box_style = .{ .align_self = .{ .declared = value } } };
+}
+
 pub fn gap(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.gap) {
     ctx.initDecl(declaration_index);
     const row_value = values.parse.gap(ctx) orelse return null;

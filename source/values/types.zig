@@ -144,6 +144,18 @@ pub const AlignItems = enum {
     baseline,
 };
 
+/// align-self: per-item override of the container's align-items.
+/// `auto` (the initial value) defers to the container's align-items.
+/// Any other value acts the same as the align-items value of the same name.
+pub const AlignSelf = enum {
+    auto,
+    stretch,
+    flex_start,
+    flex_end,
+    center,
+    baseline,
+};
+
 /// flex-grow / flex-shrink: non-negative number (default grow=0, shrink=1)
 pub const FlexFactor = f32;
 

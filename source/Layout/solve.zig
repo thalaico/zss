@@ -101,6 +101,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .flex_direction = specified.flex_direction,
         .justify_content = specified.justify_content,
         .align_items = specified.align_items,
+        .align_self = specified.align_self,
         .column_gap = specified.column_gap,
         .row_gap = specified.row_gap,
         .flex_grow = specified.flex_grow,

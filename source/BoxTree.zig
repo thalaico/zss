@@ -273,6 +273,10 @@ pub const Subtree = struct {
         flex_shrink: f32,
         /// flex-basis resolved to layout units; -1 = auto
         flex_basis_px: math.Unit,
+        /// align-self override for this item. `.auto` defers to the flex
+        /// container's align-items (the common case); any other value wins.
+        /// Only read during flex layout — ignored by block/inline.
+        align_self: values.types.AlignSelf = .auto,
         /// List marker style for list-item blocks (.none = no marker)
         list_style_type: values.types.ListStyleType = .none,
         /// Inner display type for `.block` type entries: flow (normal block layout),
