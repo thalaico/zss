@@ -254,6 +254,13 @@ pub const Subtree = struct {
         opacity: values.types.Opacity,
         /// True for position:absolute/fixed elements that should not participate in normal flow.
         out_of_flow: bool,
+        /// True if this block establishes a containing block for absolutely positioned
+        /// descendants. Per CSS 2.1 §10.1, this is any block with `position: relative | absolute | fixed`
+        /// (and in CSS3 also transform, will-change, etc., but we don't implement those yet).
+        /// Used by the renderer to resolve `position:absolute` insets against the correct
+        /// ancestor — `insets == 0` alone can't distinguish position:relative-with-no-offsets
+        /// from position:static, and the latter must fall through to its positioned ancestor.
+        creates_absolute_cb: bool = false,
         /// Float side for this block (none = not floated)
         float_side: values.types.Float,
         /// Clear value for this block

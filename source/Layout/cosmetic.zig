@@ -309,6 +309,12 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     // Set overflow (from box_style) and opacity
     subtree.items(.overflow)[ref.index] = computed_box_style.overflow;
     subtree.items(.opacity)[ref.index] = solve.opacity(specified.opacity);
+    // CSS 2.1 §10.1: position:relative|absolute|fixed elements establish a
+    // containing block for their absolutely-positioned descendants.
+    subtree.items(.creates_absolute_cb)[ref.index] = switch (computed_box_style.position) {
+        .static => false,
+        .relative, .absolute, .fixed, .sticky => true,
+    };
 
     layout.computer.setComputedValue(.cosmetic, .box_style, computed_box_style);
     layout.computer.setComputedValue(.cosmetic, .insets, computed_insets);
@@ -593,6 +599,7 @@ fn anonymousBlockBoxCosmeticLayout(box_tree: Layout.BoxTreeManaged, ref: BlockRe
     subtree.items(.insets)[ref.index] = .{ .x = 0, .y = 0 };
     subtree.items(.overflow)[ref.index] = .visible;
     subtree.items(.opacity)[ref.index] = 1.0;
+    subtree.items(.creates_absolute_cb)[ref.index] = false;
 }
 
 fn inlineBoxCosmeticLayout(
