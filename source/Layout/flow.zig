@@ -236,11 +236,26 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
     const containing_block_size = box_gen.containingBlockSize();
     const sizes = solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
 
-    // Resolve content text (if any) before creating the box.
+    // Resolve content text (if any) before creating the box. Whitespace-only
+    // content (e.g. `::before { content: " " }` used for the Foundation/Bootstrap
+    // clearfix + `display: table` trick) should NOT generate an IFC — the space
+    // is a spec-approved marker to force Chrome's table-wrapper rendering, not a
+    // visible glyph. Rendering it as an IFC adds one line-height of vertical
+    // space at every `.row:before` on the page, shifting all downstream content
+    // downward (observed on Heroku-login @800, where the login form sat ~15px
+    // lower than Chrome because of multiple clearfix `.row::before` nodes).
     const content_text: ?[]const u8 = switch (gen_content.content) {
         .string => |text_id| blk: {
             const t = layout.inputs.env.getText(text_id);
-            break :blk if (t.len > 0) t else null;
+            if (t.len == 0) break :blk null;
+            var all_ws = true;
+            for (t) |ch| {
+                if (ch != ' ' and ch != '\t' and ch != '\n' and ch != '\r') {
+                    all_ws = false;
+                    break;
+                }
+            }
+            break :blk if (all_ws) null else t;
         },
         else => null,
     };
