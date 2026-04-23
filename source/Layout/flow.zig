@@ -1254,6 +1254,44 @@ pub fn offsetChildBlocksFlex(
         }
     }
 
+    // --- Phase 4b: Shrink items to content cross-size when not stretching ---
+    // Children in a flex column are initially laid out at container width
+    // (like ordinary block children), so their border_size.w equals the
+    // container cross-size. The cross-axis algorithm (§9.4) assumes items
+    // already have their final cross size so center/flex-start/flex-end
+    // offsets can be computed; with a stretched cross size there's nothing
+    // to center. When align-items != stretch, shrink each flex-column item
+    // to its max-content cross size so the later centering math produces
+    // a real offset. Measurement uses the same walk as §9.2's main-size
+    // auto measurement (`measureContentMainSize`) but along the cross axis
+    // — for flex-column, that's the HORIZONTAL content extent, i.e. the
+    // measurement you'd get by asking the item for its main-size with
+    // flex_is_column=false.
+    //
+    // Pages that authored `flex-direction: column; align-items: center`
+    // for hero sections (React.dev, most Tailwind landing pages) rely on
+    // this shrink-to-content to center their title + subtitle + CTA row.
+    // Without it, each item is 100% wide with left-aligned text — visually
+    // identical to no flex alignment at all.
+    if (flex_is_column and align_items != .stretch) {
+        for (0..child_count) |ci| {
+            const child_idx = children[ci];
+            const bo = &subtree.items(.box_offsets)[child_idx];
+            const content_w_new = measureContentMainSize(box_tree, subtree, child_idx, false);
+            const left_edge = bo.content_pos.x;
+            const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
+            const border_w_new = @min(bo.border_size.w, content_w_new);
+            if (border_w_new != bo.border_size.w) {
+                bo.border_size.w = border_w_new;
+                bo.content_size.w = @max(0, border_w_new - left_edge - right_edge);
+                // Re-layout IFC (text) containers at the new width so line
+                // boxes split correctly and cascaded text-align computes
+                // against the shrunken content area.
+                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w);
+            }
+        }
+    }
+
     // --- Phase 5 (§9.4): Determine cross sizes per line ---
     var line_cross_sizes: [MAX_LINES]Unit = undefined;
     var total_cross: Unit = 0;
@@ -1266,6 +1304,15 @@ pub fn offsetChildBlocksFlex(
         }
         line_cross_sizes[line_idx] = max_cross;
         total_cross += max_cross;
+    }
+    // §9.4: For a single-line flex-column container with a definite cross
+    // (horizontal) size, the line cross size equals the container width so
+    // centering computes offsets against the full container, not the widest
+    // shrunken item. Without this, centering aligns items to each other's
+    // bounding box — not to the container as the author expects.
+    if (num_lines == 1 and flex_is_column and container_cross > 0 and align_items != .stretch) {
+        line_cross_sizes[0] = @max(line_cross_sizes[0], container_cross);
+        total_cross = line_cross_sizes[0];
     }
 
     // §9.4: Single-line container with definite cross size → line cross = container cross
