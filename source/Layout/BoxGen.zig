@@ -86,10 +86,13 @@ pub fn run(box_gen: *BoxGen) !void {
     const allocator = box_gen.getLayout().allocator;
     box_gen.table_context = table.Context.init(allocator);
     try analyzeAllNodes(box_gen);
-    
-    // Layout absolutely positioned elements after normal flow
+    // Absolutely-positioned elements with children are laid out inline as
+    // out-of-flow blocks in analyzeAllNodes (see dispatch .absolute branch).
+    // Leaf absolute elements (no children — e.g. <img>) still go through
+    // layoutAbsoluteBlocks, which creates an empty leaf box. That preserves
+    // the pre-existing behavior for replaced elements whose intrinsic size
+    // ZSS can't resolve at layout time.
     try layoutAbsoluteBlocks(box_gen);
-    
     box_gen.sct_builder.endFrame();
 }
 
@@ -289,12 +292,34 @@ fn dispatch(
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
         .absolute => {
-            // Add to absolute positioning list for out-of-flow layout
+            // CSS §9.6: absolutely-positioned elements establish a new BFC
+            // and lay out their children. For *container* absolutes, we
+            // dispatch as a regular block so descendants lay out — pushBlock
+            // sets out_of_flow=true based on position=.absolute, the parent's
+            // flow layout skips us when stacking (flow.zig:894), the cosmetic
+            // pass writes CSS left/top into insets, and the renderer sums
+            // offset + insets at paint time to position us.
+            //
+            // For *leaf* absolutes (no children — typically replaced elements
+            // like <img>), we keep the pre-existing empty-leaf path. Dispatching
+            // a replaced element via the regular block path trips up width:auto
+            // resolution (no intrinsic size available at layout time) and blows
+            // the box up to the parent's full width, which covers content below
+            // it — this is exactly what Heroku's "Fork me on GitHub" ribbon was
+            // doing before the has_children guard was added.
+            const has_children = node.firstChild(box_gen.getLayout().inputs.env) != null;
             const inner_box_style = box_style.outer.absolute;
-            const allocator = box_gen.getLayout().allocator;
-            try box_gen.absolute.addBlock(allocator, node, inner_box_style, box_style.position);
-            // Advance to next node without laying out in normal flow
-            box_gen.getLayout().advanceNode();
+            if (has_children) {
+                const block_box_style: BoxTree.BoxStyle = .{
+                    .outer = .{ .block = inner_box_style },
+                    .position = box_style.position,
+                };
+                try box_gen.dispatchBlockElement(is_root, current_mode, node, block_box_style);
+            } else {
+                const allocator = box_gen.getLayout().allocator;
+                try box_gen.absolute.addBlock(allocator, node, inner_box_style, box_style.position);
+                box_gen.getLayout().advanceNode();
+            }
         },
     }
 }

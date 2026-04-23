@@ -448,10 +448,10 @@ fn solveInsetsAbsolute(
     // Top: distance from top edge of containing block
     // If left is auto, use 0 (simplified - should use static position)
     // If top is auto, use 0 (simplified - should use static position)
-    
+
     var left: Unit = 0;
     var top: Unit = 0;
-    
+
     switch (specified.left) {
         .px => |value| {
             computed.left = .{ .px = value };
