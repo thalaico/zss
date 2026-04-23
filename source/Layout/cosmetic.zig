@@ -253,19 +253,19 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
             .static => solveInsetsStatic(specified.insets, &computed_insets, used_insets),
             .relative => {
                 const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
-                solveInsetsRelative(specified.insets, containing_block_size, &computed_insets, used_insets);
+                solveInsetsRelative(specified.insets, containing_block_size, font_size_px, &computed_insets, used_insets);
             },
             .absolute => {
                 const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
                 // Simplified absolute positioning:
                 // Apply insets as offsets from containing block
                 // TODO: Implement proper out-of-flow positioning with containing block resolution
-                solveInsetsAbsolute(specified.insets, containing_block_size, &computed_insets, used_insets);
+                solveInsetsAbsolute(specified.insets, containing_block_size, font_size_px, &computed_insets, used_insets);
             },
             .fixed => {
                 // Fixed positioning: insets relative to the initial containing block (viewport)
                 const icb_size = context.containing_block_size.items[0];
-                solveInsetsAbsolute(specified.insets, icb_size, &computed_insets, used_insets);
+                solveInsetsAbsolute(specified.insets, icb_size, font_size_px, &computed_insets, used_insets);
             },
             .sticky => {
                 // TODO: Implement sticky positioning
@@ -366,6 +366,7 @@ fn solveInsetsStatic(
 fn solveInsetsRelative(
     specified: SpecifiedValues(.insets),
     containing_block_size: Size,
+    font_size_px: f32,
     computed: *ComputedValues(.insets),
     used: *BoxTree.Insets,
 ) void {
@@ -387,7 +388,13 @@ fn solveInsetsRelative(
             computed.left = .auto;
             left = null;
         },
-        .em => unreachable,
+        .em => |value| {
+            // em resolves against the element's own computed font-size
+            // (not the parent's) for non-font properties — CSS Values 3 §5.1.
+            const resolved = value * font_size_px;
+            computed.left = .{ .px = resolved };
+            left = solve.length(.px, resolved);
+        },
     }
     switch (specified.right) {
         .px => |value| {
@@ -402,7 +409,11 @@ fn solveInsetsRelative(
             computed.right = .auto;
             right = null;
         },
-        .em => unreachable,
+        .em => |value| {
+            const resolved = value * font_size_px;
+            computed.right = .{ .px = resolved };
+            right = -solve.length(.px, resolved);
+        },
     }
     switch (specified.top) {
         .px => |value| {
@@ -417,7 +428,11 @@ fn solveInsetsRelative(
             computed.top = .auto;
             top = null;
         },
-        .em => unreachable,
+        .em => |value| {
+            const resolved = value * font_size_px;
+            computed.top = .{ .px = resolved };
+            top = solve.length(.px, resolved);
+        },
     }
     switch (specified.bottom) {
         .px => |value| {
@@ -432,7 +447,11 @@ fn solveInsetsRelative(
             computed.bottom = .auto;
             bottom = null;
         },
-        .em => unreachable,
+        .em => |value| {
+            const resolved = value * font_size_px;
+            computed.bottom = .{ .px = resolved };
+            bottom = -solve.length(.px, resolved);
+        },
     }
 
     used.* = .{
@@ -446,14 +465,16 @@ fn solveInsetsRelative(
 fn solveInsetsAbsolute(
     specified: SpecifiedValues(.insets),
     containing_block_size: Size,
+    font_size_px: f32,
     computed: *ComputedValues(.insets),
     used: *BoxTree.Insets,
 ) void {
-    // For absolute positioning, insets are relative to containing block edges
-    // Left: distance from left edge of containing block
-    // Top: distance from top edge of containing block
-    // If left is auto, use 0 (simplified - should use static position)
-    // If top is auto, use 0 (simplified - should use static position)
+    // For absolute positioning, insets are relative to containing block edges.
+    // em values resolve against the element's own computed font-size per
+    // CSS Values 3 §5.1 (not the parent's). Previously `.em => unreachable`
+    // would kill the render pipeline the moment any `/secure`-style page
+    // used e.g. `.alert-box { position:absolute; top: 0.5em; }` — Foundation
+    // alerts do exactly that, which is why the login form redirect hung.
 
     var left: Unit = 0;
     var top: Unit = 0;
@@ -471,9 +492,13 @@ fn solveInsetsAbsolute(
             computed.left = .auto;
             left = 0; // Simplified: should compute static position
         },
-        .em => unreachable,
+        .em => |value| {
+            const resolved = value * font_size_px;
+            computed.left = .{ .px = resolved };
+            left = solve.length(.px, resolved);
+        },
     }
-    
+
     switch (specified.top) {
         .px => |value| {
             computed.top = .{ .px = value };
@@ -487,22 +512,26 @@ fn solveInsetsAbsolute(
             computed.top = .auto;
             top = 0; // Simplified: should compute static position
         },
-        .em => unreachable,
+        .em => |value| {
+            const resolved = value * font_size_px;
+            computed.top = .{ .px = resolved };
+            top = solve.length(.px, resolved);
+        },
     }
-    
+
     // Right and bottom are used for sizing when width/height are auto
     // For now, just compute them for completeness
     switch (specified.right) {
         .px => |value| computed.right = .{ .px = value },
         .percentage => |value| computed.right = .{ .percentage = value },
         .auto => computed.right = .auto,
-        .em => unreachable,
+        .em => |value| computed.right = .{ .px = value * font_size_px },
     }
     switch (specified.bottom) {
         .px => |value| computed.bottom = .{ .px = value },
         .percentage => |value| computed.bottom = .{ .percentage = value },
         .auto => computed.bottom = .auto,
-        .em => unreachable,
+        .em => |value| computed.bottom = .{ .px = value * font_size_px },
     }
     
     used.* = .{
@@ -630,11 +659,15 @@ fn inlineBoxCosmeticLayout(
     var computed_insets: ComputedValues(.insets) = undefined;
     {
         const used_insets = &ifc_slice.items(.insets)[inline_box_index];
+        // Inline boxes resolve em insets against their own computed font-size.
+        // layout.computer has the inline box's cascade loaded here; reuse the
+        // same API as block cosmetic layout.
+        const inline_font_size_px = layout.computer.resolvedFontSizePx(.cosmetic);
         switch (computed_box_style.position) {
             .static => solveInsetsStatic(specified.insets, &computed_insets, used_insets),
             .relative => {
                 const containing_block_size = context.containing_block_size.items[context.containing_block_size.items.len - 1];
-                solveInsetsRelative(specified.insets, containing_block_size, &computed_insets, used_insets);
+                solveInsetsRelative(specified.insets, containing_block_size, inline_font_size_px, &computed_insets, used_insets);
             },
             .sticky => panic("TODO: Inline insets with {s} positioning", .{@tagName(computed_box_style.position)}),
             .absolute, .fixed => unreachable,
