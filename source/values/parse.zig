@@ -962,10 +962,33 @@ fn stringEqlIgnoreCaseImpl(source_code: SourceCode, location: SourceCode.Locatio
 }
 
 pub fn fontWeight(ctx: *Context) ?types.FontWeight {
-    return keyword(ctx, types.FontWeight, &.{
-        .{ "normal", .normal },
-        .{ "bold", .bold },
-    });
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_ident => {
+            ctx.state.sequence.reset(item.index);
+            return keyword(ctx, types.FontWeight, &.{
+                .{ "normal", .normal },
+                .{ "bold", .bold },
+                // "bolder" / "lighter" are relative-to-inherited. Approximate
+                // with concrete values — most authors who ship these mean
+                // "slightly bolder than inherited", so pick the canonical
+                // next-step weight.
+                .{ "lighter", @as(types.FontWeight, @enumFromInt(300)) },
+                .{ "bolder", @as(types.FontWeight, @enumFromInt(700)) },
+            });
+        },
+        .token_integer => {
+            const n = item.index.extra(ctx.ast).integer orelse return null;
+            if (n < 1 or n > 1000) return null;
+            return @enumFromInt(@as(u16, @intCast(n)));
+        },
+        .token_number => {
+            const f = item.index.extra(ctx.ast).number orelse return null;
+            if (f < 1 or f > 1000) return null;
+            return @enumFromInt(@as(u16, @intFromFloat(@round(f))));
+        },
+        else => return null,
+    }
 }
 
 pub fn fontStyle(ctx: *Context) ?types.FontStyle {

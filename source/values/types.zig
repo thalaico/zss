@@ -484,9 +484,21 @@ pub const FontSize = union(enum) {
     }
 };
 
-pub const FontWeight = enum {
-    normal,
-    bold,
+/// CSS font-weight. Authors use numeric weights (300 for light, 500 for
+/// medium, etc.) almost as often as the keywords. Representing it as an enum
+/// of every value would bloat the type — store the numeric weight and convert
+/// keywords at parse time (100=thin, 400=normal, 700=bold, 900=black, etc.).
+/// The renderer still maps this to its two-font-face slab (regular/bold) using
+/// a CSS-spec threshold: weight < 600 → regular, >= 600 → bold.
+pub const FontWeight = enum(u16) {
+    // Kept for backwards-compat with existing match arms in the codebase.
+    normal = 400,
+    bold = 700,
+    _,
+
+    pub fn isBold(self: FontWeight) bool {
+        return @intFromEnum(self) >= 600;
+    }
 };
 
 pub const FontStyle = enum {
