@@ -200,7 +200,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
             ifc.line_height = line_height;
         }
     } else {
-        // Propagate to all IFC containers within this block's span
+        // Propagate to all IFC containers within this block's span. This
+        // covers IFCs that live in the same subtree as the block.
         const skip = subtree.items(.skip)[ref.index];
         const block_types = subtree.items(.type);
         var i = ref.index;
@@ -224,6 +225,39 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
                     subtree.items(.visibility)[i] = block_visibility;
                 },
                 else => {},
+            }
+        }
+        // ALSO propagate to IFCs in any descendant subtrees rooted at this
+        // block. Inline-block (and other shrink-to-fit content) creates a
+        // child subtree via pushSubtree; its IFC's parent_block lives in
+        // that child subtree, not this one. Without this fallthrough,
+        // text inside an inline-block stays at the IFC's initial font_color
+        // (black) regardless of cascaded color — visible as black "Login"
+        // text on a button styled `color: white` (Heroku Foundation pattern).
+        for (layout.box_tree.ptr.ifcs.items) |ifc| {
+            if (ifc.parent_block.subtree == ref.subtree) continue; // already handled above
+            const ifc_subtree = layout.box_tree.ptr.getSubtree(ifc.parent_block.subtree);
+            var ancestor = ifc_subtree.parent;
+            while (ancestor) |anc| {
+                if (anc.subtree == ref.subtree and anc.index >= ref.index and anc.index < block_end) {
+                    // Only propagate `color` here. Propagating font-family /
+                    // font-size / etc. would over-apply intermediate-element
+                    // styles to the deepest IFC and can cause regressions
+                    // (e.g. Heroku Foundation's `i.fa { font-family: FontAwesome }`
+                    // would re-bind the inner IFC text to FontAwesome and the
+                    // " Login" glyphs disappear because we don't have the FA
+                    // font installed). Color is the property that motivated
+                    // this fix — text inside an inline-block was rendering as
+                    // initial black instead of the cascaded color.
+                    ifc.font_color = used_color;
+                    break;
+                }
+                // Walk up: the ancestor BlockRef points at a subtree_proxy in
+                // its own subtree; that subtree's parent (if any) is the next
+                // ancestor up.
+                if (anc.subtree == ref.subtree) break; // would have matched above; abort
+                const anc_subtree = layout.box_tree.ptr.getSubtree(anc.subtree);
+                ancestor = anc_subtree.parent;
             }
         }
     }
