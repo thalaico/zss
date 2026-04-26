@@ -43,6 +43,14 @@ pub const Property = enum {
     @"padding-top",
     @"padding-bottom",
     padding,
+    // Logical-edge aliases (LTR-only mapping to physical sides). Tailwind's
+    // ps-X / pe-X classes emit these directly; without them every modern
+    // utility-CSS site loses left/right padding on most layout primitives.
+    // Block-axis equivalents map to top/bottom.
+    @"padding-inline-start",
+    @"padding-inline-end",
+    @"padding-block-start",
+    @"padding-block-end",
     @"border-left-width",
     @"border-right-width",
     @"border-top-width",
@@ -53,6 +61,12 @@ pub const Property = enum {
     @"margin-top",
     @"margin-bottom",
     margin,
+    // Logical-edge aliases (LTR-only mapping to physical sides). Tailwind's
+    // ms-X / me-X classes emit these.
+    @"margin-inline-start",
+    @"margin-inline-end",
+    @"margin-block-start",
+    @"margin-block-end",
     left,
     right,
     top,
@@ -157,6 +171,11 @@ pub const Property = enum {
                 .{.horizontal_edges, &.{.padding_left, .padding_right}},
                 .{.vertical_edges,   &.{.padding_top, .padding_bottom}},
             },
+            // Logical aliases — LTR maps inline-start→left, inline-end→right.
+            .@"padding-inline-start"  => &.{.{.horizontal_edges, &.{.padding_left}  }},
+            .@"padding-inline-end"    => &.{.{.horizontal_edges, &.{.padding_right} }},
+            .@"padding-block-start"   => &.{.{.vertical_edges  , &.{.padding_top}   }},
+            .@"padding-block-end"     => &.{.{.vertical_edges  , &.{.padding_bottom}}},
             .@"border-left-width"     => &.{.{.horizontal_edges, &.{.border_left}   }},
             .@"border-right-width"    => &.{.{.horizontal_edges, &.{.border_right}  }},
             .@"border-top-width"      => &.{.{.vertical_edges  , &.{.border_top}    }},
@@ -173,6 +192,11 @@ pub const Property = enum {
                 .{.horizontal_edges, &.{.margin_left, .margin_right}},
                 .{.vertical_edges,   &.{.margin_top, .margin_bottom}},
             },
+            // Logical aliases (LTR mapping).
+            .@"margin-inline-start"   => &.{.{.horizontal_edges, &.{.margin_left}   }},
+            .@"margin-inline-end"     => &.{.{.horizontal_edges, &.{.margin_right}  }},
+            .@"margin-block-start"    => &.{.{.vertical_edges  , &.{.margin_top}    }},
+            .@"margin-block-end"      => &.{.{.vertical_edges  , &.{.margin_bottom} }},
             .left                     => &.{.{.insets          , &.{.left}          }},
             .right                    => &.{.{.insets          , &.{.right}         }},
             .top                      => &.{.{.insets          , &.{.top}           }},

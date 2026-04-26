@@ -386,6 +386,38 @@ pub fn @"padding-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTyp
     return .{ .vertical_edges = .{ .padding_bottom = .{ .declared = value } } };
 }
 
+// Logical-edge aliases. LTR-only: inline-start = left, inline-end = right,
+// block-start = top, block-end = bottom. Without these, Tailwind ps-X / pe-X
+// classes (used by react.dev's search input, modern utility-CSS sites) lose
+// their padding entirely because zss skips unknown property names.
+pub fn @"padding-inline-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-inline-start") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .horizontal_edges = .{ .padding_left = .{ .declared = value } } };
+}
+
+pub fn @"padding-inline-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-inline-end") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .horizontal_edges = .{ .padding_right = .{ .declared = value } } };
+}
+
+pub fn @"padding-block-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-block-start") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .vertical_edges = .{ .padding_top = .{ .declared = value } } };
+}
+
+pub fn @"padding-block-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-block-end") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .vertical_edges = .{ .padding_bottom = .{ .declared = value } } };
+}
+
 pub fn padding(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.padding) {
     ctx.initDecl(declaration_index);
     var sizes: [4]values.groups.SingleValue(types.LengthPercentage) = undefined;
@@ -499,6 +531,35 @@ pub fn @"margin-top"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@
 }
 
 pub fn @"margin-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"margin-bottom") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .vertical_edges = .{ .margin_bottom = .{ .declared = value } } };
+}
+
+// Logical-edge margin aliases — see padding-inline-start above for rationale.
+pub fn @"margin-inline-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"margin-inline-start") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .horizontal_edges = .{ .margin_left = .{ .declared = value } } };
+}
+
+pub fn @"margin-inline-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"margin-inline-end") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .horizontal_edges = .{ .margin_right = .{ .declared = value } } };
+}
+
+pub fn @"margin-block-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"margin-block-start") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .vertical_edges = .{ .margin_top = .{ .declared = value } } };
+}
+
+pub fn @"margin-block-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"margin-block-end") {
     ctx.initDecl(declaration_index);
     const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
     if (!ctx.empty()) return null;

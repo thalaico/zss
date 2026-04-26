@@ -571,7 +571,7 @@ pub fn ComptimePrefixTree(comptime Enum: type) type {
     };
 
     const fields = @typeInfo(Enum).@"enum".fields;
-    @setEvalBranchQuota(fields.len * 200);
+    @setEvalBranchQuota(fields.len * 400);
     const nodes = comptime nodes: {
         const Interval = struct {
             begin: u16,
