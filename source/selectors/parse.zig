@@ -643,10 +643,29 @@ fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_
     const nested_start: selectors.Data.ListIndex = @intCast(data_list.len());
     var selector_count: u8 = 0;
 
+    // Save the outer compound's running specificity counter and validity
+    // before recursing — `parseComplexSelector` resets `parser.specificity`
+    // to `.{}` (line ~188) and `parser.valid` to true at every call, so a
+    // recursive call clobbers anything the outer compound has already
+    // accumulated for THIS complex selector (e.g. `.A` in `.A:is(.B):C`).
+    // We restore them after the nested loop.
+    const saved_specificity = parser.specificity;
+    const saved_valid = parser.valid;
+
     // Parse first selector
     _ = parser.skipSpaces();
     const saved_specificities_len = parser.specificities.items.len;
-    if ((parseComplexSelector(parser, data_list) catch return) != null) {} else return;
+    if ((parseComplexSelector(parser, data_list) catch {
+        parser.specificity = saved_specificity;
+        parser.valid = saved_valid;
+        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+        return;
+    }) != null) {} else {
+        parser.specificity = saved_specificity;
+        parser.valid = saved_valid;
+        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+        return;
+    }
     selector_count += 1;
 
     // Parse additional selectors (comma-separated)
@@ -660,17 +679,35 @@ fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_
         if (selector_count == 255) break; // u8 max
     }
 
+    // Restore outer compound's running counters that the recursion stomped on
+    parser.specificity = saved_specificity;
+    parser.valid = saved_valid;
+
     // Update the placeholder with the actual nested data location and count
     if (is_is)
         data_list.list.items[list_index + 1] = Data{ .is_selector_list = .{ .start = nested_start, .count = selector_count } }
     else
         data_list.list.items[list_index + 1] = Data{ .where_selector_list = .{ .start = nested_start, .count = selector_count } };
 
-    // Specificity handling:
-    // :is() takes the highest specificity of its arguments (CSS Selectors Level 4)
-    // :where() has zero specificity
+    // Specificity handling (CSS Selectors Level 4):
+    //   :is()    contributes max(specificity(arg)) to the OUTER complex
+    //            selector's running tally
+    //   :where() contributes zero
+    //
+    // Nested calls to parseComplexSelector pushed one entry per nested
+    // selector onto `parser.specificities` (one entry == one COMPLEX
+    // selector). Those are bookkeeping for the recursion and must be
+    // removed — `parser.specificities` exists to record exactly one
+    // specificity per *outer* complex selector parsed by the public
+    // entry point. Leaving an extra entry behind here would desync
+    // `parser.specificities.items.len` from the outer rule's
+    // selector_data length, which surfaces in Stylesheet.zig as the
+    // "specificity/data mismatch" warning and silently drops trailing
+    // selectors in any rule that uses :is() or :where(). The fix is
+    // to fold :is()'s max into `parser.specificity` (the outer
+    // running tally) and let the outer parseComplexSelector's single
+    // push at line 237 carry it.
     if (is_is) {
-        // Find maximum specificity from all nested selectors
         var max_a: u8 = 0;
         var max_b: u8 = 0;
         var max_c: u8 = 0;
@@ -681,13 +718,13 @@ fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_
             if (spec.b > max_b) max_b = spec.b;
             if (spec.c > max_c) max_c = spec.c;
         }
-        // Remove nested specificities and add the maximum
-        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
-        try parser.specificities.append(parser.allocator, .{ .a = max_a, .b = max_b, .c = max_c });
-    } else {
-        // :where() has zero specificity - remove all nested specificities
-        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+        parser.specificity.a +|= max_a;
+        parser.specificity.b +|= max_b;
+        parser.specificity.c +|= max_c;
     }
+    // :where() contributes zero — nothing to add. Both branches drop
+    // the nested entries.
+    parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
 }
 
 fn parsePseudoElementSelector(parser: *Parser, data_list: DataListManaged) !?void {
