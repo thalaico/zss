@@ -1684,6 +1684,17 @@ fn relayoutIfcAtWidth(
     const item_skip = subtree.items(.skip)[item_idx];
     const item_end = item_idx + item_skip;
 
+    // Save the item's pre-relayout content width so we can decide which
+    // descendants need width propagation. A block descendant whose
+    // outer (border-box) width matches `old_content_w - its-margins` was
+    // filling its parent (width:auto / width:100%); descendants whose
+    // outer width is meaningfully smaller had an explicit narrower width
+    // (e.g. width:100px) and must be left alone — propagating the flex
+    // item's resolved width to them stretches a `width:100px` div to the
+    // full column width, breaking Wikipedia's #mp-left/#mp-right
+    // .mp-thumb images and any author-sized child of a flex item.
+    const old_content_w = subtree.items(.box_offsets)[item_idx].content_size.w;
+
     // Update this item's own width first. Keep border edges consistent with
     // the new content width.
     {
@@ -1778,15 +1789,44 @@ fn relayoutIfcAtWidth(
                 accumulated_y_delta += (eff_h - old_h);
             },
             .block => {
-                // Recurse into nested flow blocks. The recursive call will
-                // itself gate on inner_block, so grid/flex container children
-                // are safely skipped.
+                // Recurse into nested flow blocks ONLY if the child was
+                // filling its parent's content area (width:auto or 100%).
+                // Children with an explicit narrower width (width:100px,
+                // width:7.5rem, etc.) keep that width regardless of the
+                // flex item's resolved width — descending into them would
+                // stretch them to fill, which is exactly the bug this
+                // gates against (Wikipedia #mp-left/#mp-right children,
+                // .mp-thumb images, any author-sized child of a flex
+                // item).
+                //
+                // Detection — we want to distinguish:
+                //   width:auto, margin:0           → filling
+                //   width:100px, margin:0          → NOT filling
+                //   width:auto, margin: <left>     → filling (left margin
+                //     is part of layout, but outer still fills)
+                //
+                // Comparing `border_w + margin.left + margin.right` to
+                // `old_content_w` is fooled by CSS 2.1 §10.3.3
+                // overconstrained-margin-right adjustment: a width:100px
+                // block with default margin:0 ends up with margin-right
+                // back-filled to (parent_content - width), making the
+                // outer-plus-margins always equal old_content_w.
+                //
+                // `border_w + margin.left` instead — the pre-adjustment
+                // left margin plus the actually-rendered border width —
+                // only equals old_content_w for true fillers (width:auto
+                // / width:100% / etc.) and stays smaller for explicit
+                // narrower widths.
                 const old_h = subtree.items(.box_offsets)[gc].border_size.h;
                 const child_bo = subtree.items(.box_offsets)[gc];
                 const child_left = child_bo.content_pos.x;
                 const child_right = child_bo.border_size.w - child_bo.content_pos.x - child_bo.content_size.w;
+                const child_margins = subtree.items(.margins)[gc];
+                const fill_signal = child_bo.border_size.w + child_margins.left;
+                // Tolerance of 4 ZSS units (= 1 CSS px) absorbs rounding.
+                const was_filling = fill_signal >= old_content_w - 4;
                 const child_new_w = new_content_w - child_left - child_right;
-                if (child_new_w > 0) {
+                if (was_filling and child_new_w > 0) {
                     relayoutIfcAtWidth(layout, subtree, gc, child_new_w);
                 }
                 const new_h = subtree.items(.box_offsets)[gc].border_size.h;
