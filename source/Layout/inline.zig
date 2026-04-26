@@ -327,6 +327,27 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             layout.advanceNode();
         },
         .@"inline" => {
+            // <br> is a forced line break (HTML5 §4.5.27). It computes to
+            // display:inline like other phrasing content, but its layout
+            // role is "end this line, start a new one" — not "open an
+            // inline box, run text inside, close box". CSS doesn't have
+            // a property for this; browsers wire it directly in inline
+            // layout. Emit a LineBreak special glyph and skip the normal
+            // inline-box machinery (br is a void element — no children,
+            // no content). Without this, every `<br>` was silently
+            // dropped: "a<br>b" rendered as "a b" on one line, breaking
+            // herokuapp/checkbox, contact-form layouts, address blocks,
+            // etc.
+            const env_ptr = layout.computer.env;
+            const node_type = env_ptr.getNodeProperty(.type, node);
+            var name_iter = env_ptr.type_names.iterator(@intFromEnum(node_type.name));
+            if (name_iter.eql("br")) {
+                try ifcAddLineBreak(layout.box_tree, ifc.ptr);
+                ctx.ifc.top.?.has_visible_content = true;
+                layout.advanceNode();
+                return;
+            }
+
             { // TODO: Grabbing useless data to satisfy inheritance...
                 const data = .{
                     .content_width = layout.computer.getSpecifiedValue(.box_gen, .content_width),
