@@ -607,6 +607,16 @@ pub const BlockInfo = struct {
     /// queries (CSS 2.1 §9.5). Populated as float children close in
     /// `popFlowBlock`. Read by `splitIntoLineBoxes` via the IFC start path.
     float_ctx: flow.FloatContext = .{},
+    /// Running approximation of the cursor y in this block's content-box
+    /// coordinates. Advanced as in-flow normal children close. Used as the
+    /// y-coordinate for any float children that close after some normal-flow
+    /// content has already been laid out (Stage 2 of float-text-wrap).
+    /// Approximation: ignores margin collapsing — overshoots slightly on
+    /// adjacent margins but never under-shoots, so float exclusion always
+    /// covers at least the actual float rectangle. Final positions are still
+    /// computed by offsetChildBlocks at parent pop; this only affects the
+    /// IFC's line-wrapping decisions for sibling text.
+    running_cursor_y: math.Unit = 0,
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -842,19 +852,20 @@ pub fn popFlowBlock(
     subtree.items(.align_self)[block.index] = block_info.align_self;
     subtree.items(.list_style_type)[block.index] = .none;
 
-    // Register this block on the parent's float context if it's a float.
-    // The parent's IFC sibling layout (splitIntoLineBoxes) will consult this
-    // list to narrow per-line widths around float exclusions (CSS 2.1 §9.5).
+    // Register this block on the parent's float context if it's a float,
+    // OR advance the parent's running cursor if it's a normal-flow child.
+    // The parent's IFC sibling layout (splitIntoLineBoxes) will consult the
+    // float context to narrow per-line widths around float exclusions
+    // (CSS 2.1 §9.5).
     //
-    // Stage 1: Position floats at y = 0. This is correct when the float is
-    // the first in-flow child of its parent (the dominant case — e.g.
-    // Wikipedia's featured-article image leading a paragraph). Margin-
-    // collapsing & cursor advancement aren't yet mirrored here, so multi-
-    // float-after-content cases will use approximate y. The final canonical
-    // positions are still set later by offsetChildBlocks; this context
-    // affects only the IFC's line-wrapping decisions.
-    if (block_info.float_side != .none) {
-        if (box_gen.stacks.block_info.top) |*parent_info| {
+    // Stage 2: floats register at the parent's running_cursor_y (the
+    // approximate top of where this child would land in normal flow).
+    // Margin collapsing is not yet mirrored, so y may be slightly off, but
+    // it's always >= 0 — better than the Stage 1 fixed-zero approximation.
+    // Final canonical positions still come from offsetChildBlocks; this
+    // context affects only the IFC's line-wrapping decisions.
+    if (box_gen.stacks.block_info.top) |*parent_info| {
+        if (block_info.float_side != .none) {
             const margin_top = block_info.sizes.margin_block_start;
             const margin_bottom = block_info.sizes.margin_block_end;
             // Outer height = top margin + border-box height + bottom margin.
@@ -862,7 +873,16 @@ pub fn popFlowBlock(
             const container_w = parent_info.sizes.get(.inline_size).?;
             const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
             const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
-            parent_info.float_ctx.registerFloat(side, x, 0, width, outer_h);
+            parent_info.float_ctx.registerFloat(side, x, parent_info.running_cursor_y, width, outer_h);
+            // Floats are out-of-flow w.r.t. cursor advancement: they overlay
+            // the normal flow below them, so the cursor does NOT advance here.
+        } else if (!block_info.out_of_flow) {
+            // Normal-flow child: advance parent's running cursor by this
+            // child's outer (margin-box) height. Approximate — no margin
+            // collapsing — but consistent across siblings.
+            const margin_top = block_info.sizes.margin_block_start;
+            const margin_bottom = block_info.sizes.margin_block_end;
+            parent_info.running_cursor_y += margin_top + height + margin_bottom;
         }
     }
 }

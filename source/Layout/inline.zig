@@ -131,19 +131,40 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     // CSS 2.1 §9.5: floats affect inline content within the same BFC, even
     // when the inline content is nested (e.g. inside an anonymous block or
     // an explicit <p> sibling of the float). Walk the block_info stack from
-    // top down until we find an ancestor that has registered floats. Stage 1
-    // simplification: y-coordinates are assumed to share a frame between
-    // the IFC and the registering ancestor (correct for direct sibling, an
-    // approximation for deeper nesting — the float's recorded y is in the
-    // ancestor's content-box space, not the IFC's, so deeply nested IFCs
-    // would over-narrow lines if floats happen to occupy small y ranges).
+    // top down until we find an ancestor that has registered floats.
+    //
+    // Stage 2: When the float-host IS the immediate parent of this IFC
+    // (the dominant case — anonymous inline text directly inside a div
+    // that has float siblings), translate each float's y from the parent's
+    // content-box coord space into the IFC's local coord space by
+    // subtracting the parent's `running_cursor_y` (= where this IFC starts
+    // in the parent). Floats placed before the IFC end up at negative y
+    // (they overlap the IFC from above) or zero (lead the IFC) or extend
+    // into the IFC if their height carries them past the IFC start.
+    //
+    // For deeper nesting (float-host is a grand-ancestor), translation is
+    // approximate — we don't track the cumulative offset across intermediate
+    // blocks. Acceptable for Stage 2; lines may be slightly over-narrowed
+    // in those cases.
     //
     // Snapshot by value because block_info can realloc during IFC content
     // processing, dangling any captured pointer.
     const parent_float_ctx: ?flow.FloatContext = blk: {
         const stack = &box_gen.stacks.block_info;
         if (stack.top) |info| {
-            if (info.float_ctx.placed_count > 0) break :blk info.float_ctx;
+            if (info.float_ctx.placed_count > 0) {
+                var snap = info.float_ctx;
+                // Translate each float's y from parent's content-box space
+                // into the IFC's local space (IFC starts at parent.cursor).
+                const offset = info.running_cursor_y;
+                if (offset != 0) {
+                    var j: u8 = 0;
+                    while (j < snap.placed_count) : (j += 1) {
+                        snap.placed_floats[j].y -= offset;
+                    }
+                }
+                break :blk snap;
+            }
         }
         var i: usize = stack.rest.items.len;
         while (i > 0) {
