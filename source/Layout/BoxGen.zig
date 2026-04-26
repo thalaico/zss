@@ -603,6 +603,10 @@ pub const BlockInfo = struct {
     /// align-self override for this item (default .auto = defer to container's
     /// align-items). See BoxTree.Subtree.Block.align_self for full semantics.
     align_self: zss.values.types.AlignSelf = .auto,
+    /// Records floats placed in this block container, for IFC line-exclusion
+    /// queries (CSS 2.1 §9.5). Populated as float children close in
+    /// `popFlowBlock`. Read by `splitIntoLineBoxes` via the IFC start path.
+    float_ctx: flow.FloatContext = .{},
 
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
@@ -837,6 +841,30 @@ pub fn popFlowBlock(
     subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
     subtree.items(.align_self)[block.index] = block_info.align_self;
     subtree.items(.list_style_type)[block.index] = .none;
+
+    // Register this block on the parent's float context if it's a float.
+    // The parent's IFC sibling layout (splitIntoLineBoxes) will consult this
+    // list to narrow per-line widths around float exclusions (CSS 2.1 §9.5).
+    //
+    // Stage 1: Position floats at y = 0. This is correct when the float is
+    // the first in-flow child of its parent (the dominant case — e.g.
+    // Wikipedia's featured-article image leading a paragraph). Margin-
+    // collapsing & cursor advancement aren't yet mirrored here, so multi-
+    // float-after-content cases will use approximate y. The final canonical
+    // positions are still set later by offsetChildBlocks; this context
+    // affects only the IFC's line-wrapping decisions.
+    if (block_info.float_side != .none) {
+        if (box_gen.stacks.block_info.top) |*parent_info| {
+            const margin_top = block_info.sizes.margin_block_start;
+            const margin_bottom = block_info.sizes.margin_block_end;
+            // Outer height = top margin + border-box height + bottom margin.
+            const outer_h: math.Unit = margin_top + height + margin_bottom;
+            const container_w = parent_info.sizes.get(.inline_size).?;
+            const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
+            const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
+            parent_info.float_ctx.registerFloat(side, x, 0, width, outer_h);
+        }
+    }
 }
 
 pub fn pushStfFlowBlock(

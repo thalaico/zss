@@ -582,7 +582,7 @@ fn relayoutSubtree(
             .ifc_container => |ifc_id| {
                 const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                 ifc.line_boxes.clearRetainingCapacity();
-                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, available_content_w) catch continue;
+                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, available_content_w, null) catch continue;
 
                 var effective_height = result.height;
                 if (ifc.line_boxes.items.len <= 1) {

@@ -127,7 +127,33 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     if (containing_block_size.height) |h| assert(h >= 0);
 
     const ifc = try box_gen.pushIfc();
-    try box_gen.inline_context.pushIfc(box_gen.getLayout().allocator, ifc, size_mode, containing_block_size);
+    // Snapshot the nearest ancestor block's float context with placed floats.
+    // CSS 2.1 §9.5: floats affect inline content within the same BFC, even
+    // when the inline content is nested (e.g. inside an anonymous block or
+    // an explicit <p> sibling of the float). Walk the block_info stack from
+    // top down until we find an ancestor that has registered floats. Stage 1
+    // simplification: y-coordinates are assumed to share a frame between
+    // the IFC and the registering ancestor (correct for direct sibling, an
+    // approximation for deeper nesting — the float's recorded y is in the
+    // ancestor's content-box space, not the IFC's, so deeply nested IFCs
+    // would over-narrow lines if floats happen to occupy small y ranges).
+    //
+    // Snapshot by value because block_info can realloc during IFC content
+    // processing, dangling any captured pointer.
+    const parent_float_ctx: ?flow.FloatContext = blk: {
+        const stack = &box_gen.stacks.block_info;
+        if (stack.top) |info| {
+            if (info.float_ctx.placed_count > 0) break :blk info.float_ctx;
+        }
+        var i: usize = stack.rest.items.len;
+        while (i > 0) {
+            i -= 1;
+            const info = stack.rest.items[i];
+            if (info.float_ctx.placed_count > 0) break :blk info.float_ctx;
+        }
+        break :blk null;
+    };
+    try box_gen.inline_context.pushIfc(box_gen.getLayout().allocator, ifc, size_mode, containing_block_size, parent_float_ctx);
 
     try pushRootInlineBox(box_gen);
 }
@@ -143,7 +169,7 @@ fn endMode(box_gen: *BoxGen) !Result {
     // Ensure font is at the cascaded size before solving metrics.
     layout.inputs.fonts.setFontSize(ifc.ptr.font, ifc.ptr.font_size);
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
-    const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width);
+    const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width, ifc.parent_float_ctx);
 
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
     // whitespace-only text content does not generate boxes. Detect whitespace-
@@ -186,6 +212,14 @@ pub const Context = struct {
         /// Set to true the moment we see ANY non-whitespace text run, ANY
         /// inline box (which itself may contain content), or ANY inline-block.
         has_visible_content: bool,
+        /// Snapshot of the parent block's float context, used by splitIntoLineBoxes
+        /// to query per-line exclusions for floats placed before this IFC.
+        /// Null when the IFC has no parent block container with float tracking.
+        ///
+        /// Stored by value (not pointer) because the parent's block_info stack
+        /// can realloc during IFC content processing, which would dangle a
+        /// pointer captured at beginMode.
+        parent_float_ctx: ?flow.FloatContext,
     }) = .init(undefined),
     inline_box: zss.Stack(InlineBox) = .init(undefined),
 
@@ -205,6 +239,7 @@ pub const Context = struct {
         ptr: *Ifc,
         size_mode: SizeMode,
         containing_block_size: ContainingBlockSize,
+        parent_float_ctx: ?flow.FloatContext,
     ) !void {
         const percentage_base_unit: Unit = switch (size_mode) {
             .normal => containing_block_size.width,
@@ -217,6 +252,7 @@ pub const Context = struct {
             .percentage_base_unit = percentage_base_unit,
             .font_handle = null,
             .has_visible_content = false,
+            .parent_float_ctx = parent_float_ctx,
         });
     }
 
@@ -1331,6 +1367,7 @@ pub fn splitIntoLineBoxes(
     subtree: Subtree.View,
     ifc: *Ifc,
     max_line_box_length: Unit,
+    parent_float_ctx: ?flow.FloatContext,
 ) !IFCLineSplitResult {
     assert(max_line_box_length >= 0);
 
@@ -1380,6 +1417,15 @@ pub fn splitIntoLineBoxes(
 
     var s = IFCLineSplitState.init(top_height, bottom_height);
     defer s.deinit(layout.allocator);
+
+    // Stage 0: parent_float_ctx is plumbed through but not yet applied to
+    // line layout. The rendering path (DrawList.zig) doesn't honor a
+    // per-line x_offset yet — applying effective_left here would narrow
+    // wrap points but leave glyphs painted starting at x=0, overlapping
+    // the float. That regression is worse than the current "no exclusion"
+    // baseline. Stage 1 will land the LineBox.x_offset field + DrawList
+    // integration; only then is it safe to use effective_left/right here.
+    _ = parent_float_ctx;
 
     const glyphs = ifc.glyphs.slice();
 

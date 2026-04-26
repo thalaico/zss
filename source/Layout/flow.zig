@@ -874,6 +874,67 @@ pub const OffsetResult = struct {
     escaped_margin_top: Unit,
 };
 
+/// Per-block-container record of placed floats, used by IFC layout to query
+/// line-box exclusions (CSS 2.1 §9.5).
+///
+/// Floats are positioned during the block container's `popFlowBlock` (after
+/// each float child closes). IFC layout (`splitIntoLineBoxes`) running for a
+/// sibling text node consults this list to narrow each line's available
+/// width based on float rectangles intersecting the line's y-range.
+///
+/// Stage 1 simplification: floats are recorded with y = 0 (assumes the float
+/// is the first content of its parent block, so cursor = 0 when it's placed).
+/// Width comes from the float's resolved border-box width, height includes
+/// margins. Margin-collapsing edge cases and stacked floats are not yet
+/// modeled — those produce slightly wrong line wraps but no panics.
+pub const FloatContext = struct {
+    placed_floats: [MAX_FLOATS]PlacedFloat = undefined,
+    placed_count: u8 = 0,
+
+    pub const MAX_FLOATS = 8;
+
+    pub const Side = enum { left, right };
+
+    pub const PlacedFloat = struct {
+        side: Side,
+        x: Unit,
+        y: Unit,
+        w: Unit,
+        h: Unit,
+    };
+
+    /// Compute line-box exclusion for a line at line_y of height line_h.
+    /// `line_y` is in the parent block's content-box coordinates (same space
+    /// as PlacedFloat.y). Returns the left edge offset and right edge limit.
+    pub fn getLineExclusion(
+        self: *const FloatContext,
+        line_y: Unit,
+        line_h: Unit,
+        container_width: Unit,
+    ) struct { left_offset: Unit, right_limit: Unit } {
+        var left_offset: Unit = 0;
+        var right_limit: Unit = container_width;
+        var i: u8 = 0;
+        while (i < self.placed_count) : (i += 1) {
+            const f = self.placed_floats[i];
+            // Float rect [f.y, f.y + f.h) intersects line range [line_y, line_y + line_h)?
+            if (f.y + f.h <= line_y) continue;
+            if (f.y >= line_y + line_h) continue;
+            switch (f.side) {
+                .left => left_offset = @max(left_offset, f.x + f.w),
+                .right => right_limit = @min(right_limit, f.x),
+            }
+        }
+        return .{ .left_offset = left_offset, .right_limit = right_limit };
+    }
+
+    pub fn registerFloat(self: *FloatContext, side: Side, x: Unit, y: Unit, w: Unit, h: Unit) void {
+        if (self.placed_count >= MAX_FLOATS) return;
+        self.placed_floats[self.placed_count] = .{ .side = side, .x = x, .y = y, .w = w, .h = h };
+        self.placed_count += 1;
+    }
+};
+
 pub fn offsetChildBlocks(
     subtree: Subtree.View,
     index: Subtree.Size,
@@ -1748,7 +1809,7 @@ fn relayoutIfcAtWidth(
                     .ifc_container => |ifc_id| {
                         const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                         ifc.line_boxes.clearRetainingCapacity();
-                        const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                        const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, null) catch {
                             break;
                         };
                         const bo = &subtree.items(.box_offsets)[g];
@@ -1797,7 +1858,7 @@ fn relayoutIfcAtWidth(
                 const old_h = subtree.items(.box_offsets)[gc].border_size.h;
                 const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                 ifc.line_boxes.clearRetainingCapacity();
-                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w) catch {
+                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, null) catch {
                     break;
                 };
                 const bo = &subtree.items(.box_offsets)[gc];
