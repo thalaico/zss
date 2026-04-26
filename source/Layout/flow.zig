@@ -1167,10 +1167,30 @@ pub fn offsetChildBlocksFlex(
             if (out_of_flow_flags[child]) {
                 subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
             } else if (block_types[child] == .ifc_container) {
-                // IFC containers as direct children of a flex container are
-                // inter-element whitespace text nodes. Real text content is
-                // inside block children as nested IFCs, not at this level.
-                subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+                // CSS Flexbox §4: anonymous text content directly inside a
+                // flex container becomes an anonymous flex item. So
+                // `<div style="display:flex">Hello</div>` makes "Hello" a
+                // flex item that participates in justify/align. We must NOT
+                // skip IFCs with real visible content — they need the flex
+                // algorithm (centering, etc.) just like real block children.
+                //
+                // Whitespace-only IFCs (inter-element whitespace from
+                // `<div>\n  <p>...</p>\n</div>`) still skip — rendering
+                // them as flex items inflates cross-axis with their
+                // line-height for zero visible benefit. has_visible_content
+                // is set in inline.inlineElement when any non-whitespace
+                // text run, inline-box, or inline-block is added.
+                const ifc_id = switch (block_types[child]) {
+                    .ifc_container => |id| id,
+                    else => unreachable,
+                };
+                const ifc = box_tree.getIfc(ifc_id);
+                if (!ifc.has_visible_content) {
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+                } else if (child_count < MAX_CHILDREN) {
+                    children[child_count] = child;
+                    child_count += 1;
+                }
             } else {
                 if (child_count < MAX_CHILDREN) {
                     children[child_count] = child;

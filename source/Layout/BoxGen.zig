@@ -230,8 +230,9 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         blocks.items(.flex_grow)[index] = 0.0;
         blocks.items(.flex_shrink)[index] = 1.0;
         blocks.items(.flex_basis_px)[index] = -1;
+        blocks.items(.align_self)[index] = .auto;
         blocks.items(.list_style_type)[index] = .none;
-        
+
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
         
@@ -702,6 +703,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
 }
 
@@ -1130,6 +1132,7 @@ fn setDataBlock(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
     subtree.items(.inner_block)[index] = inner_block;
 
@@ -1189,6 +1192,7 @@ fn setDataIfcContainer(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
 }
 
@@ -1225,5 +1229,6 @@ fn setDataSubtreeProxy(
     subtree.items(.flex_grow)[index] = 0.0;
     subtree.items(.flex_shrink)[index] = 1.0;
     subtree.items(.flex_basis_px)[index] = -1;
+    subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
 }
