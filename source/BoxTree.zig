@@ -440,6 +440,10 @@ pub const InlineFormattingContext = struct {
         /// The inline box that starts this line box.
         // TODO: Make this non-optional
         inline_box: ?Size,
+        /// Horizontal shift (in layout units) applied to this line's contents.
+        /// Used to push the line past a left float exclusion (CSS 2.1 §9.5).
+        /// Default 0 — line starts at the IFC's content origin x.
+        x_offset: math.Unit = 0,
     };
 
     pub const Special = extern struct {

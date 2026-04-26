@@ -1418,14 +1418,25 @@ pub fn splitIntoLineBoxes(
     var s = IFCLineSplitState.init(top_height, bottom_height);
     defer s.deinit(layout.allocator);
 
-    // Stage 0: parent_float_ctx is plumbed through but not yet applied to
-    // line layout. The rendering path (DrawList.zig) doesn't honor a
-    // per-line x_offset yet — applying effective_left here would narrow
-    // wrap points but leave glyphs painted starting at x=0, overlapping
-    // the float. That regression is worse than the current "no exclusion"
-    // baseline. Stage 1 will land the LineBox.x_offset field + DrawList
-    // integration; only then is it safe to use effective_left/right here.
-    _ = parent_float_ctx;
+    // Per-line float exclusion state (CSS 2.1 §9.5).
+    // line_top_y tracks the current line's top in IFC-local coords; we use it
+    // directly as the y for parent_float_ctx queries (Stage 1 simplification:
+    // assumes the IFC's top in the float-hosting ancestor's coords is y = 0,
+    // correct for floats that lead the parent's content — Wikipedia
+    // featured-article fits this).
+    //
+    // effective_left and effective_right define the available x range. They're
+    // recomputed at every line start. Each line's x_offset is written into
+    // its LineBox so the renderer (zss_to_cairo) shifts glyph painting.
+    const nominal_line_h: Unit = top_height + bottom_height;
+    var line_top_y: Unit = 0;
+    var effective_left: Unit = 0;
+    var effective_right: Unit = max_line_box_length;
+    if (parent_float_ctx) |fctx| {
+        const ex = fctx.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
+        effective_left = ex.left_offset;
+        effective_right = ex.right_limit;
+    }
 
     const glyphs = ifc.glyphs.slice();
 
@@ -1460,6 +1471,10 @@ pub fn splitIntoLineBoxes(
         s.pushInlineBox(layout.allocator, 0) catch unreachable;
         s.line_box.elements[1] = 2;
         s.line_box.inline_box = null;
+        // Apply first-line float exclusion: shift line origin past any left
+        // float, narrow wrap point at any right float.
+        s.line_box.x_offset = effective_left;
+        s.cursor = effective_left;
     }
 
     var i: usize = 2;
@@ -1477,6 +1492,17 @@ pub fn splitIntoLineBoxes(
                     s.finishLineBox();
                     try layout.box_tree.appendLineBox(ifc, s.line_box);
                     s.newLineBox(2);
+                    line_top_y += nominal_line_h;
+                    if (parent_float_ctx) |fctx2| {
+                        const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
+                        effective_left = ex.left_offset;
+                        effective_right = ex.right_limit;
+                    } else {
+                        effective_left = 0;
+                        effective_right = max_line_box_length;
+                    }
+                    s.line_box.x_offset = effective_left;
+                    s.cursor = effective_left;
                     continue;
                 },
                 else => {},
@@ -1486,7 +1512,7 @@ pub fn splitIntoLineBoxes(
         // TODO: (Bug) A glyph with a width of zero but an advance that is non-zero may overflow the width of the containing block
         // overflow-wrap: break-word allows breaking within words when the line would otherwise overflow.
         const overflow_break_word = ifc.overflow_wrap == .break_word;
-        if (s.cursor > 0 and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > max_line_box_length and (s.line_box.elements[1] > s.line_box.elements[0] or overflow_break_word)) {
+        if (s.cursor > effective_left and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > effective_right and (s.line_box.elements[1] > s.line_box.elements[0] or overflow_break_word)) {
             // Prefer rewinding to the last word-boundary break opportunity.
             // SAFETY: only rewind if the inline-box state (current_inline_box
             // and stack depth) is the SAME as it was at the break opportunity.
@@ -1506,6 +1532,17 @@ pub fn splitIntoLineBoxes(
                         s.finishLineBox();
                         try layout.box_tree.appendLineBox(ifc, s.line_box);
                         s.newLineBox(0);
+                        line_top_y += nominal_line_h;
+                        if (parent_float_ctx) |fctx2| {
+                            const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
+                            effective_left = ex.left_offset;
+                            effective_right = ex.right_limit;
+                        } else {
+                            effective_left = 0;
+                            effective_right = max_line_box_length;
+                        }
+                        s.line_box.x_offset = effective_left;
+                        s.cursor = effective_left;
                         i = bi; // loop's i+=1 will advance past the break glyph
                         last_break_i = null;
                         rewound = true;
@@ -1516,6 +1553,17 @@ pub fn splitIntoLineBoxes(
                 s.finishLineBox();
                 try layout.box_tree.appendLineBox(ifc, s.line_box);
                 s.newLineBox(0);
+                line_top_y += nominal_line_h;
+                if (parent_float_ctx) |fctx2| {
+                    const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
+                    effective_left = ex.left_offset;
+                    effective_right = ex.right_limit;
+                } else {
+                    effective_left = 0;
+                    effective_right = max_line_box_length;
+                }
+                s.line_box.x_offset = effective_left;
+                s.cursor = effective_left;
                 last_break_i = null;
             }
             if (rewound) continue;
