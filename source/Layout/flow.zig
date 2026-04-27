@@ -1373,11 +1373,12 @@ pub fn offsetChildBlocksFlex(
             const left_edge = bo.content_pos.x;
 
             if (resolved_w != bo.border_size.w) {
+                const old_content_w = bo.content_size.w;
                 bo.border_size.w = resolved_w;
                 bo.content_size.w = @max(0, resolved_w - left_edge * 2);
 
                 // Re-layout IFC (text) containers at the new width
-                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w);
+                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w, old_content_w);
             }
         }
     }
@@ -1421,9 +1422,10 @@ pub fn offsetChildBlocksFlex(
             const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
             const border_w_new = @min(bo.border_size.w, content_w_new);
             if (border_w_new != bo.border_size.w) {
+                const old_content_w = bo.content_size.w;
                 bo.border_size.w = border_w_new;
                 bo.content_size.w = @max(0, border_w_new - left_edge - right_edge);
-                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w);
+                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w, old_content_w);
             }
         }
     }
@@ -1789,23 +1791,16 @@ fn relayoutIfcAtWidth(
     subtree: Subtree.View,
     item_idx: Subtree.Size,
     new_content_w: Unit,
+    /// Parent's content_size.w BEFORE the caller overwrote it with
+    /// `new_content_w`. Used to decide which descendants were filling and
+    /// to compute the shift delta for float:right children.
+    old_content_w: Unit,
 ) void {
     const inline_layout = @import("./inline.zig");
     const types_slice = subtree.items(.type);
     const inner_blocks = subtree.items(.inner_block);
     const item_skip = subtree.items(.skip)[item_idx];
     const item_end = item_idx + item_skip;
-
-    // Save the item's pre-relayout content width so we can decide which
-    // descendants need width propagation. A block descendant whose
-    // outer (border-box) width matches `old_content_w - its-margins` was
-    // filling its parent (width:auto / width:100%); descendants whose
-    // outer width is meaningfully smaller had an explicit narrower width
-    // (e.g. width:100px) and must be left alone — propagating the flex
-    // item's resolved width to them stretches a `width:100px` div to the
-    // full column width, breaking Wikipedia's #mp-left/#mp-right
-    // .mp-thumb images and any author-sized child of a flex item.
-    const old_content_w = subtree.items(.box_offsets)[item_idx].content_size.w;
 
     // Update this item's own width first. Keep border edges consistent with
     // the new content width.
@@ -1874,6 +1869,34 @@ fn relayoutIfcAtWidth(
     // is_flow == true: walk direct in-flow children, shift their y by any
     // accumulated growth, re-split IFCs at the new width, recurse into
     // nested flow blocks.
+    //
+    // Shift float:right direct children left by the parent's content-width
+    // delta. A float:right was placed at `(old_content_w - border_w - prior)`
+    // by offsetChildBlocks; after the parent shrinks by Δ = old - new, the
+    // correct position is `offset.x - Δ`. Float:left children don't move
+    // (positioned from x=0). Without this shift, float:right children sit
+    // outside the parent's new content area and render off-screen — most
+    // visibly Wikipedia's Rumen Radev portrait inside the In the news
+    // flex column. Only run when the parent actually shrank.
+    if (new_content_w < old_content_w) {
+        const delta = old_content_w - new_content_w;
+        const float_sides_slice = subtree.items(.float_side);
+        var fc = item_idx + 1;
+        while (fc < item_end) {
+            if (subtree.items(.out_of_flow)[fc]) {
+                fc += subtree.items(.skip)[fc];
+                continue;
+            }
+            if (float_sides_slice[fc] == .right) {
+                subtree.items(.offset)[fc].x -= delta;
+                if (subtree.items(.offset)[fc].x < 0) {
+                    subtree.items(.offset)[fc].x = 0;
+                }
+            }
+            fc += subtree.items(.skip)[fc];
+        }
+    }
+
     var accumulated_y_delta: Unit = 0;
     var gc = item_idx + 1;
     while (gc < item_end) {
@@ -1937,9 +1960,10 @@ fn relayoutIfcAtWidth(
                 const fill_signal = child_bo.border_size.w + child_margins.left;
                 // Tolerance of 4 ZSS units (= 1 CSS px) absorbs rounding.
                 const was_filling = fill_signal >= old_content_w - 4;
+                const child_old_content_w = child_bo.content_size.w;
                 const child_new_w = new_content_w - child_left - child_right;
                 if (was_filling and child_new_w > 0) {
-                    relayoutIfcAtWidth(layout, subtree, gc, child_new_w);
+                    relayoutIfcAtWidth(layout, subtree, gc, child_new_w, child_old_content_w);
                 }
                 const new_h = subtree.items(.box_offsets)[gc].border_size.h;
                 accumulated_y_delta += (new_h - old_h);
