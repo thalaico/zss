@@ -385,6 +385,7 @@ pub fn solveAllSizes(
                 .margin_inline_start = sizes.isAuto(.margin_inline_start),
                 .margin_inline_end = sizes.isAuto(.margin_inline_end),
             };
+            sizes.was_auto_inline_size = was_auto.inline_size;
             adjustWidthAndMargins(&sizes, percentage_base_unit);
             // TODO: Do this in adjustWidthAndMargins
             const width_before_clamp = sizes.get(.inline_size).?;
@@ -901,6 +902,12 @@ pub const FloatContext = struct {
         y: Unit,
         w: Unit,
         h: Unit,
+        /// Subtree index of the float box, used by
+        /// `finalizeFloatRectangles` to look up the canonical
+        /// position/size set by `offsetChildBlocks` and overwrite the
+        /// provisional values registered at `popFlowBlock` time.
+        /// 0 means "no link" (legacy registration path).
+        child_index: BoxTree.Subtree.Size = 0,
     };
 
     /// Compute line-box exclusion for a line at line_y of height line_h.
@@ -933,7 +940,93 @@ pub const FloatContext = struct {
         self.placed_floats[self.placed_count] = .{ .side = side, .x = x, .y = y, .w = w, .h = h };
         self.placed_count += 1;
     }
+
+    pub fn registerFloatWithIndex(
+        self: *FloatContext,
+        side: Side,
+        x: Unit,
+        y: Unit,
+        w: Unit,
+        h: Unit,
+        child_index: BoxTree.Subtree.Size,
+    ) void {
+        if (self.placed_count >= MAX_FLOATS) return;
+        self.placed_floats[self.placed_count] = .{ .side = side, .x = x, .y = y, .w = w, .h = h, .child_index = child_index };
+        self.placed_count += 1;
+    }
 };
+
+/// Walk the parent's `float_ctx` and overwrite each float entry's
+/// rectangle with the canonical position+size set by `offsetChildBlocks`.
+/// Called from `popFlowBlock` *after* `offsetChildBlocks` has finalized
+/// float widths (via `floatContentWidth`) and stacked x-positions. The
+/// IFC line-exclusion rectangle then matches what's actually rendered.
+pub fn finalizeFloatRectangles(subtree: BoxTree.Subtree.View, float_ctx: *FloatContext) void {
+    var i: u8 = 0;
+    while (i < float_ctx.placed_count) : (i += 1) {
+        const idx = float_ctx.placed_floats[i].child_index;
+        if (idx == 0) continue; // legacy registration without a link
+        const bo = subtree.items(.box_offsets)[idx];
+        const off = subtree.items(.offset)[idx];
+        const margins = subtree.items(.margins)[idx];
+        float_ctx.placed_floats[i].x = off.x + bo.border_pos.x;
+        float_ctx.placed_floats[i].y = off.y + bo.border_pos.y;
+        float_ctx.placed_floats[i].w = bo.border_size.w;
+        float_ctx.placed_floats[i].h = bo.border_size.h + margins.top + margins.bottom;
+    }
+}
+
+/// Re-split direct IFC children of a block whose float_ctx was just
+/// updated by `finalizeFloatRectangles`, so their line boxes pick up the
+/// corrected float exclusion rectangles. Each IFC's stored
+/// `persisted_parent_float_ctx` is also refreshed so subsequent
+/// re-layouts (flex Phase 4, grid relayout) use the corrected context.
+/// Returns the cumulative height delta — caller can grow the parent if
+/// needed; for now we leave parent height alone since offsetChildBlocks
+/// already finalized it. The IFC's own `border_size.h` is kept.
+pub fn resplitDirectIfcsWithFloats(
+    layout: *@import("../zss.zig").Layout,
+    subtree: BoxTree.Subtree.View,
+    parent_index: BoxTree.Subtree.Size,
+    parent_skip: BoxTree.Subtree.Size,
+    float_ctx: *const FloatContext,
+) void {
+    if (float_ctx.placed_count == 0) return;
+    const inline_layout = @import("./inline.zig");
+    const types_slice = subtree.items(.type);
+    const skips = subtree.items(.skip);
+    const end = parent_index + parent_skip;
+    var gc = parent_index + 1;
+    while (gc < end) {
+        if (subtree.items(.out_of_flow)[gc]) {
+            gc += skips[gc];
+            continue;
+        }
+        switch (types_slice[gc]) {
+            .ifc_container => |ifc_id| {
+                const ifc = layout.box_tree.ptr.getIfc(ifc_id);
+                // Translate float y from parent-content-box coords to
+                // IFC-local coords. line_y inside splitIntoLineBoxes
+                // starts at 0 corresponding to the IFC's top edge in the
+                // parent; without translation, floats placed below the
+                // IFC's top would never appear to overlap any line.
+                const ifc_offset_y = subtree.items(.offset)[gc].y + subtree.items(.box_offsets)[gc].border_pos.y;
+                var translated = float_ctx.*;
+                var ti: u8 = 0;
+                while (ti < translated.placed_count) : (ti += 1) {
+                    translated.placed_floats[ti].y -= ifc_offset_y;
+                }
+                ifc.persisted_parent_float_ctx = translated;
+                const ifc_w = subtree.items(.box_offsets)[gc].content_size.w;
+                ifc.line_boxes.clearRetainingCapacity();
+                _ = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, ifc_w, translated) catch {};
+            },
+            else => {},
+        }
+        gc += skips[gc];
+    }
+}
+
 
 pub fn offsetChildBlocks(
     subtree: Subtree.View,
@@ -1119,7 +1212,7 @@ pub fn offsetChildBlocks(
 /// using IFC's natural max-content width (longest_line_box_length) for
 /// `ifc_container` children, descendant max for nested blocks, and the
 /// stored border_size.w otherwise.
-fn floatContentWidth(
+pub fn floatContentWidth(
     subtree: Subtree.View,
     child: Subtree.Size,
     child_skip: Subtree.Size,
@@ -1912,7 +2005,7 @@ fn relayoutIfcAtWidth(
                 const old_h = subtree.items(.box_offsets)[gc].border_size.h;
                 const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                 ifc.line_boxes.clearRetainingCapacity();
-                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, null) catch {
+                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, ifc.persisted_parent_float_ctx) catch {
                     break;
                 };
                 const bo = &subtree.items(.box_offsets)[gc];

@@ -198,6 +198,11 @@ fn endMode(box_gen: *BoxGen) !Result {
     // Ensure font is at the cascaded size before solving metrics.
     layout.inputs.fonts.setFontSize(ifc.ptr.font, ifc.ptr.font_size);
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
+    // Persist the parent float context on the IFC so later re-layout passes
+    // (flex Phase 4 via flow.relayoutIfcAtWidth, grid relayout) can re-apply
+    // the same per-line exclusions. Without this, those callers pass `null`
+    // and overwrite correctly-wrapped lines with full-width lines.
+    ifc.ptr.persisted_parent_float_ctx = ifc.parent_float_ctx;
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width, ifc.parent_float_ctx);
 
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,

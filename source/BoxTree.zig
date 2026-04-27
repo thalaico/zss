@@ -366,6 +366,14 @@ pub const InlineFormattingContext = struct {
     /// shrinking below their parent's width.
     longest_line_box_length: math.Unit = 0,
 
+    /// Snapshot of the parent block stack's float context as of beginMode,
+    /// stored persistently so that re-layout passes (flex Phase 4 via
+    /// `flow.relayoutIfcAtWidth`, grid relayout) can re-apply the same
+    /// per-line float exclusions when re-splitting lines. Without this, a
+    /// re-split call would pass `null` and overwrite correctly-wrapped
+    /// lines with full-width lines that ignore floats.
+    persisted_parent_float_ctx: ?@import("./Layout/flow.zig").FloatContext = null,
+
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black
     font_family: values.types.FontFamily = .serif, // CSS initial: depends on UA; Chrome uses serif

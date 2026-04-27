@@ -816,6 +816,20 @@ pub fn popFlowBlock(
                 block_info.sizes.margin_block_start = result.escaped_margin_top;
             }
         }
+        // Two-phase float fix (CSS 2.1 §10.3.5 + §9.5):
+        //   1. Floats registered provisionally at popFlowBlock with auto-
+        //      resolved widths and x=0/x=container-w. IFC siblings already
+        //      split lines using those provisional values.
+        //   2. offsetChildBlocks just finalized the canonical
+        //      shrink-to-fit widths and stacked x positions on each
+        //      float's box_offsets/offset.
+        //   3. Now overwrite the float_ctx entries with final values and
+        //      re-split direct IFC children so their line boxes pick up
+        //      the corrected exclusion rectangles.
+        if (block_info.float_ctx.placed_count > 0) {
+            flow.finalizeFloatRectangles(subtree, &block_info.float_ctx);
+            flow.resplitDirectIfcsWithFloats(layout, subtree, block.index, block.skip, &block_info.float_ctx);
+        }
         break :blk result.auto_height;
     };
     const width = switch (auto_width) {
@@ -872,8 +886,14 @@ pub fn popFlowBlock(
             const outer_h: math.Unit = margin_top + height + margin_bottom;
             const container_w = parent_info.sizes.get(.inline_size).?;
             const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
+            // Provisional registration: width and x will be overwritten by
+            // `flow.finalizeFloatRectangles` after the parent's
+            // `offsetChildBlocks` runs (which is what actually computes the
+            // float's shrink-to-fit width and stacked x position). Store
+            // the child's subtree index in `child_index` so the finalize
+            // pass can find the correct entry.
             const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
-            parent_info.float_ctx.registerFloat(side, x, parent_info.running_cursor_y, width, outer_h);
+            parent_info.float_ctx.registerFloatWithIndex(side, x, parent_info.running_cursor_y, width, outer_h, block.index);
             // Floats are out-of-flow w.r.t. cursor advancement: they overlay
             // the normal flow below them, so the cursor does NOT advance here.
         } else if (!block_info.out_of_flow) {
@@ -1032,6 +1052,15 @@ pub const BlockUsedSizes = struct {
     inset_block_end_untagged: math.Unit,
 
     flags: Flags,
+
+    /// True when the cascaded `inline-size` (width) was `auto` BEFORE
+    /// `adjustWidthAndMargins` filled it in with the containing-block's
+    /// width. Used by `popFlowBlock` to distinguish auto-width floats
+    /// (which register their IFC line-exclusion rectangle at the
+    /// shrink-to-fit width) from explicitly-sized floats (which keep their
+    /// author-specified width). After `adjustWidthAndMargins`, `flags
+    /// .inline_size` is `.value` for both auto AND explicit.
+    was_auto_inline_size: bool = false,
 
     pub const Flags = packed struct {
         inline_size: IsAutoTag,
