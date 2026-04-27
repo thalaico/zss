@@ -149,13 +149,19 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     //
     // Snapshot by value because block_info can realloc during IFC content
     // processing, dangling any captured pointer.
+    //
+    // BFC scoping (CSS 2.1 §9.4.1): floats only affect inline content within
+    // the same Block Formatting Context. If we encounter a BFC root ancestor
+    // (a float itself, table cell, overflow:hidden, etc.) before finding any
+    // floats, stop — content inside a BFC is shielded from outer floats.
+    // This is critical for sibling floats containing text: each sibling
+    // float establishes its own BFC, so the second float's text must not
+    // be wrapped around the first float.
     const parent_float_ctx: ?flow.FloatContext = blk: {
         const stack = &box_gen.stacks.block_info;
         if (stack.top) |info| {
             if (info.float_ctx.placed_count > 0) {
                 var snap = info.float_ctx;
-                // Translate each float's y from parent's content-box space
-                // into the IFC's local space (IFC starts at parent.cursor).
                 const offset = info.running_cursor_y;
                 if (offset != 0) {
                     var j: u8 = 0;
@@ -165,12 +171,14 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
                 }
                 break :blk snap;
             }
+            if (info.is_bfc) break :blk null;
         }
         var i: usize = stack.rest.items.len;
         while (i > 0) {
             i -= 1;
             const info = stack.rest.items[i];
             if (info.float_ctx.placed_count > 0) break :blk info.float_ctx;
+            if (info.is_bfc) break :blk null;
         }
         break :blk null;
     };
