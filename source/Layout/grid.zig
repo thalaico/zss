@@ -248,7 +248,7 @@ pub fn layoutGridChildren(
                 // Re-run offsetChildBlocks to recompute vertical positions
                 // with margin collapsing and get correct auto_height.
                 const offset_result = flow.offsetChildBlocks(
-                    subtree, child, child_skip, content_w, box_offsets[child].content_pos.y,
+                    subtree, child, child_skip, content_w, box_offsets[child].content_pos.y, layout.box_tree.ptr,
                 );
                 const edge_top = box_offsets[child].content_pos.y;
                 const edge_bot = box_offsets[child].border_size.h - edge_top - box_offsets[child].content_size.h;
@@ -536,7 +536,7 @@ fn relayoutSubtree(
                 // Re-run offsetChildBlocks on child subtree for correct heights.
                 const child_skip = child_subtree.items(.skip)[0];
                 const child_offset_result = flow.offsetChildBlocks(
-                    child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y,
+                    child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
                 );
                 const child_root = &child_subtree.items(.box_offsets)[0];
                 const child_top = child_root.content_pos.y;
@@ -609,7 +609,7 @@ fn relayoutSubtree(
                     // Re-run offsetChildBlocks on child subtree for correct heights.
                     const child_skip = child_subtree.items(.skip)[0];
                     const child_offset_result = flow.offsetChildBlocks(
-                        child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y,
+                        child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
                     );
                     const child_root = &child_subtree.items(.box_offsets)[0];
                     const child_top = child_root.content_pos.y;

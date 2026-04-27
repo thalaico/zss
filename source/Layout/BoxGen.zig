@@ -694,7 +694,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     // CSS 2.1 Section 8.3.1: The margins of the root element's box do not collapse.
     // Treat the ICB as having a non-zero edge to prevent margin escape through it.
     const parent_edge: @TypeOf(block_info.sizes.border_block_start) = 1;
-    _ = flow.offsetChildBlocks(subtree, index, block.skip, block_info.sizes.get(.inline_size).?, parent_edge);
+    _ = flow.offsetChildBlocks(subtree, index, block.skip, block_info.sizes.get(.inline_size).?, parent_edge, box_tree.ptr);
     const width = block_info.sizes.get(.inline_size).?;
     const height = block_info.sizes.get(.block_size).?;
     subtree.items(.skip)[index] = block.skip;
@@ -808,7 +808,7 @@ pub fn popFlowBlock(
         var parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
         // BFC roots prevent parent-child margin escape (CSS 2.1 §8.3.1)
         if (block_info.is_bfc and parent_edge == 0) parent_edge = 1;
-        const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge);
+        const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, layout.box_tree.ptr);
         // Parent-child margin collapsing: adjust parent's margin to absorb
         // the first child's escaped margin (CSS 2.1 Section 8.3.1).
         if (!block_info.is_bfc) {
@@ -929,7 +929,7 @@ pub fn popStfFlowBlock2(
     const subtree = box_tree.ptr.getSubtree(subtree_id).view();
     const container_width = sizes.get(.inline_size) orelse auto_width;
     const parent_edge = sizes.border_block_start + sizes.padding_block_start;
-    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge).auto_height;
+    const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, box_tree.ptr).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, auto_height);
     // STF flow block: always flow (this is the split-text-flow subtree path).

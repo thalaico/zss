@@ -219,6 +219,10 @@ fn endMode(box_gen: *BoxGen) !Result {
     // Persist the flag on the IFC so flex re-layout (relayoutIfcAtWidth)
     // re-applies the same zeroing instead of resurrecting line-box height.
     ifc.ptr.has_visible_content = ifc.has_visible_content;
+    // Persist the IFC's natural max-content width so consumers (e.g.
+    // flow.floatContentWidth for shrink-to-fit floats) can read it without
+    // re-running line splitting.
+    ifc.ptr.longest_line_box_length = line_split_result.longest_line_box_length;
 
     box_gen.inline_context.popIfc();
     box_gen.popIfc(ifc.ptr.id, containing_block_width, effective_height);

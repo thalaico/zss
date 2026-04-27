@@ -355,6 +355,17 @@ pub const InlineFormattingContext = struct {
     /// resurrect zeroed whitespace IFCs.
     has_visible_content: bool = false,
 
+    /// Longest line-box length produced by splitIntoLineBoxes — i.e. the
+    /// max-content width of this IFC. Stored so that consumers needing the
+    /// IFC's natural (shrink-to-fit) extent can read it without re-running
+    /// line splitting. In particular, `flow.floatContentWidth` uses this for
+    /// shrink-to-fit-sized auto-width floats: the ifc_container in the block
+    /// subtree stores its border_size.w as the *containing block* width
+    /// (because that's where lines get to wrap), not the actual content
+    /// extent — using border_size.w there would prevent floats from ever
+    /// shrinking below their parent's width.
+    longest_line_box_length: math.Unit = 0,
+
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black
     font_family: values.types.FontFamily = .serif, // CSS initial: depends on UA; Chrome uses serif
