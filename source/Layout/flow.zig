@@ -977,13 +977,21 @@ pub fn finalizeFloatRectangles(subtree: BoxTree.Subtree.View, float_ctx: *FloatC
 }
 
 /// Re-split direct IFC children of a block whose float_ctx was just
-/// updated by `finalizeFloatRectangles`, so their line boxes pick up the
-/// corrected float exclusion rectangles. Each IFC's stored
+/// updated by `finalizeFloatRectangles`, so their line boxes pick up
+/// the corrected float exclusion rectangles. Each IFC's stored
 /// `persisted_parent_float_ctx` is also refreshed so subsequent
 /// re-layouts (flex Phase 4, grid relayout) use the corrected context.
-/// Returns the cumulative height delta — caller can grow the parent if
-/// needed; for now we leave parent height alone since offsetChildBlocks
-/// already finalized it. The IFC's own `border_size.h` is kept.
+///
+/// Currently walks only DIRECT children. Deeper IFCs (e.g. Wikipedia's
+/// news bullets at `mp-itn > ul > li > IFC`) aren't reached by this
+/// pass; their line boxes were split during inline mode using the
+/// provisional float values and aren't re-split here. A recursive
+/// version was attempted but caused diff regressions on wiki-minimal
+/// (some non-flex blocks still acted as BFC-like and shouldn't have
+/// inherited outer-float exclusion). See `is_bfc` field on subtree
+/// blocks — currently set but a recursive walk needs more BFC-source
+/// detection (overflow != visible, table cells, etc.) before it's
+/// safe to enable.
 pub fn resplitDirectIfcsWithFloats(
     layout: *@import("../zss.zig").Layout,
     subtree: BoxTree.Subtree.View,
@@ -1007,9 +1015,9 @@ pub fn resplitDirectIfcsWithFloats(
                 const ifc = layout.box_tree.ptr.getIfc(ifc_id);
                 // Translate float y from parent-content-box coords to
                 // IFC-local coords. line_y inside splitIntoLineBoxes
-                // starts at 0 corresponding to the IFC's top edge in the
-                // parent; without translation, floats placed below the
-                // IFC's top would never appear to overlap any line.
+                // starts at 0 corresponding to the IFC's top edge in
+                // the parent; without translation, floats placed below
+                // the IFC's top would never appear to overlap any line.
                 const ifc_offset_y = subtree.items(.offset)[gc].y + subtree.items(.box_offsets)[gc].border_pos.y;
                 var translated = float_ctx.*;
                 var ti: u8 = 0;

@@ -860,6 +860,14 @@ pub fn popFlowBlock(
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
     subtree.items(.visibility)[block.index] = .visible;
+    // Mirror the BFC flag onto the subtree so layout-time consumers
+    // (e.g. flow.resplitWalk) can scope outer-float exclusion correctly.
+    // Flex/grid items are also BFCs per CSS Flexbox §3 and Grid §3.
+    const parent_was_flex_or_grid = if (box_gen.stacks.block_info.top) |parent_info|
+        (parent_info.is_flex_container or parent_info.is_grid_container)
+    else
+        false;
+    subtree.items(.is_bfc)[block.index] = block_info.is_bfc or parent_was_flex_or_grid;
     subtree.items(.flex_grow)[block.index] = block_info.flex_grow;
     subtree.items(.flex_shrink)[block.index] = block_info.flex_shrink;
     subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
@@ -1212,6 +1220,9 @@ fn setDataBlock(
     subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
     subtree.items(.inner_block)[index] = inner_block;
+    // Default to false; popFlowBlock and other layout entry points
+    // overwrite this when the block actually establishes a BFC.
+    subtree.items(.is_bfc)[index] = false;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];

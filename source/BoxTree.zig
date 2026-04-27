@@ -286,6 +286,13 @@ pub const Subtree = struct {
         /// whether it's safe to recurse into a block's children as if they were
         /// flow-laid-out.
         inner_block: BoxStyle.InnerBlock = .flow,
+        /// True when this block establishes a new block formatting context
+        /// (CSS 2.1 §9.4.1 / Flexbox §3): floats from outside the BFC do
+        /// not intrude on its descendants. Set on floats themselves, on
+        /// flex/grid items, on overflow != visible, and on any block
+        /// marked `is_bfc` during BoxGen. Read by `flow.resplitWalk` to
+        /// stop recursive descent of outer-float exclusion.
+        is_bfc: bool = false,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
