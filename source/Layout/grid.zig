@@ -34,6 +34,43 @@ pub fn layoutGridChildren(
     child_area_hashes: []const u32,
     child_count: u8,
 ) Unit {
+    const subtree_id = layout.box_gen.currentSubtree();
+    return layoutGridChildrenInSubtree(
+        layout,
+        subtree,
+        subtree_id,
+        index,
+        skip,
+        container_width,
+        container_height,
+        column_gap,
+        row_gap,
+        template_columns,
+        template_rows,
+        template_areas,
+        child_area_hashes,
+        child_count,
+    );
+}
+
+/// Internal entry that takes the explicit subtree id (so it can be invoked
+/// from relayoutSubtree when crossing subtree boundaries via subtree_proxy).
+fn layoutGridChildrenInSubtree(
+    layout: *@import("../zss.zig").Layout,
+    subtree: Subtree.View,
+    subtree_id: Subtree.Id,
+    index: Subtree.Size,
+    skip: Subtree.Size,
+    container_width: Unit,
+    container_height: ?Unit,
+    column_gap: Unit,
+    row_gap: Unit,
+    template_columns: types.GridTrackList,
+    template_rows: types.GridTrackList,
+    template_areas: types.GridAreas,
+    child_area_hashes: []const u32,
+    child_count: u8,
+) Unit {
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const box_offsets = subtree.items(.box_offsets);
@@ -243,7 +280,7 @@ pub fn layoutGridChildren(
                 // Two-pass layout: relayoutSubtree propagates resolved widths
                 // into the grid item's subtree and re-lays out IFC text.
                 const child_skip = subtree.items(.skip)[child];
-                relayoutSubtree(layout, subtree, child, content_w);
+                relayoutSubtree(layout, subtree, subtree_id, child, content_w);
 
                 // Re-run offsetChildBlocks to recompute vertical positions
                 // with margin collapsing and get correct auto_height.
@@ -552,11 +589,14 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
 /// walk its entire subtree and re-lay out all content at the correct widths.
 ///
 /// Sets block widths, re-runs splitIntoLineBoxes for IFCs, follows
-/// subtree_proxy entries. Height propagation is handled by the caller
-/// re-running offsetChildBlocks after this returns.
+/// subtree_proxy entries. If a descendant block is itself a grid container
+/// (recorded in box_gen.grid_containers), re-runs layoutGridChildren on it
+/// at the new container width so nested grids honor the shrunk cell.
+/// Height propagation is handled by the caller re-running offsetChildBlocks.
 fn relayoutSubtree(
     layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
+    subtree_id: Subtree.Id,
     block_idx: Subtree.Size,
     available_content_w: Unit,
 ) void {
@@ -585,7 +625,7 @@ fn relayoutSubtree(
             const child_content_w = available_content_w - proxy_left - proxy_right;
             if (child_content_w > 0) {
                 const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
-                relayoutSubtree(layout, child_subtree, 0, child_content_w);
+                relayoutSubtree(layout, child_subtree, child_subtree_id, 0, child_content_w);
 
                 // Re-run offsetChildBlocks on child subtree for correct heights.
                 const child_skip = child_subtree.items(.skip)[0];
@@ -609,6 +649,44 @@ fn relayoutSubtree(
         else => {},
     }
 
+    // If this block is a grid container, re-run grid layout at the new
+    // available_content_w instead of treating its children as block-flow.
+    // The grid will recompute track sizes (so minmax(0,X) shrinks to fit
+    // the smaller cell) and re-call relayoutSubtree on each grid item with
+    // its updated cell width. Without this nested-grid containers like
+    // Wikipedia's .mw-body inside .mw-page-container-inner overflow.
+    const grid_key = @import("BoxGen.zig").GridContainerKey{
+        .subtree_id = subtree_id,
+        .block_idx = block_idx,
+    };
+    if (layout.box_gen.grid_containers.getPtr(grid_key)) |info| {
+        const block_skip2 = subtree.items(.skip)[block_idx];
+        // Reset the grid's child-area-hash count is preserved as-is; children
+        // haven't been re-generated.
+        const new_height = layoutGridChildrenInSubtree(
+            layout,
+            subtree,
+            subtree_id,
+            block_idx,
+            block_skip2,
+            available_content_w,
+            null,
+            info.column_gap,
+            info.row_gap,
+            info.columns,
+            info.rows,
+            info.areas,
+            &info.child_area_hashes,
+            info.child_count,
+        );
+        // Update this block's content height to match the regrown grid.
+        const top_e = bo.content_pos.y;
+        const bot_e = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        bo.content_size.h = new_height;
+        bo.border_size.h = top_e + new_height + bot_e;
+        return;
+    }
+
     // Walk children.
     const block_skip = subtree.items(.skip)[block_idx];
     const block_end = block_idx + block_skip;
@@ -630,7 +708,7 @@ fn relayoutSubtree(
                 const child_right = child_bo.border_size.w - child_bo.content_pos.x - child_bo.content_size.w;
                 const child_content_w = available_content_w - child_left - child_right;
                 if (child_content_w > 0) {
-                    relayoutSubtree(layout, subtree, gc, child_content_w);
+                    relayoutSubtree(layout, subtree, subtree_id, gc, child_content_w);
                 }
             },
             .ifc_container => |ifc_id| {
@@ -658,7 +736,7 @@ fn relayoutSubtree(
                 const child_content_w = available_content_w - proxy_left - proxy_right;
                 if (child_content_w > 0) {
                     const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
-                    relayoutSubtree(layout, child_subtree, 0, child_content_w);
+                    relayoutSubtree(layout, child_subtree, child_subtree_id, 0, child_content_w);
 
                     // Re-run offsetChildBlocks on child subtree for correct heights.
                     const child_skip = child_subtree.items(.skip)[0];

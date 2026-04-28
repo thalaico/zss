@@ -45,6 +45,27 @@ stacks: Stacks = .{},
 sct_builder: StackingContextTreeBuilder = .{},
 absolute: Absolute = .{},
 
+/// Per-grid-container info preserved past initial layout so nested grids
+/// can be re-laid-out when their parent grid resolves a smaller cell width.
+/// Without this, relayoutSubtree only updates block widths and leaves the
+/// inner grid's track sizes stale at the original (wider) container width.
+grid_containers: std.AutoHashMapUnmanaged(GridContainerKey, GridContainerInfo) = .{},
+
+pub const GridContainerKey = struct {
+    subtree_id: Subtree.Id,
+    block_idx: Subtree.Size,
+};
+
+pub const GridContainerInfo = struct {
+    column_gap: math.Unit,
+    row_gap: math.Unit,
+    columns: zss.values.types.GridTrackList,
+    rows: zss.values.types.GridTrackList,
+    areas: zss.values.types.GridAreas,
+    child_area_hashes: [128]u32,
+    child_count: u8,
+};
+
 const Stacks = struct {
     mode: zss.Stack(Mode) = .{},
     subtree: zss.Stack(struct {
@@ -80,6 +101,7 @@ pub fn deinit(box_gen: *BoxGen) void {
     box_gen.stacks.containing_block_size.deinit(allocator);
     box_gen.sct_builder.deinit(allocator);
     box_gen.absolute.deinit(allocator);
+    box_gen.grid_containers.deinit(allocator);
 }
 
 pub fn run(box_gen: *BoxGen) !void {
@@ -797,6 +819,24 @@ pub fn popFlowBlock(
     } else if (block_info.is_grid_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
+        // Persist grid template + children info so that if a parent grid later
+        // resizes this block's containing cell, relayoutSubtree can re-run
+        // grid layout instead of just resizing this block's box. Without this
+        // step nested grids inside narrower outer cells overflow (Wikipedia
+        // .vector-column-end clipping case).
+        const key = GridContainerKey{
+            .subtree_id = box_gen.currentSubtree(),
+            .block_idx = block.index,
+        };
+        box_gen.grid_containers.put(box_gen.getLayout().allocator, key, .{
+            .column_gap = block_info.grid_column_gap,
+            .row_gap = block_info.grid_row_gap,
+            .columns = block_info.grid_columns,
+            .rows = block_info.grid_rows,
+            .areas = block_info.grid_areas,
+            .child_area_hashes = block_info.grid_child_area_hashes,
+            .child_count = block_info.grid_child_count,
+        }) catch {};
         break :blk grid.layoutGridChildren(layout, subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
     } else if (block_info.is_table_row)
         flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
