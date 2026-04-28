@@ -1400,6 +1400,57 @@ pub const IFCLineSplitResult = struct {
     longest_line_box_length: Unit,
 };
 
+/// CSS 2.1 §9.5: when a line box can't fit any inline content beside
+/// the floats intersecting it, the line is moved down past the
+/// shortest of those floats. Without this fallback, an IFC sandwiched
+/// between wide floats keeps creating tiny `effective_right -
+/// effective_left` gaps and squeezing one glyph per line into a few
+/// pixels — producing the "char-per-line column" bug that wide
+/// auto-resolved Wikipedia floats trigger.
+///
+/// `min_w` is the minimum horizontal space the line needs to be
+/// useful. `nominal_line_h` matches IFC line height and is a
+/// reasonable proxy for "wide enough for one char or short word".
+fn clearLineYUntilFits(
+    fctx: flow.FloatContext,
+    initial_line_y: Unit,
+    line_h: Unit,
+    container_width: Unit,
+    min_w: Unit,
+) struct { line_y: Unit, left: Unit, right: Unit } {
+    var line_y = initial_line_y;
+    // Iteration limit guards against degenerate cases (overlapping
+    // floats whose combined coverage spans many lines).
+    var attempts: u8 = 0;
+    while (attempts < 32) : (attempts += 1) {
+        const ex = fctx.getLineExclusion(line_y, line_h, container_width);
+        if (ex.right_limit - ex.left_offset >= min_w) {
+            return .{ .line_y = line_y, .left = ex.left_offset, .right = ex.right_limit };
+        }
+        // Find the lowest float bottom among floats intersecting this
+        // line range — that's the first y where one of them stops
+        // contributing to the exclusion.
+        var next_clear: ?Unit = null;
+        var i: u8 = 0;
+        while (i < fctx.placed_count) : (i += 1) {
+            const f = fctx.placed_floats[i];
+            if (f.y + f.h <= line_y) continue;
+            if (f.y >= line_y + line_h) continue;
+            const bottom = f.y + f.h;
+            if (next_clear == null or bottom < next_clear.?) next_clear = bottom;
+        }
+        if (next_clear) |nc| {
+            // Step just past this float's bottom. Other floats may
+            // still intersect the new line range, so we loop.
+            line_y = nc;
+        } else {
+            break;
+        }
+    }
+    const ex = fctx.getLineExclusion(line_y, line_h, container_width);
+    return .{ .line_y = line_y, .left = ex.left_offset, .right = ex.right_limit };
+}
+
 pub fn splitIntoLineBoxes(
     layout: *Layout,
     subtree: Subtree.View,
@@ -1467,13 +1518,19 @@ pub fn splitIntoLineBoxes(
     // recomputed at every line start. Each line's x_offset is written into
     // its LineBox so the renderer (zss_to_cairo) shifts glyph painting.
     const nominal_line_h: Unit = top_height + bottom_height;
+    // Minimum useful inline width: ~one font-em-square. Lines narrower
+    // than this trigger the §9.5 line-clear fallback so we don't
+    // produce char-per-line columns when a wide float dominates the
+    // available width.
+    const min_useful_w: Unit = nominal_line_h;
     var line_top_y: Unit = 0;
     var effective_left: Unit = 0;
     var effective_right: Unit = max_line_box_length;
     if (parent_float_ctx) |fctx| {
-        const ex = fctx.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
-        effective_left = ex.left_offset;
-        effective_right = ex.right_limit;
+        const cleared = clearLineYUntilFits(fctx, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
+        line_top_y = cleared.line_y;
+        effective_left = cleared.left;
+        effective_right = cleared.right;
     }
 
     const glyphs = ifc.glyphs.slice();
@@ -1532,9 +1589,10 @@ pub fn splitIntoLineBoxes(
                     s.newLineBox(2);
                     line_top_y += nominal_line_h;
                     if (parent_float_ctx) |fctx2| {
-                        const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
-                        effective_left = ex.left_offset;
-                        effective_right = ex.right_limit;
+                        const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
+                        line_top_y = cleared.line_y;
+                        effective_left = cleared.left;
+                        effective_right = cleared.right;
                     } else {
                         effective_left = 0;
                         effective_right = max_line_box_length;
@@ -1572,9 +1630,10 @@ pub fn splitIntoLineBoxes(
                         s.newLineBox(0);
                         line_top_y += nominal_line_h;
                         if (parent_float_ctx) |fctx2| {
-                            const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
-                            effective_left = ex.left_offset;
-                            effective_right = ex.right_limit;
+                            const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
+                            line_top_y = cleared.line_y;
+                            effective_left = cleared.left;
+                            effective_right = cleared.right;
                         } else {
                             effective_left = 0;
                             effective_right = max_line_box_length;
@@ -1593,9 +1652,10 @@ pub fn splitIntoLineBoxes(
                 s.newLineBox(0);
                 line_top_y += nominal_line_h;
                 if (parent_float_ctx) |fctx2| {
-                    const ex = fctx2.getLineExclusion(line_top_y, nominal_line_h, max_line_box_length);
-                    effective_left = ex.left_offset;
-                    effective_right = ex.right_limit;
+                    const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
+                    line_top_y = cleared.line_y;
+                    effective_left = cleared.left;
+                    effective_right = cleared.right;
                 } else {
                     effective_left = 0;
                     effective_right = max_line_box_length;
