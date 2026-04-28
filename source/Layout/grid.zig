@@ -380,10 +380,13 @@ fn resolveTrackSizes(
                         fr_count += 1;
                     },
                     .fixed => {
-                        // minmax(fixed, fixed): clamp to max value
-                        const max_val = track.max_value;
-                        sizes[i] = if (max_val > track.value) max_val else track.value;
-                        fixed_total += sizes[i];
+                        // minmax(fixed, fixed): start at MIN. The Maximize Tracks
+                        // pass below grows it up to max only if there is space.
+                        // Old behaviour clamped to max immediately, which overflows
+                        // the container when available_space < sum of maxes
+                        // (e.g. Wikipedia's nested .mw-body grid inside
+                        // .mw-page-container-inner). CSS Grid §12.6.
+                        fixed_total += track.value;
                     },
                     .auto, .min_content, .max_content => {
                         // minmax(fixed, auto/content): use intrinsic width with floor
@@ -402,7 +405,58 @@ fn resolveTrackSizes(
         }
     }
 
-    // Second pass: distribute remaining space to fr tracks
+    // Second pass — Maximize Tracks (CSS Grid §12.6).
+    // Grow minmax(fixed, fixed) tracks from their min toward their max,
+    // bounded by the leftover space after pass 1's fixed bases. Runs before
+    // fr distribution so fr tracks only consume what minmax-fixed didn't claim.
+    // For fully-constrained cases (leftover >= total headroom), every
+    // minmax-fixed track reaches its max. For under-constrained cases
+    // (leftover < total headroom), distribute proportional to each track's
+    // headroom — matches Chrome's behavior on Wikipedia's nested grids.
+    {
+        var used_for_max: Unit = 0;
+        for (0..count) |i| used_for_max += sizes[i];
+        const max_leftover = remaining - used_for_max;
+        if (max_leftover > 0) {
+            var total_headroom: Unit = 0;
+            for (0..count) |i| {
+                const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+                if (track.kind == .minmax and track.max_kind == .fixed) {
+                    const headroom = track.max_value - sizes[i];
+                    if (headroom > 0) total_headroom += headroom;
+                }
+            }
+            if (total_headroom > 0) {
+                if (max_leftover >= total_headroom) {
+                    for (0..count) |i| {
+                        const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+                        if (track.kind == .minmax and track.max_kind == .fixed) {
+                            const headroom = track.max_value - sizes[i];
+                            if (headroom > 0) {
+                                sizes[i] += headroom;
+                                fixed_total += headroom;
+                            }
+                        }
+                    }
+                } else {
+                    for (0..count) |i| {
+                        const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+                        if (track.kind == .minmax and track.max_kind == .fixed) {
+                            const headroom = track.max_value - sizes[i];
+                            if (headroom <= 0) continue;
+                            const grow_f: f32 = @as(f32, @floatFromInt(max_leftover)) *
+                                @as(f32, @floatFromInt(headroom)) / @as(f32, @floatFromInt(total_headroom));
+                            const grow: Unit = @intFromFloat(grow_f);
+                            sizes[i] += grow;
+                            fixed_total += grow;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Third pass: distribute remaining space to fr tracks
     const space_for_flex = remaining - fixed_total;
     if (space_for_flex > 0 and total_fr > 0) {
         for (0..count) |i| {
