@@ -582,7 +582,16 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
     // Add this block's own edges
     const left_edge = bo.content_pos.x;
     const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
-    return left_edge + max_child_intrinsic + right_edge;
+    const child_based = left_edge + max_child_intrinsic + right_edge;
+
+    // CSS Grid §6.6: a grid item's min-content contribution is the larger of
+    // the size derived from its content and the size derived from its own
+    // declared sizing (width). border_size.w was set during initial block
+    // layout from the cascade, so it reflects an explicit `width` if present.
+    // Without this max, items with `width: 15.5rem` and short text content
+    // (e.g. Wikipedia's .vector-column-end) shrink the column to ~text
+    // width and the explicit declared width is lost.
+    return @max(child_based, bo.border_size.w);
 }
 
 /// Two-pass layout: after the grid algorithm resolves a grid item's width,
