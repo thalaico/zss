@@ -355,6 +355,8 @@ fn layoutGridChildrenInSubtree(
         if (r > 0) total_height += row_gap;
     }
 
+    // DIAGNOSTIC: dump grid container track sizes and item widths.
+    // Enable with ZSS_DUMP_GRID=1
     return total_height;
 }
 
@@ -693,6 +695,86 @@ fn relayoutSubtree(
         const bot_e = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
         bo.content_size.h = new_height;
         bo.border_size.h = top_e + new_height + bot_e;
+        return;
+    }
+
+    // If this block is a flex container, re-run flex layout at the new
+    // available_content_w so nested flex containers inside grid cells get
+    // correct item widths. Then manually walk children and recursively
+    // relayout each one using its updated content width.
+    const flex_key = @import("BoxGen.zig").FlexContainerKey{
+        .subtree_id = subtree_id,
+        .block_idx = block_idx,
+    };
+    if (layout.box_gen.flex_containers.getPtr(flex_key)) |info| {
+        const block_skip = subtree.items(.skip)[block_idx];
+        const container_height = bo.content_size.h;
+        const new_height = flow.offsetChildBlocksFlex(
+            layout,
+            subtree,
+            block_idx,
+            block_skip,
+            available_content_w,
+            container_height,
+            info.justify,
+            info.align_items,
+            info.flex_gap,
+            info.flex_is_column,
+            info.flex_wrap,
+        );
+        const top_e = bo.content_pos.y;
+        const bot_e = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        bo.content_size.h = new_height;
+        bo.border_size.h = top_e + new_height + bot_e;
+
+        const block_end = block_idx + block_skip;
+        var child = block_idx + 1;
+        while (child < block_end) {
+            const c_skip = subtree.items(.skip)[child];
+            defer child += c_skip;
+            if (subtree.items(.out_of_flow)[child]) {
+                continue;
+            }
+            switch (types_slice[child]) {
+                .block => {
+                    const child_bo = box_offsets[child];
+                    const child_content_w = child_bo.content_size.w;
+                    if (child_content_w > 0) {
+                        relayoutSubtree(layout, subtree, subtree_id, child, child_content_w);
+                    }
+                },
+                .ifc_container => {
+                    // offsetChildBlocksFlex already re-lays out IFCs via
+                    // relayoutIfcAtWidth when their width changed.
+                },
+                .subtree_proxy => |child_subtree_id| {
+                    const proxy_bo = box_offsets[child];
+                    const child_content_w = proxy_bo.content_size.w;
+                    if (child_content_w > 0) {
+                        const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
+                        relayoutSubtree(layout, child_subtree, child_subtree_id, 0, child_content_w);
+
+                        // Re-run offsetChildBlocks on child subtree for correct heights.
+                        const child_skip2 = child_subtree.items(.skip)[0];
+                        const child_offset_result = flow.offsetChildBlocks(
+                            child_subtree, 0, child_skip2, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
+                        );
+                        const child_root = &child_subtree.items(.box_offsets)[0];
+                        const child_top = child_root.content_pos.y;
+                        const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
+                        child_root.content_size.h = child_offset_result.auto_height;
+                        child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+
+                        // Update the proxy to match child subtree's new height.
+                        const proxy_top = proxy_bo.content_pos.y;
+                        const proxy_bot = proxy_bo.border_size.h - proxy_bo.content_pos.y - proxy_bo.content_size.h;
+                        const proxy_bo_mut = &box_offsets[child];
+                        proxy_bo_mut.content_size.h = child_root.border_size.h;
+                        proxy_bo_mut.border_size.h = proxy_top + child_root.border_size.h + proxy_bot;
+                    }
+                },
+            }
+        }
         return;
     }
 

@@ -50,6 +50,11 @@ absolute: Absolute = .{},
 /// Without this, relayoutSubtree only updates block widths and leaves the
 /// inner grid's track sizes stale at the original (wider) container width.
 grid_containers: std.AutoHashMapUnmanaged(GridContainerKey, GridContainerInfo) = .{},
+/// Per-flex-container info preserved past initial layout so nested flex
+/// containers can be re-laid-out when their parent grid resolves a smaller
+/// cell width. Without this, relayoutSubtree only updates block widths and
+/// leaves flex item sizes stale at the original (wider) container width.
+flex_containers: std.AutoHashMapUnmanaged(FlexContainerKey, FlexContainerInfo) = .{},
 
 pub const GridContainerKey = struct {
     subtree_id: Subtree.Id,
@@ -64,6 +69,19 @@ pub const GridContainerInfo = struct {
     areas: zss.values.types.GridAreas,
     child_area_hashes: [128]u32,
     child_count: u8,
+};
+
+pub const FlexContainerKey = struct {
+    subtree_id: Subtree.Id,
+    block_idx: Subtree.Size,
+};
+
+pub const FlexContainerInfo = struct {
+    justify: BlockInfo.FlexJustify,
+    align_items: BlockInfo.FlexAlign,
+    flex_gap: zss.math.Unit,
+    flex_is_column: bool,
+    flex_wrap: zss.values.types.FlexWrap,
 };
 
 const Stacks = struct {
@@ -102,6 +120,7 @@ pub fn deinit(box_gen: *BoxGen) void {
     box_gen.sct_builder.deinit(allocator);
     box_gen.absolute.deinit(allocator);
     box_gen.grid_containers.deinit(allocator);
+    box_gen.flex_containers.deinit(allocator);
 }
 
 pub fn run(box_gen: *BoxGen) !void {
@@ -815,7 +834,19 @@ pub fn popFlowBlock(
     const auto_height = if (block_info.is_flex_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
-        break :blk flow.offsetChildBlocksFlex(layout, subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
+        const height = flow.offsetChildBlocksFlex(layout, subtree, block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
+        const key = FlexContainerKey{
+            .subtree_id = box_gen.currentSubtree(),
+            .block_idx = block.index,
+        };
+        box_gen.flex_containers.put(box_gen.getLayout().allocator, key, .{
+            .justify = block_info.flex_justify,
+            .align_items = block_info.flex_align,
+            .flex_gap = block_info.flex_gap,
+            .flex_is_column = block_info.flex_is_column,
+            .flex_wrap = block_info.flex_wrap,
+        }) catch {};
+        break :blk height;
     } else if (block_info.is_grid_container) blk: {
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
