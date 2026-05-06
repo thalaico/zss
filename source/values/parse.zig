@@ -933,7 +933,7 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
 
 fn matchQuotedFontFamily(source_code: SourceCode, location: SourceCode.Location) ?types.FontFamily {
     const names_sans = [_][]const u8{ "verdana", "arial", "helvetica", "tahoma", "calibri", "roboto", "lato" };
-    const names_serif = [_][]const u8{ "times", "georgia", "garamond", "palatino", "cambria" };
+    const names_serif = [_][]const u8{ "times", "georgia", "garamond", "palatino", "cambria", "linux libertine", "liberation serif", "nimbus roman" };
     const names_mono = [_][]const u8{ "courier", "consolas", "monaco", "menlo" };
 
     // Compare quoted string content against known font names.
