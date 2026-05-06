@@ -1517,7 +1517,22 @@ pub fn splitIntoLineBoxes(
     // effective_left and effective_right define the available x range. They're
     // recomputed at every line start. Each line's x_offset is written into
     // its LineBox so the renderer (zss_to_cairo) shifts glyph painting.
-    const nominal_line_h: Unit = top_height + bottom_height;
+    // nominal_line_h is the per-line box height. For line-height:normal,
+    // this comes from the font's intrinsic metrics. When an explicit
+    // line-height is set, use it instead and redistribute ascender/descender
+    // proportionally.
+    var nominal_line_h: Unit = top_height + bottom_height;
+    if (ifc.line_height > 0) {
+        @import("std").log.info("[ZS-LH-FIX] using line_height={} instead of design={}", .{ifc.line_height, nominal_line_h});
+        const design_line_h = nominal_line_h;
+        nominal_line_h = ifc.line_height;
+        // Redistribute ascender/descender proportionally
+        if (design_line_h > 0 and nominal_line_h != design_line_h) {
+            const ratio = @as(f32, @floatFromInt(nominal_line_h)) / @as(f32, @floatFromInt(design_line_h));
+            top_height = @intFromFloat(@round(ratio * @as(f32, @floatFromInt(top_height))));
+            bottom_height = nominal_line_h - top_height;
+        }
+    }
     // Minimum useful inline width: ~one font-em-square. Lines narrower
     // than this trigger the §9.5 line-clear fallback so we don't
     // produce char-per-line columns when a wide float dominates the

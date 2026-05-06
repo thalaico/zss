@@ -1054,7 +1054,7 @@ pub fn gap(ctx: *Context) ?zss.math.Unit {
     return parseLengthToUnits(ctx);
 }
 
-/// Parse line-height: <length> | normal. Returns layout units. 0 = normal.
+/// Parse line-height: <length> | <number> | normal. Returns layout units. 0 = normal.
 pub fn lineHeight(ctx: *Context) ?types.LineHeight {
     // Check for 'normal' keyword first
     const save = ctx.savePoint();
@@ -1062,7 +1062,30 @@ pub fn lineHeight(ctx: *Context) ?types.LineHeight {
         return 0; // 0 = normal
     }
     ctx.resetPoint(save);
+    // Try number first (line-height: 1.2 = multiply font-size)
+    if (parseNumberFactor(ctx)) |factor| {
+        const px = factor * ctx.font_size_px;
+        return @intFromFloat(@round(px * 4.0));
+    }
     return parseLengthToUnits(ctx);
+}
+
+/// Parse a unitless number factor (CSS <number> for line-height).
+fn parseNumberFactor(ctx: *Context) ?f32 {
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_number => {
+            const num = item.index.extra(ctx.ast).number orelse return null;
+            // Positive-only (negative line-height is invalid)
+            if (num > 0) return num;
+            ctx.resetPoint(item.index);
+            return null;
+        },
+        else => {
+            ctx.resetPoint(item.index);
+            return null;
+        },
+    }
 }
 
 /// Shared helper: parse a <length> token and convert to layout units (4 units = 1px).
