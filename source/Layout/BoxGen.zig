@@ -796,6 +796,34 @@ pub fn pushFlowBlock(
     return ref;
 }
 
+/// Pop the current float block from the stack and register it in the
+/// parent's float_ctx. Called from flow.popBlock for bfc_depth == 0
+/// leaf blocks that would normally skip the full popFlowBlock.
+/// Also finalizes float rectangles and re-splits sibling IFC lines.
+pub fn registerFloatLeaf(box_gen: *BoxGen) void {
+    const block_info_top = box_gen.stacks.block_info.top;
+    if (block_info_top == null) return;
+    if (block_info_top.?.float_side == .none) return;
+
+    const block = box_gen.popBlock();
+    var block_info = box_gen.stacks.block_info.pop();
+    _ = box_gen.stacks.containing_block_size.pop();
+
+    if (box_gen.stacks.block_info.top) |*parent_info| {
+        if (block_info.float_side != .none) {
+            const width = block_info.sizes.get(.inline_size) orelse return;
+            const height = block_info.sizes.get(.block_size) orelse return;
+            const container_w = parent_info.sizes.get(.inline_size) orelse return;
+            const margin_top = block_info.sizes.margin_block_start;
+            const margin_bottom = block_info.sizes.margin_block_end;
+            const outer_h: math.Unit = margin_top + height + margin_bottom;
+            const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
+            const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
+            parent_info.float_ctx.registerFloatWithIndex(side, x, parent_info.running_cursor_y, width, outer_h, block.index);
+        }
+    }
+}
+
 pub fn popFlowBlock(
     box_gen: *BoxGen,
     auto_width: union(SizeMode) {
