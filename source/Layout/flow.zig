@@ -210,8 +210,6 @@ fn popBlock(box_gen: *BoxGen) ?void {
     const bfc_depth = &box_gen.bfc_stack.top.?;
     bfc_depth.* -= 1;
     if (bfc_depth.* == 0) {
-        // Leaf block: no further blocks in this BFC. Register as float
-        // before discarding so sibling IFCs get float-exclusion context.
         box_gen.registerFloatLeaf();
         return null;
     }
