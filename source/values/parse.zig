@@ -1054,18 +1054,17 @@ pub fn gap(ctx: *Context) ?zss.math.Unit {
     return parseLengthToUnits(ctx);
 }
 
-/// Parse line-height: <length> | <number> | normal. Returns layout units. 0 = normal.
+/// Parse line-height: <length> | <number> | normal.
+/// Encoding: 0 = normal, >0 = absolute layout units, <0 = number factor × -1000
+/// (deferred resolution against element's font-size at layout time).
 pub fn lineHeight(ctx: *Context) ?types.LineHeight {
-    // Check for 'normal' keyword first
     const save = ctx.savePoint();
     if (keyword(ctx, enum { normal }, &.{.{ "normal", .normal }})) |_| {
-        return 0; // 0 = normal
+        return 0;
     }
     ctx.resetPoint(save);
-    // Try number first (line-height: 1.2 = multiply font-size)
     if (parseNumberFactor(ctx)) |factor| {
-        const px = factor * ctx.font_size_px;
-        return @intFromFloat(@round(px * 4.0));
+        return -@as(types.LineHeight, @intFromFloat(@round(factor * 1000.0)));
     }
     return parseLengthToUnits(ctx);
 }
@@ -1076,8 +1075,13 @@ fn parseNumberFactor(ctx: *Context) ?f32 {
     switch (item.tag) {
         .token_number => {
             const num = item.index.extra(ctx.ast).number orelse return null;
-            // Positive-only (negative line-height is invalid)
             if (num > 0) return num;
+            ctx.resetPoint(item.index);
+            return null;
+        },
+        .token_integer => {
+            const int_val = item.index.extra(ctx.ast).integer orelse return null;
+            if (int_val > 0) return @floatFromInt(int_val);
             ctx.resetPoint(item.index);
             return null;
         },

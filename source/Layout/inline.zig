@@ -345,6 +345,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // ifc.font_size is used for line-height and as the default rendering size.
             if (ifc.ptr.font_runs.items.len == 0) {
                 ifc.ptr.font_size = font.font_size.px_val();
+                ifc.ptr.line_height = font.line_height;
             }
             // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
             layout.inputs.fonts.setFontSize(handle, font.font_size.px_val());
@@ -1504,35 +1505,26 @@ pub fn splitIntoLineBoxes(
         bottom_height = 0;
     }
 
+    // Apply explicit line-height before initializing line-split state,
+    // so the state captures the adjusted ascender/descender heights.
+    // Encoding: 0 = normal, >0 = absolute layout units, <0 = number × -1000.
+    var nominal_line_h: Unit = top_height + bottom_height;
+    const resolved_lh: Unit = if (ifc.line_height < 0) blk: {
+        const factor = @as(f32, @floatFromInt(-ifc.line_height)) / 1000.0;
+        break :blk @intFromFloat(@round(factor * ifc.font_size * @as(f32, @floatFromInt(units_per_pixel))));
+    } else ifc.line_height;
+    if (resolved_lh > 0) {
+        // CSS2 §10.8.1 half-leading model: leading = line-height - content-area,
+        // split equally above the ascender and below the descender.
+        const leading = resolved_lh - nominal_line_h;
+        const half_leading = @divFloor(leading, 2);
+        top_height += half_leading;
+        bottom_height = resolved_lh - top_height;
+        nominal_line_h = resolved_lh;
+    }
+
     var s = IFCLineSplitState.init(top_height, bottom_height);
     defer s.deinit(layout.allocator);
-
-    // Per-line float exclusion state (CSS 2.1 §9.5).
-    // line_top_y tracks the current line's top in IFC-local coords; we use it
-    // directly as the y for parent_float_ctx queries (Stage 1 simplification:
-    // assumes the IFC's top in the float-hosting ancestor's coords is y = 0,
-    // correct for floats that lead the parent's content — Wikipedia
-    // featured-article fits this).
-    //
-    // effective_left and effective_right define the available x range. They're
-    // recomputed at every line start. Each line's x_offset is written into
-    // its LineBox so the renderer (zss_to_cairo) shifts glyph painting.
-    // nominal_line_h is the per-line box height. For line-height:normal,
-    // this comes from the font's intrinsic metrics. When an explicit
-    // line-height is set, use it instead and redistribute ascender/descender
-    // proportionally.
-    var nominal_line_h: Unit = top_height + bottom_height;
-    if (ifc.line_height > 0) {
-        @import("std").log.info("[ZS-LH-FIX] using line_height={} instead of design={}", .{ifc.line_height, nominal_line_h});
-        const design_line_h = nominal_line_h;
-        nominal_line_h = ifc.line_height;
-        // Redistribute ascender/descender proportionally
-        if (design_line_h > 0 and nominal_line_h != design_line_h) {
-            const ratio = @as(f32, @floatFromInt(nominal_line_h)) / @as(f32, @floatFromInt(design_line_h));
-            top_height = @intFromFloat(@round(ratio * @as(f32, @floatFromInt(top_height))));
-            bottom_height = nominal_line_h - top_height;
-        }
-    }
     // Minimum useful inline width: ~one font-em-square. Lines narrower
     // than this trigger the §9.5 line-clear fallback so we don't
     // produce char-per-line columns when a wide float dominates the
