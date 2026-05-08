@@ -1329,6 +1329,7 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
 pub fn offsetChildBlocksFlex(
     layout: *zss.Layout,
     subtree: Subtree.View,
+    subtree_id: Subtree.Id,
     index: Subtree.Size,
     skip: Subtree.Size,
     container_width: Unit,
@@ -1482,7 +1483,7 @@ pub fn offsetChildBlocksFlex(
                 bo.content_size.w = @max(0, resolved_w - left_edge * 2);
 
                 // Re-layout IFC (text) containers at the new width
-                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w, old_content_w);
+                relayoutIfcAtWidth(layout, subtree, subtree_id, child_idx, bo.content_size.w, old_content_w);
             }
         }
     }
@@ -1529,7 +1530,7 @@ pub fn offsetChildBlocksFlex(
                 const old_content_w = bo.content_size.w;
                 bo.border_size.w = border_w_new;
                 bo.content_size.w = @max(0, border_w_new - left_edge - right_edge);
-                relayoutIfcAtWidth(layout, subtree, child_idx, bo.content_size.w, old_content_w);
+                relayoutIfcAtWidth(layout, subtree, subtree_id, child_idx, bo.content_size.w, old_content_w);
             }
         }
     }
@@ -1893,6 +1894,7 @@ fn resolveFlexibleLengths(
 fn relayoutIfcAtWidth(
     layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
+    subtree_id: Subtree.Id,
     item_idx: Subtree.Size,
     new_content_w: Unit,
     /// Parent's content_size.w BEFORE the caller overwrote it with
@@ -1967,6 +1969,22 @@ fn relayoutIfcAtWidth(
             item_bo.content_size.h = total_ifc_height;
             item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
         }
+
+        // If this item is itself a flex container, re-run its flex layout at
+        // the new width so that IFC offset.x (justify-content centering) is
+        // computed at the shrunk width rather than the pre-shrink width.
+        // Without this, centered text inside an inline-flex child of a column
+        // flex container ends up far to the right of the container boundary.
+        if (item_inner == .flex) {
+            const flex_key = BoxGen.FlexContainerKey{ .subtree_id = subtree_id, .block_idx = item_idx };
+            if (layout.box_gen.flex_containers.getPtr(flex_key)) |info| {
+                const container_h = subtree.items(.box_offsets)[item_idx].content_size.h;
+                _ = offsetChildBlocksFlex(layout, subtree, subtree_id, item_idx, item_skip,
+                    new_content_w, container_h, info.justify, info.align_items,
+                    info.flex_gap, info.flex_is_column, info.flex_wrap);
+            }
+        }
+
         return;
     }
 
@@ -2067,7 +2085,7 @@ fn relayoutIfcAtWidth(
                 const child_old_content_w = child_bo.content_size.w;
                 const child_new_w = new_content_w - child_left - child_right;
                 if (was_filling and child_new_w > 0) {
-                    relayoutIfcAtWidth(layout, subtree, gc, child_new_w, child_old_content_w);
+                    relayoutIfcAtWidth(layout, subtree, subtree_id, gc, child_new_w, child_old_content_w);
                 }
                 const new_h = subtree.items(.box_offsets)[gc].border_size.h;
                 accumulated_y_delta += (new_h - old_h);

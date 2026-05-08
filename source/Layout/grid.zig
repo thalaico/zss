@@ -712,6 +712,7 @@ fn relayoutSubtree(
         const new_height = flow.offsetChildBlocksFlex(
             layout,
             subtree,
+            subtree_id,
             block_idx,
             block_skip,
             available_content_w,
