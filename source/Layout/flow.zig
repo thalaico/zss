@@ -29,6 +29,12 @@ const Subtree = BoxTree.Subtree;
 pub fn beginMode(box_gen: *BoxGen) !void {
     const allocator = box_gen.getLayout().allocator;
     try box_gen.bfc_stack.push(allocator, 1);
+    // Inject ::before for the block that just entered flow mode. This covers
+    // both regular block elements (where flow.blockElement pushes the block)
+    // and inline-block elements (where inline.inlineElement pushes the block).
+    if (box_gen.stacks.block_info.top) |block_info| {
+        try insertPseudoElement(box_gen, block_info.node, .before);
+    }
 }
 
 fn endMode(box_gen: *BoxGen) void {
@@ -158,8 +164,6 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     info.is_bfc = true;
                 }
             }
-            // Insert ::before pseudo-element as first child (after pushBlock descended)
-            try insertPseudoElement(box_gen, node, .before);
         },
     }
 }

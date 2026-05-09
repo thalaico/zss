@@ -19,6 +19,7 @@ const SctBuilder = BoxGen.StackingContextTreeBuilder;
 const flow = @import("./flow.zig");
 const @"inline" = @import("./inline.zig");
 const solve = @import("./solve.zig");
+const selectors = zss.selectors;
 
 const BoxTree = zss.BoxTree;
 const BlockRef = BoxTree.BlockRef;
@@ -232,8 +233,50 @@ pub const Result = struct {
 pub fn beginMode(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, used_sizes: BlockUsedSizes) !void {
     const ctx = &box_gen.stf_context;
     switch (inner_block) {
-        .flow, .flex, .grid => try ctx.pushMainFlowObject(box_gen.getLayout().allocator, used_sizes),
+        .flow, .flex, .grid => {
+            try ctx.pushMainFlowObject(box_gen.getLayout().allocator, used_sizes);
+            // Inject ::before pseudo-element for the inline-block entering STF mode.
+            if (box_gen.stacks.block_info.top) |block_info| {
+                try stfInsertPseudoElement(box_gen, block_info.node, .before);
+            }
+        },
     }
+}
+
+/// Inject a pseudo-element's string content as an IFC object in the STF context.
+/// Used for ::before/::after on inline-block elements with auto width.
+fn stfInsertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
+    const layout = box_gen.getLayout();
+    const computer = &layout.computer;
+    if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
+
+    const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
+    if (gen_content.content == .normal or gen_content.content == .none) return;
+
+    const text: []const u8 = switch (gen_content.content) {
+        .string => |text_id| blk: {
+            const t = layout.inputs.env.getText(text_id);
+            if (t.len == 0) return;
+            break :blk t;
+        },
+        else => return,
+    };
+
+    const font = computer.getSpecifiedValue(.box_gen, .font);
+    const subtree = try box_gen.pushSubtree();
+    try box_gen.stf_context.appendIfcObject(layout.allocator, subtree);
+    try box_gen.stacks.mode.push(layout.allocator, .@"inline");
+    const result = try @"inline".addPseudoElementText(box_gen, text, .{
+        .font = font.font,
+        .font_family = font.font_family,
+        .font_size = font.font_size,
+        .font_weight = font.font_weight,
+        .font_style = font.font_style,
+        .text_transform = font.text_transform,
+    });
+    assert(box_gen.stacks.mode.pop() == .@"inline");
+    box_gen.popSubtree();
+    box_gen.stf_context.setIfcObjectResult(result);
 }
 
 fn endMode(box_gen: *BoxGen) !Result {

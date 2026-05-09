@@ -7,6 +7,7 @@ const Fonts = zss.Fonts;
 const NodeId = zss.Environment.NodeId;
 const Unit = zss.math.Unit;
 const units_per_pixel = zss.math.units_per_pixel;
+const selectors = zss.selectors;
 
 const Layout = zss.Layout;
 const BoxTreeManaged = Layout.BoxTreeManaged;
@@ -443,6 +444,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // we descend into their children. An empty <span> with padding/
             // border still generates a line box per CSS 2.1.
             ctx.ifc.top.?.has_visible_content = true;
+            try insertInlinePseudoElement(box_gen, node, .before);
             try layout.pushNode();
         },
         .block => |block_inner| switch (block_inner) {
@@ -505,6 +507,11 @@ pub fn nullNode(box_gen: *BoxGen) !?Result {
     if (ifc.depth == 1) {
         return try endMode(box_gen);
     }
+    // Emit ::after before closing this inline box.
+    const inline_box_index = ctx.inline_box.top.?.index;
+    if (ifc.ptr.slice().items(.node)[inline_box_index]) |node| {
+        try insertInlinePseudoElement(box_gen, node, .after);
+    }
     const skip = try popInlineBox(box_gen);
     box_gen.getLayout().popNode();
     ctx.accumulateSkip(skip);
@@ -555,6 +562,57 @@ fn popInlineBox(box_gen: *BoxGen) !Ifc.Size {
     ifc.ptr.slice().items(.skip)[inline_box.index] = inline_box.skip;
     try ifcAddBoxEnd(box_gen.getLayout().box_tree, ifc.ptr, inline_box.index);
     return inline_box.skip;
+}
+
+/// Inject a pseudo-element's string content as glyphs directly into the current IFC.
+/// Used for ::before/::after on inline elements (as opposed to block elements,
+/// which use insertPseudoElement in flow.zig to create a new block+IFC pair).
+/// Leaves computer.current in pseudo-element state; the next setCurrentNode call
+/// from the outer layout loop restores it.
+fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
+    const layout = box_gen.getLayout();
+    const computer = &layout.computer;
+
+    if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
+
+    const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
+    if (gen_content.content == .normal or gen_content.content == .none) return;
+
+    const text: []const u8 = switch (gen_content.content) {
+        .string => |text_id| blk: {
+            const t = layout.inputs.env.getText(text_id);
+            if (t.len == 0) return;
+            break :blk t;
+        },
+        else => return,
+    };
+
+    const font = computer.getSpecifiedValue(.box_gen, .font);
+    const ctx = &box_gen.inline_context;
+    const ifc = ctx.ifc.top.?.ptr;
+
+    const handle: Fonts.Handle = switch (font.font) {
+        .default => layout.inputs.fonts.queryFamily(font.font_family),
+        .none => .invalid,
+    };
+
+    layout.inputs.fonts.setFontSize(handle, font.font_size.px_val());
+    if (layout.inputs.fonts.get(handle)) |hb_font| {
+        const glyph_start: u32 = @intCast(ifc.glyphs.len);
+        try ifcAddText(layout.box_tree, ifc, text, hb_font);
+        const glyph_end: u32 = @intCast(ifc.glyphs.len);
+        if (glyph_end > glyph_start) {
+            try ifc.font_runs.append(layout.allocator, .{
+                .glyph_start = glyph_start,
+                .glyph_end = glyph_end,
+                .font_weight = font.font_weight,
+                .font_style = font.font_style,
+                .text_transform = font.text_transform,
+                .font_size = font.font_size.px_val(),
+            });
+            ctx.ifc.top.?.has_visible_content = true;
+        }
+    }
 }
 
 fn ifcAddBoxStart(box_tree: BoxTreeManaged, ifc: *Ifc, inline_box_index: Ifc.Size) !void {
