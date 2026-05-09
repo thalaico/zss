@@ -105,6 +105,14 @@ pub fn addCustomFont(fonts: *Fonts, ft_face: FT_Face, hb_font: *hb.hb_font_t) Ha
     return @enumFromInt(5 + idx);
 }
 
+/// Reserve a custom slot without populating it (e.g. when @font-face download failed).
+/// queryFamily for this slot falls through to sans-serif. Keeps indices aligned with
+/// other registered names.
+pub fn reserveCustomSlot(fonts: *Fonts) void {
+    if (fonts.custom_count < MAX_CUSTOM) fonts.custom_count += 1;
+    // custom_entries[idx] stays null — queryFamily returns sans-serif as fallback
+}
+
 /// Legacy: set the default (sans-serif) font. Used by demo/test call sites
 /// that don't have a separate FT_Face.
 pub fn setDefaultFont(fonts: *Fonts, font: *hb.hb_font_t, ft_face: hb.FT_Face) Handle {
