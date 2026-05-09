@@ -783,6 +783,23 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                 }
                 // Check hyphenated pseudo-class names manually
                 if (matchHyphenatedPseudoClass(parser, main_component_index)) |pc| return pc;
+                // CSS2 legacy: :before/:after are pseudo-elements, not pseudo-classes.
+                // Return null so parseSubclassSelector resets and parsePseudoElementSelector handles them.
+                {
+                    var buf: [6]u8 = undefined;
+                    var blen: usize = 0;
+                    var bit = parser.source_code.identTokenIterator(main_component_index.location(parser.ast));
+                    while (bit.next()) |cp| {
+                        if (cp > 127 or blen >= buf.len) break;
+                        buf[blen] = @intCast(cp | 0x20);
+                        blen += 1;
+                    }
+                    const bname = buf[0..blen];
+                    if (std.mem.eql(u8, bname, "before") or std.mem.eql(u8, bname, "after")) {
+                        parser.sequence.reset(main_component_index);
+                        return null;
+                    }
+                }
             } else {
                 // pseudo == .element or .legacy_element
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoElement)) |pe| {
