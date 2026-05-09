@@ -846,6 +846,64 @@ pub fn @"background-size"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba
 }
 
 
+/// CSS font shorthand: [style] [variant] [weight] <size>[/<line-height>] <family>
+/// Handles the common form: font: normal normal normal 14px/1 FontAwesome
+pub fn font(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.font) {
+    ctx.initDecl(declaration_index);
+
+    var font_style: types.FontStyle = .normal;
+    var font_weight: types.FontWeight = .normal;
+
+    // Parse optional style/variant/weight keywords in any order (up to 4 tokens).
+    // "normal" is valid for style, variant, and weight — consuming it is a no-op.
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const save = ctx.savePoint();
+        if (values.parse.fontStyle(ctx)) |s| {
+            font_style = s;
+            continue;
+        }
+        ctx.resetPoint(save);
+        if (values.parse.fontWeight(ctx)) |w| {
+            font_weight = w;
+            continue;
+        }
+        ctx.resetPoint(save);
+        break;
+    }
+
+    // Required font-size.
+    const size = values.parse.fontSize(ctx) orelse return null;
+
+    // Optional /line-height — consume the slash and the value.
+    var lh: types.LineHeight = 0; // 0 = normal
+    {
+        const save = ctx.savePoint();
+        if (ctx.next()) |item| {
+            if (item.tag == .token_delim) {
+                // Assume '/' — parse line-height value.
+                if (values.parse.lineHeight(ctx)) |h| {
+                    lh = h;
+                }
+            } else {
+                ctx.resetPoint(item.index);
+            }
+        }
+        _ = save;
+    }
+
+    // Required font-family list.
+    const family = values.parse.fontFamily(ctx) orelse return null;
+
+    return .{ .font = .{
+        .font_family = .{ .declared = family },
+        .font_size = .{ .declared = size },
+        .font_weight = .{ .declared = font_weight },
+        .font_style = .{ .declared = font_style },
+        .line_height = .{ .declared = lh },
+    } };
+}
+
 pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-family") {
     ctx.initDecl(declaration_index);
     // font-family consumes the entire comma-separated list internally;
