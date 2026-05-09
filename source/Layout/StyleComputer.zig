@@ -182,6 +182,37 @@ pub fn getSpecifiedValue(sc: StyleComputer, comptime stage: Stage, comptime grou
     return sc.getSpecifiedValueForElement(stage, group, sc.current.node, sc.current.cascaded_values);
 }
 
+/// Like getSpecifiedValue but reads from a specific node instead of sc.current.node.
+/// Use when sc.current.node may not be the element you need (e.g. ::after from nullNode).
+pub fn getSpecifiedValueForNode(
+    sc: StyleComputer,
+    comptime stage: Stage,
+    comptime group: groups.Tag,
+    node: NodeId,
+) SpecifiedValues(group) {
+    const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
+    return sc.getSpecifiedValueForElement(stage, group, node, cascaded_values);
+}
+
+/// Like resolvedFontSizePx but for a specific node instead of sc.current.node.
+pub fn resolvedFontSizePxForNode(sc: StyleComputer, comptime stage: Stage, node: NodeId) f32 {
+    const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
+    const font = sc.getSpecifiedValueForElement(stage, .font, node, cascaded_values);
+    return switch (font.font_size) {
+        .px => |v| v,
+        .em => |em_val| blk: {
+            const parent = node.parent(sc.env) orelse break :blk em_val * 16.0;
+            const parent_cascaded: *const CascadeStorage = sc.env.cascade_db.getStorage(parent) orelse &.{};
+            const parent_font = sc.getSpecifiedValueForElement(stage, .font, parent, parent_cascaded);
+            const parent_fs: f32 = switch (parent_font.font_size) {
+                .px => |v| v,
+                .em => |pem| pem * 16.0,
+            };
+            break :blk em_val * parent_fs;
+        },
+    };
+}
+
 fn getSpecifiedValueForElement(
     self: StyleComputer,
     comptime stage: Stage,

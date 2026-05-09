@@ -248,6 +248,13 @@ pub fn beginMode(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, used_sizes:
 fn stfInsertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
+    // Capture parent font BEFORE switching to pseudo-element context.
+    // CSS pseudo-elements inherit font properties from their parent element;
+    // after setPseudoElement, computer.current points to the pseudo-element's
+    // own cascade which has no font-family, returning the initial 'serif'.
+    const parent_font = computer.getSpecifiedValue(.box_gen, .font);
+    // Resolve em font-size to px now (parent context). px_val() panics on em.
+    const resolved_font_size_px = computer.resolvedFontSizePx(.box_gen);
     if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
 
     const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
@@ -261,18 +268,16 @@ fn stfInsertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.Pseu
         },
         else => return,
     };
-
-    const font = computer.getSpecifiedValue(.box_gen, .font);
     const subtree = try box_gen.pushSubtree();
     try box_gen.stf_context.appendIfcObject(layout.allocator, subtree);
     try box_gen.stacks.mode.push(layout.allocator, .@"inline");
     const result = try @"inline".addPseudoElementText(box_gen, text, .{
-        .font = font.font,
-        .font_family = font.font_family,
-        .font_size = font.font_size,
-        .font_weight = font.font_weight,
-        .font_style = font.font_style,
-        .text_transform = font.text_transform,
+        .font = parent_font.font,
+        .font_family = parent_font.font_family,
+        .font_size = .{ .px = resolved_font_size_px },
+        .font_weight = parent_font.font_weight,
+        .font_style = parent_font.font_style,
+        .text_transform = parent_font.text_transform,
     });
     assert(box_gen.stacks.mode.pop() == .@"inline");
     box_gen.popSubtree();

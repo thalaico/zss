@@ -71,7 +71,6 @@ pub const Result = struct {
 /// and pop it after this returns.
 pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: FontProps) !Result {
     const layout = box_gen.getLayout();
-
     // Create IFC with root inline box
     try beginMode(box_gen, .normal, box_gen.containingBlockSize());
 
@@ -107,7 +106,7 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
                 .text_transform = font_props.text_transform,
                 .font_size = font_props.font_size.px_val(),
             });
-    }
+        }
     }
 
     // Solve metrics, split into line boxes, finalize IFC
@@ -573,6 +572,12 @@ fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.P
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
 
+    // Capture parent font and resolved font-size using the explicit element node.
+    // sc.current.node may be a text node (e.g. ::after called from nullNode), so we
+    // must NOT use getSpecifiedValue() which reads sc.current.node and asserts element.
+    const parent_font = computer.getSpecifiedValueForNode(.box_gen, .font, node);
+    const font_size_px = computer.resolvedFontSizePxForNode(.box_gen, node);
+
     if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
 
     const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
@@ -587,16 +592,15 @@ fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.P
         else => return,
     };
 
-    const font = computer.getSpecifiedValue(.box_gen, .font);
     const ctx = &box_gen.inline_context;
     const ifc = ctx.ifc.top.?.ptr;
 
-    const handle: Fonts.Handle = switch (font.font) {
-        .default => layout.inputs.fonts.queryFamily(font.font_family),
+    const handle: Fonts.Handle = switch (parent_font.font) {
+        .default => layout.inputs.fonts.queryFamily(parent_font.font_family),
         .none => .invalid,
     };
 
-    layout.inputs.fonts.setFontSize(handle, font.font_size.px_val());
+    layout.inputs.fonts.setFontSize(handle, font_size_px);
     if (layout.inputs.fonts.get(handle)) |hb_font| {
         const glyph_start: u32 = @intCast(ifc.glyphs.len);
         try ifcAddText(layout.box_tree, ifc, text, hb_font);
@@ -605,10 +609,10 @@ fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.P
             try ifc.font_runs.append(layout.allocator, .{
                 .glyph_start = glyph_start,
                 .glyph_end = glyph_end,
-                .font_weight = font.font_weight,
-                .font_style = font.font_style,
-                .text_transform = font.text_transform,
-                .font_size = font.font_size.px_val(),
+                .font_weight = parent_font.font_weight,
+                .font_style = parent_font.font_style,
+                .text_transform = parent_font.text_transform,
+                .font_size = font_size_px,
             });
             ctx.ifc.top.?.has_visible_content = true;
         }
