@@ -506,11 +506,13 @@ pub const FontStyle = enum {
     italic,
     oblique,
 };
-pub const FontFamily = enum {
+pub const FontFamily = union(enum) {
     sans_serif,
     serif,
     monospace,
     system_ui,
+    /// Index into the custom font registry (populated by @font-face rules).
+    custom: u8,
 };
 
 pub const TextDecoration = enum {

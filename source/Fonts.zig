@@ -67,6 +67,12 @@ pub fn destroyHbFont(font: *hb.hb_font_t) void {
 
 /// Per-family font slots. Externally managed (caller owns the hb_font_t).
 fonts: [4]?FontEntry = .{ null, null, null, null },
+/// Custom font slots for @font-face registered fonts.
+/// Handles 5..5+MAX_CUSTOM-1 map to custom_entries[0..MAX_CUSTOM-1].
+custom_entries: [MAX_CUSTOM]?FontEntry = .{null} ** MAX_CUSTOM,
+custom_count: u8 = 0,
+
+pub const MAX_CUSTOM = 8;
 
 pub fn init() Fonts {
     return .{};
@@ -76,11 +82,27 @@ pub fn deinit(fonts: *Fonts) void {
     _ = fonts;
 }
 
-/// Register a font for the given family. Returns a handle for that family.
+/// Register a font for the given generic family. Returns a handle for that family.
+/// For custom fonts, use addCustomFont instead.
 pub fn setFont(fonts: *Fonts, font: *hb.hb_font_t, ft_face: hb.FT_Face, family: types.FontFamily) Handle {
-    const slot = @intFromEnum(family);
+    const slot: usize = switch (family) {
+        .sans_serif => 0,
+        .serif => 1,
+        .monospace => 2,
+        .system_ui => 3,
+        .custom => return .invalid,
+    };
     fonts.fonts[slot] = .{ .hb_font = font, .ft_face = ft_face };
     return familyToHandle(family);
+}
+
+/// Register a @font-face custom font. Returns its Handle (5 + index), or .invalid if at capacity.
+pub fn addCustomFont(fonts: *Fonts, ft_face: FT_Face, hb_font: *hb.hb_font_t) Handle {
+    if (fonts.custom_count >= MAX_CUSTOM) return .invalid;
+    const idx = fonts.custom_count;
+    fonts.custom_entries[idx] = .{ .hb_font = hb_font, .ft_face = ft_face };
+    fonts.custom_count += 1;
+    return @enumFromInt(5 + idx);
 }
 
 /// Legacy: set the default (sans-serif) font. Used by demo/test call sites
@@ -91,10 +113,26 @@ pub fn setDefaultFont(fonts: *Fonts, font: *hb.hb_font_t, ft_face: hb.FT_Face) H
 
 /// Query for the best font matching a family. Falls back to sans-serif.
 pub fn queryFamily(fonts: Fonts, family: types.FontFamily) Handle {
-    const slot = @intFromEnum(family);
-    if (fonts.fonts[slot] != null) return familyToHandle(family);
-    if (fonts.fonts[0] != null) return .sans_serif;
-    return .invalid;
+    switch (family) {
+        .custom => |idx| {
+            if (idx < fonts.custom_count and fonts.custom_entries[idx] != null)
+                return @enumFromInt(5 + idx);
+            if (fonts.fonts[0] != null) return .sans_serif;
+            return .invalid;
+        },
+        else => {
+            const slot: usize = switch (family) {
+                .sans_serif => 0,
+                .serif => 1,
+                .monospace => 2,
+                .system_ui => 3,
+                .custom => unreachable,
+            };
+            if (fonts.fonts[slot] != null) return familyToHandle(family);
+            if (fonts.fonts[0] != null) return .sans_serif;
+            return .invalid;
+        },
+    }
 }
 
 /// Legacy: query for the default font handle.
@@ -103,6 +141,14 @@ pub fn query(fonts: Fonts) Handle {
 }
 
 pub fn get(fonts: Fonts, handle: Handle) ?*hb.hb_font_t {
+    const raw = @intFromEnum(handle);
+    if (raw >= 5) {
+        const idx = raw - 5;
+        if (idx < fonts.custom_count) {
+            return if (fonts.custom_entries[idx]) |e| e.hb_font else null;
+        }
+        return null;
+    }
     return switch (handle) {
         .invalid => null,
         .sans_serif => if (fonts.fonts[0]) |e| e.hb_font else null,
@@ -116,6 +162,18 @@ pub fn get(fonts: Fonts, handle: Handle) ?*hb.hb_font_t {
 /// Resize the underlying FreeType face so HarfBuzz shapes at the given px size.
 /// Mutates the FT face (external C state), not the Fonts struct itself.
 pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
+    const raw = @intFromEnum(handle);
+    if (raw >= 5) {
+        const idx = raw - 5;
+        if (idx < fonts.custom_count) {
+            if (fonts.custom_entries[idx]) |entry| {
+                const size_26_6: i32 = @intFromFloat(size_px * 64.0);
+                _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
+                hb.hb_ft_font_changed(entry.hb_font);
+            }
+        }
+        return;
+    }
     const slot: usize = switch (handle) {
         .sans_serif => 0,
         .serif => 1,
@@ -141,6 +199,7 @@ fn familyToHandle(family: types.FontFamily) Handle {
         .serif => .serif,
         .monospace => .monospace,
         .system_ui => .system_ui,
+        .custom => |idx| @enumFromInt(5 + idx),
     };
 }
 
@@ -161,16 +220,19 @@ pub const DesignMetrics = struct {
 };
 
 pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
-    const slot: usize = switch (handle) {
-        .sans_serif => 0,
-        .serif => 1,
-        .monospace => 2,
-        .system_ui => 3,
-        .invalid => return .{ .ascender = 0, .descender = 0, .line_gap = 0, .units_per_em = 0 },
-        _ => return .{ .ascender = 0, .descender = 0, .line_gap = 0, .units_per_em = 0 },
+    const raw = @intFromEnum(handle);
+    const entry: ?FontEntry = if (raw >= 5) blk: {
+        const idx = raw - 5;
+        break :blk if (idx < fonts.custom_count) fonts.custom_entries[idx] else null;
+    } else switch (handle) {
+        .sans_serif => fonts.fonts[0],
+        .serif => fonts.fonts[1],
+        .monospace => fonts.fonts[2],
+        .system_ui => fonts.fonts[3],
+        else => null,
     };
-    if (fonts.fonts[slot]) |entry| {
-        const face = entry.ft_face[0];
+    if (entry) |e| {
+        const face = e.ft_face[0];
         // FreeType exposes face.height = ascender - descender + lineGap (font units).
         // Back out lineGap: descender is negative in FT, so abs(descender) = -descender.
         const line_gap_i32: i32 = @as(i32, face.height) - @as(i32, face.ascender) - @as(i32, -face.descender);

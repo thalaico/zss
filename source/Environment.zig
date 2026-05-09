@@ -49,6 +49,9 @@ urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 /// Set to 0 to disable media query filtering (all @media blocks included).
 viewport_width_px: u32 = 0,
 viewport_height_px: u32 = 0,
+/// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
+/// Used by the CSS font-family parser to recognize custom font names.
+custom_font_names: []const []const u8 = &.{},
 testing: Testing,
 
 pub const CaseOptions = struct {

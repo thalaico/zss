@@ -69,6 +69,7 @@ pub const Token = union(enum) {
         namespace,
         media,
         supports,
+        @"font-face",
     };
 
     pub fn cast(token: Token, comptime Derived: type) Derived {

@@ -236,6 +236,7 @@ const RuleProcessor = struct {
                 // rules to apply (missing features fail gracefully at render time).
                 try ctx.handleSupportsRule(at_rule_index);
             },
+            .@"font-face" => {},
         }
     }
 

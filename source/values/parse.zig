@@ -76,6 +76,8 @@ pub const Context = struct {
     viewport_height_px: f32 = 600.0,
     /// Computed font-size in px for em resolution. Defaults to initial (16px).
     font_size_px: f32 = 16.0,
+    /// Lowercase names of @font-face registered custom fonts. Set from env.custom_font_names.
+    custom_font_names: []const []const u8 = &.{},
 
     pub const State = struct {
         mode: Mode,
@@ -869,6 +871,7 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
 /// CSS font-family: comma-separated list of family names / generic keywords.
 /// Scans the list and returns the first recognized generic family.
 /// Named fonts are mapped to their nearest generic category.
+/// Custom @font-face fonts (registered in ctx.custom_font_names) are returned as .custom(idx).
 pub fn fontFamily(ctx: *Context) ?types.FontFamily {
     const font_family_kvs = comptime &[_]SourceCode.KV(types.FontFamily){
         // Generic CSS families
@@ -903,13 +906,20 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
             if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, font_family_kvs)) |family| {
                 return family;
             }
+            // Check registered custom fonts (unquoted identifier, e.g. from font: shorthand)
+            if (identMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
+                return .{ .custom = idx };
+            }
             // Unrecognized identifier — skip to next comma-separated entry.
         } else if (ctx.next()) |item| {
             // Skip over string tokens and other unrecognized tokens.
             if (item.tag == .token_comma) continue;
             if (item.tag == .token_string) {
-                // Quoted font name — match against known families.
+                // Quoted font name — check custom fonts first, then known generic mappings.
                 const loc = item.index.location(ctx.ast);
+                if (stringMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
+                    return .{ .custom = idx };
+                }
                 if (matchQuotedFontFamily(ctx.source_code, loc)) |family| {
                     return family;
                 }
@@ -927,6 +937,22 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
             ctx.resetPoint(next_item.index);
             break;
         }
+    }
+    return null;
+}
+
+/// Check an unquoted identifier against registered custom font names (case-insensitive).
+fn identMatchesCustomFont(source_code: SourceCode, location: SourceCode.Location, custom_names: []const []const u8) ?u8 {
+    for (custom_names, 0..) |name, idx| {
+        if (identEqlIgnoreCase(source_code, location, name)) return @intCast(idx);
+    }
+    return null;
+}
+
+/// Check a quoted string token against registered custom font names (case-insensitive).
+fn stringMatchesCustomFont(source_code: SourceCode, location: SourceCode.Location, custom_names: []const []const u8) ?u8 {
+    for (custom_names, 0..) |name, idx| {
+        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return @intCast(idx);
     }
     return null;
 }
@@ -958,6 +984,17 @@ fn stringEqlIgnoreCaseImpl(source_code: SourceCode, location: SourceCode.Locatio
         if (toLowercase(@as(u21, byte)) != toLowercase(actual)) return false;
     }
     // String must be fully consumed for exact match.
+    return it.next() == null;
+}
+
+/// Compare an unquoted identifier token against an ASCII string (case-insensitive).
+fn identEqlIgnoreCase(source_code: SourceCode, location: SourceCode.Location, ascii_string: []const u8) bool {
+    const toLowercase = zss.unicode.latin1ToLowercase;
+    var it = source_code.identTokenIterator(location);
+    for (ascii_string) |byte| {
+        const actual = it.next() orelse return false;
+        if (toLowercase(@as(u21, byte)) != toLowercase(actual)) return false;
+    }
     return it.next() == null;
 }
 
