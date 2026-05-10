@@ -614,7 +614,7 @@ test "complex selector matching" {
             var data_list: std.ArrayList(Data) = .empty;
             defer data_list.deinit(allocator);
             try parser.parseComplexSelectorList(&data_list, allocator, component_list_index.children(ast));
-            try std.testing.expectEqual(expected, matchElement(data_list.items, 0, env, target));
+            try std.testing.expectEqual(expected, matchElement(data_list.items, 0, env, target, allocator));
         }
     };
 
