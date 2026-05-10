@@ -439,10 +439,26 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             const inline_box_index = try pushInlineBox(box_gen, node);
             const generated_box = GeneratedBox{ .inline_box = .{ .ifc_id = ifc.ptr.id, .index = inline_box_index } };
             try layout.box_tree.setGeneratedBox(node, generated_box);
-            // Inline boxes (<span>, <a>, etc.) are visible content even before
-            // we descend into their children. An empty <span> with padding/
-            // border still generates a line box per CSS 2.1.
-            ctx.ifc.top.?.has_visible_content = true;
+            // CSS 2.1 §9.4.2: inline boxes are visible content only when they
+            // have non-zero margins, padding, or borders. An empty <a> wrapping
+            // only an abs-positioned child must NOT set this flag — doing so
+            // gives the IFC a non-zero strut that shifts subsequent floats down.
+            if (!ctx.ifc.top.?.has_visible_content) {
+                const ifc_slice = ifc.ptr.slice();
+                const s = ifc_slice.items(.inline_start)[inline_box_index];
+                const e = ifc_slice.items(.inline_end)[inline_box_index];
+                const bs = ifc_slice.items(.block_start)[inline_box_index];
+                const be = ifc_slice.items(.block_end)[inline_box_index];
+                const m = ifc_slice.items(.margins)[inline_box_index];
+                if (s.border != 0 or s.padding != 0 or
+                    e.border != 0 or e.padding != 0 or
+                    bs.border != 0 or bs.padding != 0 or
+                    be.border != 0 or be.padding != 0 or
+                    m.start != 0 or m.end != 0)
+                {
+                    ctx.ifc.top.?.has_visible_content = true;
+                }
+            }
             try insertInlinePseudoElement(box_gen, node, .before);
             try layout.pushNode();
         },
