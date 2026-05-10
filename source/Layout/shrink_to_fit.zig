@@ -38,6 +38,10 @@ pub const Context = struct {
         object_index: Size,
         object_skip: Size,
         auto_width: Unit,
+        /// Sum of consecutive IFC min-widths on the current inline run.
+        /// Consecutive IFCs (e.g. ::before pseudo + sibling text) are on the
+        /// same line, so their widths add. A block element resets this to 0.
+        inline_run_width: Unit,
     }) = .init(undefined),
 
     const Size = u32;
@@ -112,6 +116,7 @@ pub const Context = struct {
             .object_index = index,
             .object_skip = 1,
             .auto_width = 0,
+            .inline_run_width = 0,
         });
     }
 
@@ -140,6 +145,7 @@ pub const Context = struct {
             .object_index = index,
             .object_skip = 1,
             .auto_width = 0,
+            .inline_run_width = 0,
         });
         ctx.main_object.top.?.depth += 1;
     }
@@ -175,6 +181,7 @@ pub const Context = struct {
 
         const parent = &ctx.object.top.?;
         parent.object_skip += 1;
+        parent.inline_run_width = 0;
         parent.auto_width = @max(parent.auto_width, full_width);
     }
 
@@ -198,7 +205,10 @@ pub const Context = struct {
     fn setIfcObjectResult(ctx: *Context, layout_result: @"inline".Result) void {
         ctx.tree.items(.data)[ctx.tree.len - 1].ifc.layout_result = layout_result;
         const parent = &ctx.object.top.?;
-        parent.auto_width = @max(parent.auto_width, layout_result.min_width);
+        // Consecutive IFCs (e.g. ::before pseudo + sibling text) are on the same
+        // inline line, so their min-widths add. Block elements reset inline_run_width.
+        parent.inline_run_width += layout_result.min_width;
+        parent.auto_width = @max(parent.auto_width, parent.inline_run_width);
     }
 
     fn appendObject(ctx: *Context, allocator: Allocator, object: Object) !Size {
@@ -217,6 +227,7 @@ pub const Context = struct {
                     data.used.padding_inline_start + data.used.padding_inline_end +
                     data.used.border_inline_start + data.used.border_inline_end +
                     data.used.margin_inline_start_untagged + data.used.margin_inline_end_untagged;
+                parent.inline_run_width = 0;
                 parent.auto_width = @max(parent.auto_width, full_width);
             },
             .flow_normal, .ifc => unreachable,
