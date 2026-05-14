@@ -284,6 +284,15 @@ fn layoutGridChildrenInSubtree(
 
                 // Re-run offsetChildBlocks to recompute vertical positions
                 // with margin collapsing and get correct auto_height.
+                // NOTE (Bug 1): For flex/grid containers this call is WRONG —
+                // relayoutSubtree already ran offsetChildBlocksFlex/layoutGridChildren
+                // correctly, but this overwrites those heights with a block-flow
+                // traversal that counts whitespace IFC nodes (skipped by flex/grid),
+                // inflating min-content rows by ~45px (Wikipedia .vector-page-titlebar).
+                // FIX: guard with `!is_flex and !is_grid` using layout.box_gen maps.
+                // DEFERRED: apply only together with Bug 2 (#right-nav flex) fix,
+                // since these spurious heights compensate for the JS-only CentralNotice
+                // banner (105px) that ZenSurf never renders. Fixing alone regresses VP.
                 const offset_result = flow.offsetChildBlocks(
                     subtree, child, child_skip, content_w, box_offsets[child].content_pos.y, layout.box_tree.ptr,
                 );
