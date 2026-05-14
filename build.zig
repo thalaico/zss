@@ -95,7 +95,9 @@ fn addUnitTests(b: *Build, config: Config, zss: *Module) *Step.Run {
     const step = b.step("test-units", "Run unit tests");
     step.dependOn(&run.step);
     step.dependOn(&install.step);
-    b.getInstallStep().dependOn(&install.step);
+    // Unit tests use zgl (OpenGL) which has tail-call issues on x86_64 stage2.
+    // Exclude from default install; run with `zig build test-units` explicitly.
+    // b.getInstallStep().dependOn(&install.step);
 
     return run;
 }
@@ -190,7 +192,9 @@ fn addDemo(b: *Build, config: Config, zss: *Module) void {
     const step = b.step("demo", "Run a graphical demo program");
     step.dependOn(&run.step);
     step.dependOn(&install.step);
-    b.getInstallStep().dependOn(&install.step);
+    // Demo uses zgl/mach-glfw (OpenGL) which has tail-call issues on x86_64 stage2.
+    // Exclude from default install; run with `zig build demo` explicitly.
+    // b.getInstallStep().dependOn(&install.step);
 }
 
 fn addExamples(b: *Build, config: Config, zss: *Module) void {

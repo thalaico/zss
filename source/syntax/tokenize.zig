@@ -487,7 +487,7 @@ pub fn consumeNumber(source_code: []const u8, location: *Location) !ConsumeNumbe
         .number => {
             if (buffer.overflow()) return .{ .number = null };
             var float = std.fmt.parseFloat(Token.Float, buffer.slice()) catch |err| switch (err) {
-                error.InvalidCharacter => unreachable,
+                error.InvalidCharacter => return .{ .number = null },
             };
             // TODO: Preserve negative zero?
             if (std.math.isPositiveZero(float) or std.math.isNegativeZero(float)) {
