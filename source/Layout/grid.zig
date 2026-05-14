@@ -284,22 +284,27 @@ fn layoutGridChildrenInSubtree(
 
                 // Re-run offsetChildBlocks to recompute vertical positions
                 // with margin collapsing and get correct auto_height.
-                // NOTE (Bug 1): For flex/grid containers this call is WRONG —
-                // relayoutSubtree already ran offsetChildBlocksFlex/layoutGridChildren
-                // correctly, but this overwrites those heights with a block-flow
-                // traversal that counts whitespace IFC nodes (skipped by flex/grid),
-                // inflating min-content rows by ~45px (Wikipedia .vector-page-titlebar).
-                // FIX: guard with `!is_flex and !is_grid` using layout.box_gen maps.
-                // DEFERRED: apply only together with Bug 2 (#right-nav flex) fix,
-                // since these spurious heights compensate for the JS-only CentralNotice
-                // banner (105px) that ZenSurf never renders. Fixing alone regresses VP.
-                const offset_result = flow.offsetChildBlocks(
-                    subtree, child, child_skip, content_w, box_offsets[child].content_pos.y, layout.box_tree.ptr,
+                // Guard: skip for flex/grid containers — relayoutSubtree already ran
+                // the correct layout (offsetChildBlocksFlex / layoutGridChildren).
+                // Block-flow traversal would overwrite those heights by counting
+                // whitespace IFC nodes that flex/grid correctly skip via
+                // has_visible_content=false, inflating min-content rows by ~45px.
+                const BoxGen = @import("BoxGen.zig");
+                const child_is_flex = layout.box_gen.flex_containers.contains(
+                    BoxGen.FlexContainerKey{ .subtree_id = subtree_id, .block_idx = child },
                 );
-                const edge_top = box_offsets[child].content_pos.y;
-                const edge_bot = box_offsets[child].border_size.h - edge_top - box_offsets[child].content_size.h;
-                box_offsets[child].content_size.h = offset_result.auto_height;
-                box_offsets[child].border_size.h = edge_top + offset_result.auto_height + edge_bot;
+                const child_is_grid = layout.box_gen.grid_containers.contains(
+                    BoxGen.GridContainerKey{ .subtree_id = subtree_id, .block_idx = child },
+                );
+                if (!child_is_flex and !child_is_grid) {
+                    const offset_result = flow.offsetChildBlocks(
+                        subtree, child, child_skip, content_w, box_offsets[child].content_pos.y, layout.box_tree.ptr,
+                    );
+                    const edge_top = box_offsets[child].content_pos.y;
+                    const edge_bot = box_offsets[child].border_size.h - edge_top - box_offsets[child].content_size.h;
+                    box_offsets[child].content_size.h = offset_result.auto_height;
+                    box_offsets[child].border_size.h = edge_top + offset_result.auto_height + edge_bot;
+                }
             } else {
                 box_offsets[child].border_size.w = cell_width;
                 if (content_w > 0) {
