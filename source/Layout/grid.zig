@@ -652,22 +652,36 @@ fn relayoutSubtree(
                 const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
                 relayoutSubtree(layout, child_subtree, child_subtree_id, 0, child_content_w);
 
-                // Re-run offsetChildBlocks on child subtree for correct heights.
-                const child_skip = child_subtree.items(.skip)[0];
-                const child_offset_result = flow.offsetChildBlocks(
-                    child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
+                // Re-run offsetChildBlocks for flow containers only.
+                // For flex/grid child roots relayoutSubtree already computed
+                // the correct height; calling offsetChildBlocks on them
+                // overwrites it with a block-flow traversal that inflates
+                // auto-height by counting whitespace IFCs (~45-66px on Wikipedia).
+                const BoxGen = @import("BoxGen.zig");
+                const child_root_is_flex = layout.box_gen.flex_containers.contains(
+                    BoxGen.FlexContainerKey{ .subtree_id = child_subtree_id, .block_idx = 0 },
                 );
-                const child_root = &child_subtree.items(.box_offsets)[0];
-                const child_top = child_root.content_pos.y;
-                const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
-                child_root.content_size.h = child_offset_result.auto_height;
-                child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+                const child_root_is_grid = layout.box_gen.grid_containers.contains(
+                    BoxGen.GridContainerKey{ .subtree_id = child_subtree_id, .block_idx = 0 },
+                );
+                if (!child_root_is_flex and !child_root_is_grid) {
+                    const child_skip = child_subtree.items(.skip)[0];
+                    const child_offset_result = flow.offsetChildBlocks(
+                        child_subtree, 0, child_skip, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
+                    );
+                    const child_root = &child_subtree.items(.box_offsets)[0];
+                    const child_top = child_root.content_pos.y;
+                    const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
+                    child_root.content_size.h = child_offset_result.auto_height;
+                    child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+                }
 
                 // Update this proxy's outer height to match the child subtree's new height.
+                const child_root_bo = &child_subtree.items(.box_offsets)[0];
                 const proxy_top = bo.content_pos.y;
                 const proxy_bot = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
-                bo.content_size.h = child_root.border_size.h;
-                bo.border_size.h = proxy_top + child_root.border_size.h + proxy_bot;
+                bo.content_size.h = child_root_bo.border_size.h;
+                bo.border_size.h = proxy_top + child_root_bo.border_size.h + proxy_bot;
             }
             return;
         },
@@ -769,23 +783,33 @@ fn relayoutSubtree(
                         const child_subtree = layout.box_tree.ptr.getSubtree(child_subtree_id).view();
                         relayoutSubtree(layout, child_subtree, child_subtree_id, 0, child_content_w);
 
-                        // Re-run offsetChildBlocks on child subtree for correct heights.
-                        const child_skip2 = child_subtree.items(.skip)[0];
-                        const child_offset_result = flow.offsetChildBlocks(
-                            child_subtree, 0, child_skip2, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
+                        // Re-run offsetChildBlocks for flow containers only.
+                        const BoxGen2 = @import("BoxGen.zig");
+                        const child_root_is_flex2 = layout.box_gen.flex_containers.contains(
+                            BoxGen2.FlexContainerKey{ .subtree_id = child_subtree_id, .block_idx = 0 },
                         );
-                        const child_root = &child_subtree.items(.box_offsets)[0];
-                        const child_top = child_root.content_pos.y;
-                        const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
-                        child_root.content_size.h = child_offset_result.auto_height;
-                        child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+                        const child_root_is_grid2 = layout.box_gen.grid_containers.contains(
+                            BoxGen2.GridContainerKey{ .subtree_id = child_subtree_id, .block_idx = 0 },
+                        );
+                        if (!child_root_is_flex2 and !child_root_is_grid2) {
+                            const child_skip2 = child_subtree.items(.skip)[0];
+                            const child_offset_result = flow.offsetChildBlocks(
+                                child_subtree, 0, child_skip2, child_content_w, child_subtree.items(.box_offsets)[0].content_pos.y, layout.box_tree.ptr,
+                            );
+                            const child_root = &child_subtree.items(.box_offsets)[0];
+                            const child_top = child_root.content_pos.y;
+                            const child_bot = child_root.border_size.h - child_root.content_pos.y - child_root.content_size.h;
+                            child_root.content_size.h = child_offset_result.auto_height;
+                            child_root.border_size.h = child_top + child_offset_result.auto_height + child_bot;
+                        }
 
                         // Update the proxy to match child subtree's new height.
+                        const child_root_bo2 = &child_subtree.items(.box_offsets)[0];
                         const proxy_top = proxy_bo.content_pos.y;
                         const proxy_bot = proxy_bo.border_size.h - proxy_bo.content_pos.y - proxy_bo.content_size.h;
                         const proxy_bo_mut = &box_offsets[child];
-                        proxy_bo_mut.content_size.h = child_root.border_size.h;
-                        proxy_bo_mut.border_size.h = proxy_top + child_root.border_size.h + proxy_bot;
+                        proxy_bo_mut.content_size.h = child_root_bo2.border_size.h;
+                        proxy_bo_mut.border_size.h = proxy_top + child_root_bo2.border_size.h + proxy_bot;
                     }
                 },
             }
