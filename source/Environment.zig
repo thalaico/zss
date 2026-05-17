@@ -548,6 +548,8 @@ pub const NodeProperty = struct {
     text: TextId = .empty_string,
     colspan: u8 = 1,
     explicit_width_px: u16 = 0, // HTML width attr in px, 0 = auto
+    aspect_ratio_w: u16 = 0,
+    aspect_ratio_h: u16 = 0,
 };
 
 const NodeProperties = struct {

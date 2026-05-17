@@ -951,7 +951,21 @@ pub fn popFlowBlock(
         .normal => block_info.sizes.get(.inline_size).?,
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
     };
-    const height = flow.solveUsedHeight(block_info.sizes, auto_height);
+    const height = blk: {
+        const base = flow.solveUsedHeight(block_info.sizes, auto_height);
+        if (block_info.sizes.get(.block_size) == null and auto_height == 0 and width > 0) {
+            const ar_w = layout.inputs.env.getNodeProperty(.aspect_ratio_w, block_info.node);
+            const ar_h = layout.inputs.env.getNodeProperty(.aspect_ratio_h, block_info.node);
+            if (ar_w > 0 and ar_h > 0) {
+                break :blk solve.clampSize(
+                    @divFloor(width * @as(math.Unit, ar_h), @as(math.Unit, ar_w)),
+                    block_info.sizes.min_block_size,
+                    block_info.sizes.max_block_size,
+                );
+            }
+        }
+        break :blk base;
+    };
     // Table cell vertical-align: shift content origin down to center/bottom.
     // Adjusts padding so content_pos.y moves down without changing border_size.
     // This affects both inline text (line boxes) and block children uniformly.
@@ -1074,7 +1088,22 @@ pub fn popStfFlowBlock2(
     const parent_edge = sizes.border_block_start + sizes.padding_block_start;
     const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, box_tree.ptr).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
-    const height = flow.solveUsedHeight(sizes, auto_height);
+    const height = blk: {
+        const base = flow.solveUsedHeight(sizes, auto_height);
+        if (sizes.get(.block_size) == null and auto_height == 0 and width > 0) {
+            const env = box_gen.getLayout().inputs.env;
+            const ar_w = env.getNodeProperty(.aspect_ratio_w, node);
+            const ar_h = env.getNodeProperty(.aspect_ratio_h, node);
+            if (ar_w > 0 and ar_h > 0) {
+                break :blk solve.clampSize(
+                    @divFloor(width * @as(math.Unit, ar_h), @as(math.Unit, ar_w)),
+                    sizes.min_block_size,
+                    sizes.max_block_size,
+                );
+            }
+        }
+        break :blk base;
+    };
     // STF flow block: always flow (this is the split-text-flow subtree path).
     setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false, .flow);
 
