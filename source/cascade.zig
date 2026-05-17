@@ -44,6 +44,10 @@ pub const Source = struct {
     /// These declaration blocks must be the results of parsing [style attributes](https://www.w3.org/TR/css-style-attr/),
     /// or some equivalent mechanism by which the document applies style information directly to a specific element.
     style_attrs_normal: std.AutoHashMapUnmanaged(zss.Environment.NodeId, Block) = .empty,
+    /// Pairs of elements and normal declaration blocks from HTML presentational attributes
+    /// (e.g. width="100%", bgcolor="#fff"). Per CSS Cascading §6.4.2, these have specificity 0
+    /// and must lose to any CSS selector declaration. Applied after selectors in the cascade.
+    presentational_attrs_normal: std.AutoHashMapUnmanaged(zss.Environment.NodeId, Block) = .empty,
     /// Pairs of complex selectors and important declaration blocks.
     /// This list must be sorted such that selectors with higher cascade order appear earlier.
     selectors_important: std.MultiArrayList(SelectorBlock) = .empty,
@@ -60,6 +64,7 @@ pub const Source = struct {
     pub fn deinit(source: *Source, allocator: Allocator) void {
         source.style_attrs_important.deinit(allocator);
         source.style_attrs_normal.deinit(allocator);
+        source.presentational_attrs_normal.deinit(allocator);
         source.selectors_important.deinit(allocator);
         source.selectors_normal.deinit(allocator);
         source.selector_data.deinit(allocator);
@@ -385,6 +390,19 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
                     try ctx.appendDeclBlock(node, block, importance);
                 }
             }
+        }
+    }
+
+    if (importance == .normal) {
+        var it = source.presentational_attrs_normal.iterator();
+        while (it.next()) |entry| {
+            const node = entry.key_ptr.*;
+            switch (env.getNodeProperty(.category, node)) {
+                .text => unreachable,
+                .element => {},
+            }
+            const block = entry.value_ptr.*;
+            try ctx.appendDeclBlock(node, block, importance);
         }
     }
 }
