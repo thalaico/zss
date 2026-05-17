@@ -1301,7 +1301,8 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
 /// Compute the max-content inline size of an IFC from its shaped glyphs.
 /// CSS Box Sizing §5: max-content = size if no soft wrap opportunities were taken.
 /// This is the sum of all glyph advances — everything on one line.
-pub fn computeMaxContentWidth(ifc: *const Ifc) Unit {
+/// Includes inline-block/inline-flex element widths (InlineBlock specials).
+pub fn computeMaxContentWidth(ifc: *const Ifc, subtree: ?Subtree.View) Unit {
     if (ifc.glyphs.len == 0) return 0;
     const glyphs = ifc.glyphs.slice();
     const indices = glyphs.items(.index);
@@ -1312,7 +1313,19 @@ pub fn computeMaxContentWidth(ifc: *const Ifc) Unit {
     while (i < glyphs.len) : (i += 1) {
         const gi = indices[i];
         if (gi == 0) {
-            // Special glyph — skip the second element of the pair
+            // Special glyph pair: [0, encoded_special].
+            // Decode the second entry to check for InlineBlock.
+            if (i + 1 < glyphs.len) {
+                const special = Ifc.Special.decode(indices[i + 1]);
+                if (special.kind == .InlineBlock) {
+                    if (subtree) |st| {
+                        const block_box_index: Subtree.Size = special.data;
+                        const box_offsets = st.items(.box_offsets)[block_box_index];
+                        const margins = st.items(.margins)[block_box_index];
+                        total += box_offsets.border_size.w + margins.left + margins.right;
+                    }
+                }
+            }
             i += 1;
             continue;
         }

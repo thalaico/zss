@@ -571,7 +571,7 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
             const ifc = box_tree.getIfc(ifc_id);
             if (ifc.glyphs.len == 0) return 0;
             const inline_layout = @import("./inline.zig");
-            const max_content = inline_layout.computeMaxContentWidth(ifc);
+            const max_content = inline_layout.computeMaxContentWidth(ifc, subtree);
             const left_edge = bo.content_pos.x;
             return max_content + left_edge * 2;
         },

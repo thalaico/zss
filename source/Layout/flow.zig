@@ -1700,38 +1700,38 @@ fn measureContentMainSize(box_tree: *BoxTree, subtree: Subtree.View, child_idx: 
         else => {},
     }
 
-    // Block container: recurse into children to find the widest intrinsic
-    // content width.  Each child contributes its own max-content width;
-    // the parent's intrinsic width is the maximum of those plus its own
-    // border+padding edges.
-    var max_child_intrinsic: Unit = 0;
+    // Flex row containers: max-content width is the SUM of children's
+    // max-content widths (CSS Box Sizing §5 + Flexbox §9.9.1).
+    // Block flow containers: max-content width is the MAX of children
+    // (children stack vertically, widest one determines the parent).
+    const is_flex_row = subtree.items(.inner_block)[child_idx] == .flex and !flex_is_column;
+
+    var child_intrinsic: Unit = 0;
     var has_children = false;
+    var child_count: usize = 0;
     var gc = child_idx + 1;
     while (gc < child_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
             has_children = true;
             const w = measureContentMainSize(box_tree, subtree, gc, flex_is_column);
-            max_child_intrinsic = @max(max_child_intrinsic, w);
+            if (is_flex_row) {
+                child_intrinsic += w;
+                child_count += 1;
+            } else {
+                child_intrinsic = @max(child_intrinsic, w);
+            }
         }
         gc += subtree.items(.skip)[gc];
     }
 
     if (!has_children) {
-        // Leaf block (replaced element, empty div).  border_size.w is the
-        // only dimension we have — correct for replaced elements with
-        // intrinsic sizing; for empty auto-width blocks it equals the
-        // container width, but those contribute no visible content.
         return subtree.items(.box_offsets)[child_idx].border_size.w;
     }
 
-    // This block's own edges (border + padding on each side).
-    // content_pos.x = border_left + padding_left.
-    // right_edge = border_size.w - content_pos.x - content_size.w
-    //            = padding_right + border_right  (always correct).
     const bo = subtree.items(.box_offsets)[child_idx];
     const left_edge = bo.content_pos.x;
     const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
-    return left_edge + max_child_intrinsic + right_edge;
+    return left_edge + child_intrinsic + right_edge;
 }
 
 /// Measure IFC content width from glyph advances.
@@ -1739,11 +1739,8 @@ fn measureIfcContentWidth(box_tree: *BoxTree, ifc_id: anytype, subtree: Subtree.
     const ifc = box_tree.getIfc(ifc_id);
     if (ifc.glyphs.len == 0) return 0;
 
-    // Use glyph-based max-content width instead of reading line boxes.
-    // This works even before splitIntoLineBoxes has run, which is needed
-    // for the measure pass in flex/grid algorithms.
     const inline_layout = @import("./inline.zig");
-    const max_content = inline_layout.computeMaxContentWidth(ifc);
+    const max_content = inline_layout.computeMaxContentWidth(ifc, subtree);
 
     const left_edge = subtree.items(.box_offsets)[child_idx].content_pos.x;
     return max_content + left_edge * 2;
