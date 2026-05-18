@@ -292,14 +292,30 @@ pub fn @"word-wrap"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"
 
 pub fn @"list-style"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"list-style") {
     ctx.initDecl(declaration_index);
-    // list-style shorthand: <type> || <position> || <image>.
-    // We only care about the type component; consume and ignore the rest.
-    const value = values.parse.listStyleType(ctx) orelse return null;
-    // Consume remaining tokens (position, image) without failing.
-    while (!ctx.empty()) {
+    // list-style shorthand: <type> || <position> || <image> (order-independent).
+    var found_type: ?@import("../values/types.zig").ListStyleType = null;
+    var tokens_consumed: u8 = 0;
+    while (!ctx.empty()) : (tokens_consumed += 1) {
+        if (tokens_consumed >= 3) return null;
+        if (values.parse.listStyleType(ctx)) |t| {
+            if (found_type != null) return null;
+            found_type = t;
+            continue;
+        }
+        // Skip position keywords (inside/outside) and url() for image.
+        const save = ctx.savePoint();
+        if (values.parse.identifier(ctx)) |ident| {
+            if (ctx.source_code.mapIdentifierValue(ident, enum { inside, outside }, &.{
+                .{ "inside", .inside },
+                .{ "outside", .outside },
+            })) |_| {
+                continue;
+            }
+        }
+        ctx.resetPoint(save);
         _ = ctx.next();
     }
-    return .{ .font = .{ .list_style_type = .{ .declared = value } } };
+    return .{ .font = .{ .list_style_type = .{ .declared = found_type orelse .none } } };
 }
 
 pub fn opacity(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.opacity) {
