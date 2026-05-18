@@ -32,8 +32,12 @@ pub fn beginMode(box_gen: *BoxGen) !void {
     // Inject ::before for the block that just entered flow mode. This covers
     // both regular block elements (where flow.blockElement pushes the block)
     // and inline-block elements (where inline.inlineElement pushes the block).
-    if (box_gen.stacks.block_info.top) |block_info| {
-        try insertPseudoElement(box_gen, block_info.node, .before);
+    if (box_gen.stacks.block_info.top) |*block_info| {
+        try insertPseudoElement(box_gen, block_info.node, .before, false);
+        // Eagerly check ::after so inline.nullNode can inject it into the
+        // last IFC before it closes. We can't wait for flow.nullNode because
+        // by then the IFC has already been finalized.
+        try checkDeferInlineAfter(box_gen, block_info);
     }
 }
 
@@ -43,6 +47,13 @@ fn endMode(box_gen: *BoxGen) void {
 }
 
 pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
+    // Flush deferred inline ::before as block fallback before the first block child.
+    if (box_gen.stacks.block_info.top) |*info| {
+        if (info.inline_before_state == .deferred) {
+            try insertPseudoElement(box_gen, info.node, .before, true);
+            info.inline_before_state = .consumed;
+        }
+    }
     const computer = &box_gen.getLayout().computer;
     switch (inner_block) {
         .flow, .flex, .grid => {
@@ -166,12 +177,29 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             }
         },
     }
+    if (box_gen.stacks.block_info.top) |*info| {
+        try insertPseudoElement(box_gen, info.node, .before, false);
+        try checkDeferInlineAfter(box_gen, info);
+    }
 }
 
 pub fn nullNode(box_gen: *BoxGen) ?void {
-    // Insert ::after pseudo-element as last child (before parent block is finalized)
-    if (box_gen.stacks.block_info.top) |info| {
-        insertPseudoElement(box_gen, info.node, .after) catch {};
+    if (box_gen.stacks.block_info.top) |*info| {
+        // Flush unconsumed deferred inline ::before as block fallback.
+        if (info.inline_before_state == .deferred) {
+            insertPseudoElement(box_gen, info.node, .before, true) catch {};
+            info.inline_before_state = .consumed;
+        }
+        // Handle ::after based on deferred state.
+        switch (info.inline_after_state) {
+            .consumed => {},
+            .deferred => {
+                insertPseudoElement(box_gen, info.node, .after, true) catch {};
+            },
+            .not_deferred => {
+                insertPseudoElement(box_gen, info.node, .after, false) catch {};
+            },
+        }
     }
     popBlock(box_gen) orelse {
         endMode(box_gen);
@@ -224,20 +252,60 @@ fn popBlock(box_gen: *BoxGen) ?void {
 /// Create a virtual block box for a ::before or ::after pseudo-element.
 /// For empty content (clearfix): creates a leaf block box.
 /// For string content: creates a block box containing an IFC with shaped text.
-fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
+/// When force_block is false and the pseudo has display:inline with text content,
+/// defers injection to the parent block's IFC (see inline.beginMode/nullNode).
+fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement, force_block: bool) !void {
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
+    const saved_current = computer.current;
+    const saved_computed = computer.stage.box_gen.current_computed;
+    defer {
+        computer.current = saved_current;
+        computer.stage.box_gen.current_computed = saved_computed;
+    }
 
     // Check if this node has cascaded styles for the pseudo-element.
-    if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
+    if (!computer.setPseudoElement(.box_gen, node, pseudo)) {
+        return;
+    }
 
     // Only generate a box if content is active (not normal/none).
     const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
-    if (gen_content.content == .normal or gen_content.content == .none) return;
+    if (gen_content.content == .normal or gen_content.content == .none) {
+        return;
+    }
 
     // Read the pseudo-element's display and clear properties.
     const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
     const clear = box_style_specified.clear;
+
+    // CSS 2.1: pseudo-elements default to display:inline. When the cascade
+    // says inline and there is text content, defer injection into the parent
+    // block's IFC instead of wrapping in a separate block box. This keeps
+    // pseudo text (vote arrows, list separators) on the same line as the
+    // element's own inline content.
+    if (!force_block and box_style_specified.display == .@"inline") {
+        switch (gen_content.content) {
+            .string => |text_id| {
+                const deferred_text = layout.inputs.env.getText(text_id);
+                if (deferred_text.len > 0) {
+                    if (box_gen.stacks.block_info.top) |*info| {
+                        switch (pseudo) {
+                            .before => {
+                                info.inline_before_state = .deferred;
+                            },
+                            .after => {
+                                info.inline_after_state = .deferred;
+                            },
+                            .unrecognized => {},
+                        }
+                    }
+                    return;
+                }
+            },
+            else => {},
+        }
+    }
 
     // Compute block sizes from the pseudo-element's cascade.
     const containing_block_size = box_gen.containingBlockSize();
@@ -296,6 +364,28 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
     box_gen.bfc_stack.top.? -= 1;
 }
 
+/// Check if a block's ::after pseudo-element should be deferred for inline
+/// injection. Called eagerly from beginMode so the flag is ready when
+/// inline.nullNode runs (which is before flow.nullNode).
+fn checkDeferInlineAfter(box_gen: *BoxGen, block_info: *BoxGen.BlockInfo) !void {
+    const layout = box_gen.getLayout();
+    const computer = &layout.computer;
+    const saved_current = computer.current;
+    defer computer.current = saved_current;
+    if (!computer.setPseudoElement(.box_gen, block_info.node, .after)) return;
+    const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
+    if (gen_content.content == .normal or gen_content.content == .none) return;
+    const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
+    if (box_style_specified.display != .@"inline") return;
+    switch (gen_content.content) {
+        .string => |text_id| {
+            if (layout.inputs.env.getText(text_id).len > 0) {
+                block_info.inline_after_state = .deferred;
+            }
+        },
+        else => {},
+    }
+}
 
 pub const ContainingBlockWidth = union(SizeMode) {
     normal: Unit,

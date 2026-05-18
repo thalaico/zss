@@ -185,6 +185,14 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     try box_gen.inline_context.pushIfc(box_gen.getLayout().allocator, ifc, size_mode, containing_block_size, parent_float_ctx);
 
     try pushRootInlineBox(box_gen);
+
+    // Inject deferred inline ::before from parent block into this IFC.
+    if (box_gen.stacks.block_info.top) |*block_info| {
+        if (block_info.inline_before_state == .deferred) {
+            try insertInlinePseudoElement(box_gen, block_info.node, .before);
+            block_info.inline_before_state = .consumed;
+        }
+    }
 }
 
 fn endMode(box_gen: *BoxGen) !Result {
@@ -520,6 +528,14 @@ pub fn nullNode(box_gen: *BoxGen) !?Result {
     const ctx = &box_gen.inline_context;
     const ifc = ctx.ifc.top.?;
     if (ifc.depth == 1) {
+        // Inject deferred inline ::after from parent block into this IFC
+        // before it closes. This is the last IFC for this block.
+        if (box_gen.stacks.block_info.top) |*block_info| {
+            if (block_info.inline_after_state == .deferred) {
+                try insertInlinePseudoElement(box_gen, block_info.node, .after);
+                block_info.inline_after_state = .consumed;
+            }
+        }
         return try endMode(box_gen);
     }
     // Emit ::after before closing this inline box.
@@ -582,11 +598,11 @@ fn popInlineBox(box_gen: *BoxGen) !Ifc.Size {
 /// Inject a pseudo-element's string content as glyphs directly into the current IFC.
 /// Used for ::before/::after on inline elements (as opposed to block elements,
 /// which use insertPseudoElement in flow.zig to create a new block+IFC pair).
-/// Leaves computer.current in pseudo-element state; the next setCurrentNode call
-/// from the outer layout loop restores it.
 fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
+    const saved_current = computer.current;
+    defer computer.current = saved_current;
 
     // Capture parent font and resolved font-size using the explicit element node.
     // sc.current.node may be a text node (e.g. ::after called from nullNode), so we
@@ -594,10 +610,14 @@ fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.P
     const parent_font = computer.getSpecifiedValueForNode(.box_gen, .font, node);
     const font_size_px = computer.resolvedFontSizePxForNode(.box_gen, node);
 
-    if (!computer.setPseudoElement(.box_gen, node, pseudo)) return;
+    if (!computer.setPseudoElement(.box_gen, node, pseudo)) {
+        return;
+    }
 
     const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
-    if (gen_content.content == .normal or gen_content.content == .none) return;
+    if (gen_content.content == .normal or gen_content.content == .none) {
+        return;
+    }
 
     const text: []const u8 = switch (gen_content.content) {
         .string => |text_id| blk: {

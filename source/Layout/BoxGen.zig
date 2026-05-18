@@ -659,7 +659,10 @@ pub const BlockInfo = struct {
     /// computed by offsetChildBlocks at parent pop; this only affects the
     /// IFC's line-wrapping decisions for sibling text.
     running_cursor_y: math.Unit = 0,
+    inline_before_state: InlinePseudoState = .not_deferred,
+    inline_after_state: InlinePseudoState = .not_deferred,
 
+    pub const InlinePseudoState = enum(u2) { not_deferred, deferred, consumed };
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
 };
