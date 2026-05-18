@@ -1425,6 +1425,13 @@ pub fn offsetChildBlocksFlex(
         hypothetical_main_sizes[ci] = @max(0, flex_base_sizes[ci]);
     }
 
+    // §9: Flex item margins participate in sizing, line-breaking, and positioning.
+    var main_margin_sums: [MAX_CHILDREN]Unit = undefined;
+    for (0..child_count) |ci| {
+        const mm = childMainMargins(subtree, children[ci], flex_is_column);
+        main_margin_sums[ci] = mm[0] + mm[1];
+    }
+
     // --- Phase 3 (§9.3): Collect into flex lines ---
     var line_starts: [MAX_LINES + 1]usize = undefined;
     var num_lines: usize = 0;
@@ -1437,7 +1444,7 @@ pub fn offsetChildBlocksFlex(
             var line_main: Unit = 0;
             var line_items: usize = 0;
             for (0..child_count) |ci| {
-                const item_main = hypothetical_main_sizes[ci];
+                const item_main = hypothetical_main_sizes[ci] + main_margin_sums[ci];
                 const with_gap: Unit = if (line_items > 0) flex_gap else 0;
                 if (line_items > 0 and line_main + with_gap + item_main > container_main and num_lines < MAX_LINES) {
                     num_lines += 1;
@@ -1465,6 +1472,7 @@ pub fn offsetChildBlocksFlex(
             flex_base_sizes[ls..le],
             hypothetical_main_sizes[ls..le],
             used_main_sizes[ls..le],
+            main_margin_sums[ls..le],
             flex_grows,
             flex_shrinks,
             container_main,
@@ -1547,7 +1555,8 @@ pub fn offsetChildBlocksFlex(
         const le = line_starts[line_idx + 1];
         var max_cross: Unit = 0;
         for (ls..le) |ci| {
-            max_cross = @max(max_cross, childCrossSize(subtree, children[ci], flex_is_column));
+            const cm = childCrossMargins(subtree, children[ci], flex_is_column);
+            max_cross = @max(max_cross, childCrossSize(subtree, children[ci], flex_is_column) + cm[0] + cm[1]);
         }
         line_cross_sizes[line_idx] = max_cross;
         total_cross += max_cross;
@@ -1597,10 +1606,10 @@ pub fn offsetChildBlocksFlex(
             cross_cursor -= line_cross;
         }
 
-        // Compute line main extent for justify-content
+        // Compute line main extent for justify-content (outer sizes per §9.5)
         var line_total_main: Unit = 0;
         for (ls..le) |ci| {
-            line_total_main += childMainSize(subtree, children[ci], flex_is_column);
+            line_total_main += childMainSize(subtree, children[ci], flex_is_column) + main_margin_sums[ci];
         }
         if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
 
@@ -1628,6 +1637,9 @@ pub fn offsetChildBlocksFlex(
             const child_idx = children[ci];
             const box_offsets = subtree.items(.box_offsets)[child_idx];
             const child_cross_sz = childCrossSize(subtree, child_idx, flex_is_column);
+            const cm = childCrossMargins(subtree, child_idx, flex_is_column);
+            const outer_cross_sz = child_cross_sz + cm[0] + cm[1];
+            const mm = childMainMargins(subtree, child_idx, flex_is_column);
             const effective_align: BlockInfo.FlexAlign = switch (subtree.items(.align_self)[child_idx]) {
                 .auto => align_items,
                 .stretch => .stretch,
@@ -1638,8 +1650,8 @@ pub fn offsetChildBlocksFlex(
             };
             const cross_offset: Unit = cross_cursor + switch (effective_align) {
                 .flex_start => 0,
-                .flex_end => @max(0, line_cross - child_cross_sz),
-                .center => @max(0, @divFloor(line_cross - child_cross_sz, 2)),
+                .flex_end => @max(0, line_cross - outer_cross_sz),
+                .center => @max(0, @divFloor(line_cross - outer_cross_sz, 2)),
                 .stretch => 0,
             };
 
@@ -1648,13 +1660,13 @@ pub fn offsetChildBlocksFlex(
                     .x = cross_offset,
                     .y = main_cursor,
                 };
-                main_cursor += box_offsets.border_size.h;
+                main_cursor += mm[0] + box_offsets.border_size.h + mm[1];
             } else {
                 subtree.items(.offset)[child_idx] = .{
                     .x = main_cursor,
                     .y = cross_offset,
                 };
-                main_cursor += box_offsets.border_size.w;
+                main_cursor += mm[0] + box_offsets.border_size.w + mm[1];
             }
             if (ci + 1 < le) main_cursor += total_item_gap;
         }
@@ -1753,6 +1765,7 @@ fn resolveFlexibleLengths(
     flex_base: []const Unit,
     hypothetical: []const Unit,
     used: []Unit,
+    margin_sums: []const Unit,
     flex_grows: anytype,
     flex_shrinks: anytype,
     container_main: Unit,
@@ -1761,10 +1774,10 @@ fn resolveFlexibleLengths(
     const n = line_children.len;
     if (n == 0) return;
 
-    // Step 1: Determine grow vs shrink.
+    // Step 1: Determine grow vs shrink (using outer sizes per §9.7).
     var sum_hypothetical_outer: Unit = 0;
     for (0..n) |i| {
-        sum_hypothetical_outer += hypothetical[i];
+        sum_hypothetical_outer += hypothetical[i] + margin_sums[i];
     }
     if (n > 1) sum_hypothetical_outer += flex_gap * @as(Unit, @intCast(n - 1));
     const growing = sum_hypothetical_outer <= container_main;
@@ -1788,14 +1801,14 @@ fn resolveFlexibleLengths(
         }
     }
 
-    // Step 3: Calculate initial free space.
+    // Step 3: Calculate initial free space (outer sizes include margins).
     var initial_free_space: Unit = container_main;
     if (n > 1) initial_free_space -= flex_gap * @as(Unit, @intCast(n - 1));
     for (0..n) |i| {
         if (frozen[i]) {
-            initial_free_space -= targets[i];
+            initial_free_space -= targets[i] + margin_sums[i];
         } else {
-            initial_free_space -= flex_base[i];
+            initial_free_space -= flex_base[i] + margin_sums[i];
         }
     }
 
@@ -1808,15 +1821,15 @@ fn resolveFlexibleLengths(
         }
         if (all_frozen) break;
 
-        // Remaining free space
+        // Remaining free space (outer sizes include margins)
         var remaining: Unit = container_main;
         if (n > 1) remaining -= flex_gap * @as(Unit, @intCast(n - 1));
         var sum_factors: f32 = 0.0;
         for (0..n) |i| {
             if (frozen[i]) {
-                remaining -= targets[i];
+                remaining -= targets[i] + margin_sums[i];
             } else {
-                remaining -= flex_base[i];
+                remaining -= flex_base[i] + margin_sums[i];
                 const ci = line_children[i];
                 if (growing) {
                     sum_factors += flex_grows[ci];
@@ -2114,6 +2127,16 @@ fn childMainSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: boo
 fn childCrossSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) Unit {
     const bo = subtree.items(.box_offsets)[child];
     return if (flex_is_column) bo.border_size.w else bo.border_size.h;
+}
+
+fn childMainMargins(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) [2]Unit {
+    const m = subtree.items(.margins)[child];
+    return if (flex_is_column) .{ m.top, m.bottom } else .{ m.left, m.right };
+}
+
+fn childCrossMargins(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) [2]Unit {
+    const m = subtree.items(.margins)[child];
+    return if (flex_is_column) .{ m.left, m.right } else .{ m.top, m.bottom };
 }
 
 const MAX_CHILDREN = 128;
