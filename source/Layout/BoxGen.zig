@@ -204,6 +204,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             block.position,
             .{ .normal = containing_block_width },
             containing_block_height,
+            false,
         );
         
         // Get the computed width and height (these return optionals)

@@ -68,7 +68,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 break :blk .{ .normal = containing_block_size.width };
             } else
                 .{ .normal = containing_block_size.width };
-            const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height);
+            const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height, parent_is_flex_or_grid);
             const stacking_context = solveStackingContext(computer, position);
             // Read and commit font group so child text nodes inherit font-size
             // during layout (getTextFont uses InheritedValue from box_gen stage).
@@ -241,7 +241,7 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
 
     // Compute block sizes from the pseudo-element's cascade.
     const containing_block_size = box_gen.containingBlockSize();
-    const sizes = solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    const sizes = solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
 
     // Resolve content text (if any) before creating the box. Whitespace-only
     // content (e.g. `::before { content: " " }` used for the Foundation/Bootstrap
@@ -346,6 +346,7 @@ pub fn solveAllSizes(
     position: BoxTree.BoxStyle.Position,
     containing_block_width: ContainingBlockWidth,
     containing_block_height: ?Unit,
+    parent_is_flex_or_grid: bool,
 ) BlockUsedSizes {
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     // Get element's computed font-size for em resolution.
@@ -393,7 +394,25 @@ pub fn solveAllSizes(
                 .margin_inline_end = sizes.isAuto(.margin_inline_end),
             };
             sizes.was_auto_inline_size = was_auto.inline_size;
-            adjustWidthAndMargins(&sizes, percentage_base_unit);
+            if (parent_is_flex_or_grid) {
+                // CSS Flexbox §8.1 / Grid §11.3: flex/grid items do NOT use
+                // the block-level overconstrained rule (CSS 2.1 §10.3.3).
+                // Auto margins resolve to 0 here; the flex algorithm handles
+                // free-space distribution via auto margins during positioning.
+                if (was_auto.margin_inline_start) sizes.setValue(.margin_inline_start, 0);
+                if (was_auto.margin_inline_end) sizes.setValue(.margin_inline_end, 0);
+                if (was_auto.inline_size) {
+                    sizes.setValue(.inline_size, percentage_base_unit -
+                        (sizes.border_inline_start + sizes.border_inline_end +
+                         sizes.padding_inline_start + sizes.padding_inline_end +
+                         sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged));
+                }
+                sizes.setValueFlagOnly(.margin_inline_start);
+                sizes.setValueFlagOnly(.margin_inline_end);
+                sizes.setValueFlagOnly(.inline_size);
+            } else {
+                adjustWidthAndMargins(&sizes, percentage_base_unit);
+            }
             // TODO: Do this in adjustWidthAndMargins
             const width_before_clamp = sizes.get(.inline_size).?;
             sizes.inline_size_untagged = solve.clampSize(width_before_clamp, sizes.min_inline_size, sizes.max_inline_size);

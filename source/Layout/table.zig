@@ -497,7 +497,7 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
     const containing_block_size = box_gen.containingBlockSize();
     
     // Treat table as a block, but track it in table context
-    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, position);
 
     // Read border-spacing from cascade (set by cellspacing HTML attr or CSS)
@@ -540,7 +540,7 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     box_gen.table_context.beginRow();
     
     // Treat row as a block
-    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, position);
     // Commit font group for child text inheritance.
     const font_specified = computer.getSpecifiedValue(.box_gen, .font);
@@ -587,7 +587,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const has_explicit_width = specified_width.width != .auto;
 
     // Solve sizes — CSS width (if injected from HTML attr) is picked up here
-    var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height);
+    var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, .static);
 
 

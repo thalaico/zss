@@ -316,7 +316,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
 fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
-    const sizes = flow.solveAllSizes(computer, position, .stf, containing_block_size.height);
+    const sizes = flow.solveAllSizes(computer, position, .stf, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
 
