@@ -873,13 +873,16 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
 /// Named fonts are mapped to their nearest generic category.
 /// Custom @font-face fonts (registered in ctx.custom_font_names) are returned as .custom(idx).
 pub fn fontFamily(ctx: *Context) ?types.FontFamily {
-    const font_family_kvs = comptime &[_]SourceCode.KV(types.FontFamily){
-        // Generic CSS families
+    const generic_family_kvs = comptime &[_]SourceCode.KV(types.FontFamily){
         .{ "sans-serif", .sans_serif },
         .{ "serif", .serif },
         .{ "monospace", .monospace },
         .{ "system-ui", .system_ui },
-        // Common sans-serif fonts
+    };
+
+    // Named-font-to-generic fallback: only used when no custom font (fontconfig)
+    // is registered for this name. Ensures pages still render even without fontconfig.
+    const named_font_fallbacks = comptime &[_]SourceCode.KV(types.FontFamily){
         .{ "verdana", .sans_serif },
         .{ "arial", .sans_serif },
         .{ "helvetica", .sans_serif },
@@ -887,13 +890,11 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
         .{ "calibri", .sans_serif },
         .{ "roboto", .sans_serif },
         .{ "lato", .sans_serif },
-        // Common serif fonts
         .{ "times", .serif },
         .{ "georgia", .serif },
         .{ "garamond", .serif },
         .{ "palatino", .serif },
         .{ "cambria", .serif },
-        // Common monospace fonts
         .{ "courier", .monospace },
         .{ "consolas", .monospace },
         .{ "monaco", .monospace },
@@ -903,23 +904,29 @@ pub fn fontFamily(ctx: *Context) ?types.FontFamily {
     // Walk through comma-separated values, return first recognized family.
     while (true) {
         if (identifier(ctx)) |loc| {
-            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, font_family_kvs)) |family| {
+            // 1. Generic CSS keywords (sans-serif, serif, monospace, system-ui)
+            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, generic_family_kvs)) |family| {
                 return family;
             }
-            // Check registered custom fonts (unquoted identifier, e.g. from font: shorthand)
+            // 2. Custom fonts — fontconfig-resolved named fonts + @font-face
             if (identMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
                 return .{ .custom = idx };
+            }
+            // 3. Fallback: map known named fonts to their generic family
+            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, named_font_fallbacks)) |family| {
+                return family;
             }
             // Unrecognized identifier — skip to next comma-separated entry.
         } else if (ctx.next()) |item| {
             // Skip over string tokens and other unrecognized tokens.
             if (item.tag == .token_comma) continue;
             if (item.tag == .token_string) {
-                // Quoted font name — check custom fonts first, then known generic mappings.
                 const loc = item.index.location(ctx.ast);
+                // 1. Custom fonts first (fontconfig-resolved + @font-face)
                 if (stringMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
                     return .{ .custom = idx };
                 }
+                // 2. Fallback: quoted named fonts to generic families
                 if (matchQuotedFontFamily(ctx.source_code, loc)) |family| {
                     return family;
                 }

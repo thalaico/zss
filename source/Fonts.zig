@@ -72,7 +72,7 @@ fonts: [4]?FontEntry = .{ null, null, null, null },
 custom_entries: [MAX_CUSTOM]?FontEntry = .{null} ** MAX_CUSTOM,
 custom_count: u8 = 0,
 
-pub const MAX_CUSTOM = 8;
+pub const MAX_CUSTOM = 24;
 
 pub fn init() Fonts {
     return .{};
