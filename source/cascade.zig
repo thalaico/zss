@@ -276,6 +276,15 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
             .is => {
                 idx += 1;
                 const list = data[idx].is_selector_list;
+                if (list.count == 1) {
+                    const nested_key = extractRightmostKey(data, list.start);
+                    switch (nested_key) {
+                        .id => |id| { if (found_id == null) found_id = id; },
+                        .class => |cls| { if (found_class == null) found_class = cls; },
+                        .type_name => |tn| { if (found_type == null) found_type = tn; },
+                        .universal => {},
+                    }
+                }
                 var skip_idx = list.start;
                 for (0..list.count) |_| {
                     skip_idx = data[skip_idx].next_complex_selector;
@@ -285,6 +294,15 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
             .where => {
                 idx += 1;
                 const list = data[idx].where_selector_list;
+                if (list.count == 1) {
+                    const nested_key = extractRightmostKey(data, list.start);
+                    switch (nested_key) {
+                        .id => |id| { if (found_id == null) found_id = id; },
+                        .class => |cls| { if (found_class == null) found_class = cls; },
+                        .type_name => |tn| { if (found_type == null) found_type = tn; },
+                        .universal => {},
+                    }
+                }
                 var skip_idx = list.start;
                 for (0..list.count) |_| {
                     skip_idx = data[skip_idx].next_complex_selector;
@@ -302,9 +320,12 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
 
 const PseudoTag = enum(u2) { none, before, after, unrecognized };
 const SelectorEntry = struct {
-    index: u32,
+    selector: selectors.Data.ListIndex,
+    block: Block,
+    source_order: u32,
     pseudo: PseudoTag,
     fast_match: bool,
+    importance: Importance,
     ancestor_hashes: ?AncestorHashes,
 };
 
@@ -453,6 +474,22 @@ fn isFastMatch(data: []const selectors.Data, complex_selector_index: selectors.D
                 }
                 return false;
             },
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                if (list.count != 1) return false;
+                if (!isFastMatch(data, list.start, key)) return false;
+                const skip_idx: selectors.Data.ListIndex = data[list.start].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                if (list.count != 1) return false;
+                if (!isFastMatch(data, list.start, key)) return false;
+                const skip_idx: selectors.Data.ListIndex = data[list.start].next_complex_selector;
+                idx = skip_idx - 1;
+            },
             else => return false,
         }
     }
@@ -462,7 +499,9 @@ fn isFastMatch(data: []const selectors.Data, complex_selector_index: selectors.D
 fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) ?AncestorHashes {
     const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
     const trailing = data[last_trailing_idx].trailing;
-    if (trailing.compound_selector_start == complex_selector_index + 1) return null;
+    if (trailing.compound_selector_start == complex_selector_index + 1) {
+        return extractAncestorHashesFromWrappedPseudo(data, complex_selector_index);
+    }
     var hashes = AncestorHashes{};
     var ti = trailing.compound_selector_start - 1;
     while (ti > complex_selector_index) {
@@ -522,25 +561,55 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
     return hashes;
 }
 
+fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) ?AncestorHashes {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    const start = trailing.compound_selector_start;
+    const end = last_trailing_idx;
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                if (list.count == 1) return extractAncestorHashes(data, list.start);
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                if (list.count == 1) return extractAncestorHashes(data, list.start);
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+        }
+    }
+    return null;
+}
+
 fn testCandidates(
     ctx: *RunContext,
     candidates: []const SelectorEntry,
-    sel_items: []const selectors.Data.ListIndex,
-    blk_items: []const Block,
     data: []const selectors.Data,
     env: *const Environment,
     node: Environment.NodeId,
     allocator: Allocator,
-    importance: Importance,
     bloom: *const AncestorBloom,
 ) !void {
     for (candidates) |entry| {
         if (entry.fast_match) {
-            const block = blk_items[entry.index];
             switch (entry.pseudo) {
-                .none => try ctx.appendDeclBlock(node, block, importance),
-                .before => try ctx.appendPseudoDeclBlock(node, .before, block, importance),
-                .after => try ctx.appendPseudoDeclBlock(node, .after, block, importance),
+                .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
+                .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
+                .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
                 .unrecognized => {},
             }
             continue;
@@ -548,13 +617,11 @@ fn testCandidates(
         if (entry.ancestor_hashes) |ah| {
             if (!ah.mightMatchBloom(bloom)) continue;
         }
-        const selector = sel_items[entry.index];
-        if (zss.selectors.matchElement(data, selector, env, node, allocator)) {
-            const block = blk_items[entry.index];
+        if (zss.selectors.matchElement(data, entry.selector, env, node, allocator)) {
             switch (entry.pseudo) {
-                .none => try ctx.appendDeclBlock(node, block, importance),
-                .before => try ctx.appendPseudoDeclBlock(node, .before, block, importance),
-                .after => try ctx.appendPseudoDeclBlock(node, .after, block, importance),
+                .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
+                .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
+                .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
                 .unrecognized => {},
             }
         }
@@ -599,18 +666,18 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
 
-    const order: [6]struct { Origin, Importance } = .{
-        .{ .user_agent, .important },
-        .{ .user, .important },
-        .{ .author, .important },
-        .{ .author, .normal },
-        .{ .user, .normal },
-        .{ .user_agent, .normal },
-    };
-    for (order) |item| {
-        const origin, const importance = item;
-        try traverseList(&ctx, list, env, origin, importance);
-    }
+    // CSS Cascading §6.1 cascade order (highest to lowest priority):
+    // 1. UA important
+    // 2. User important
+    // 3. Author important  ─┐ merged: one DOM walk per source
+    // 4. Author normal     ─┘
+    // 5. User normal
+    // 6. UA normal
+    try traverseList(&ctx, list, env, .user_agent, .important);
+    try traverseList(&ctx, list, env, .user, .important);
+    try traverseListMerged(&ctx, list, env, .author);
+    try traverseList(&ctx, list, env, .user, .normal);
+    try traverseList(&ctx, list, env, .user_agent, .normal);
 
     var element_iterator = ctx.element_to_decl_block_list.iterator();
     while (element_iterator.next()) |entry| {
@@ -670,9 +737,54 @@ fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, or
     }
 }
 
+fn traverseListMerged(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin) !void {
+    const node_list = switch (origin) {
+        .user => list.user,
+        .author => list.author,
+        .user_agent => list.user_agent,
+    };
+    const allocator = ctx.arena.allocator();
+
+    assert(ctx.cascade_node_stack.top == null);
+    ctx.cascade_node_stack.top = node_list;
+    while (ctx.cascade_node_stack.top) |*top| {
+        if (top.*.len == 0) {
+            _ = ctx.cascade_node_stack.pop();
+            continue;
+        }
+        const node: *const Node = top.*[0];
+        top.* = top.*[1..];
+
+        switch (node.*) {
+            .inner => |inner| try ctx.cascade_node_stack.push(allocator, inner),
+            .leaf => |source| try applySourceMerged(ctx, source, env),
+        }
+    }
+}
+
 fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment, importance: Importance) !void {
-    {
-        // TODO: Style attrs can only appear in sources with author origin
+    const selector_list = switch (importance) {
+        .important => source.selectors_important,
+        .normal => source.selectors_normal,
+    };
+    const style_attrs = switch (importance) {
+        .important => source.style_attrs_important,
+        .normal => source.style_attrs_normal,
+    };
+    if (selector_list.len == 0 and style_attrs.count() == 0 and
+        (importance != .normal or source.presentational_attrs_normal.count() == 0))
+        return;
+    const importances: []const Importance = &.{importance};
+    try applySourceImpl(ctx, source, env, importances);
+}
+
+fn applySourceMerged(ctx: *RunContext, source: *const Source, env: *const Environment) !void {
+    const importances: []const Importance = &.{ .important, .normal };
+    try applySourceImpl(ctx, source, env, importances);
+}
+
+fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environment, importances: []const Importance) !void {
+    for (importances) |importance| {
         const style_attrs = switch (importance) {
             .important => source.style_attrs_important,
             .normal => source.style_attrs_normal,
@@ -689,60 +801,60 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
         }
     }
 
-    const selector_list = switch (importance) {
-        .important => source.selectors_important,
-        .normal => source.selectors_normal,
-    };
     const allocator = ctx.arena.allocator();
     const data = source.selector_data.items;
-    const sel_items = selector_list.items(.selector);
-    const blk_items = selector_list.items(.block);
-
-    // Build selector index: bucket selectors by rightmost key (id/class/type/universal).
-    // This turns O(selectors × elements) into O(elements × avg_matching_selectors).
 
     var id_index = std.AutoArrayHashMapUnmanaged(Environment.IdName, std.ArrayListUnmanaged(SelectorEntry)).empty;
     var class_index = std.AutoArrayHashMapUnmanaged(Environment.ClassName, std.ArrayListUnmanaged(SelectorEntry)).empty;
     var type_index = std.AutoArrayHashMapUnmanaged(Environment.TypeName, std.ArrayListUnmanaged(SelectorEntry)).empty;
     var universal = std.ArrayListUnmanaged(SelectorEntry){};
 
-    for (sel_items, 0..) |selector, i| {
-        if (!canMatchStatic(data, selector)) continue;
-        const pe = selectors.extractPseudoElement(data, selector);
-        const key = extractRightmostKey(data, selector);
-        const entry = SelectorEntry{
-            .index = @intCast(i),
-            .pseudo = if (pe) |p| switch (p) {
-                .before => .before,
-                .after => .after,
-                .unrecognized => .unrecognized,
-            } else .none,
-            .fast_match = isFastMatch(data, selector, key),
-            .ancestor_hashes = extractAncestorHashes(data, selector),
+    for (importances) |importance| {
+        const selector_list = switch (importance) {
+            .important => source.selectors_important,
+            .normal => source.selectors_normal,
         };
-        switch (key) {
-            .id => |id| {
-                const gop = try id_index.getOrPut(allocator, id);
-                if (!gop.found_existing) gop.value_ptr.* = .{};
-                try gop.value_ptr.append(allocator, entry);
-            },
-            .class => |cls| {
-                const gop = try class_index.getOrPut(allocator, cls);
-                if (!gop.found_existing) gop.value_ptr.* = .{};
-                try gop.value_ptr.append(allocator, entry);
-            },
-            .type_name => |tn| {
-                const gop = try type_index.getOrPut(allocator, tn);
-                if (!gop.found_existing) gop.value_ptr.* = .{};
-                try gop.value_ptr.append(allocator, entry);
-            },
-            .universal => try universal.append(allocator, entry),
+        const sel_items = selector_list.items(.selector);
+        const blk_items = selector_list.items(.block);
+
+        for (sel_items, blk_items, 0..) |selector, block, i| {
+            if (!canMatchStatic(data, selector)) continue;
+            const pe = selectors.extractPseudoElement(data, selector);
+            const key = extractRightmostKey(data, selector);
+            const entry = SelectorEntry{
+                .selector = selector,
+                .block = block,
+                .source_order = @intCast(i),
+                .pseudo = if (pe) |p| switch (p) {
+                    .before => .before,
+                    .after => .after,
+                    .unrecognized => .unrecognized,
+                } else .none,
+                .fast_match = isFastMatch(data, selector, key),
+                .importance = importance,
+                .ancestor_hashes = extractAncestorHashes(data, selector),
+            };
+            switch (key) {
+                .id => |id| {
+                    const gop = try id_index.getOrPut(allocator, id);
+                    if (!gop.found_existing) gop.value_ptr.* = .{};
+                    try gop.value_ptr.append(allocator, entry);
+                },
+                .class => |cls| {
+                    const gop = try class_index.getOrPut(allocator, cls);
+                    if (!gop.found_existing) gop.value_ptr.* = .{};
+                    try gop.value_ptr.append(allocator, entry);
+                },
+                .type_name => |tn| {
+                    const gop = try type_index.getOrPut(allocator, tn);
+                    if (!gop.found_existing) gop.value_ptr.* = .{};
+                    try gop.value_ptr.append(allocator, entry);
+                },
+                .universal => try universal.append(allocator, entry),
+            }
         }
     }
 
-    // Single DOM traversal with ancestor bloom filter.
-    // For each element, collect candidate selectors from matching buckets,
-    // sort by source index, use bloom filter + fast_match to skip work.
     var merged = std.ArrayListUnmanaged(SelectorEntry){};
     var bloom = AncestorBloom{};
     var ancestor_node_stack = std.ArrayListUnmanaged(Environment.NodeId){};
@@ -767,7 +879,6 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
             try ctx.document_node_stack.push(allocator, first_child);
         }
 
-        // Gather candidate selectors for this element from all buckets
         merged.clearRetainingCapacity();
         const element_type = env.getNodeProperty(.type, node);
         if (type_index.get(element_type.name)) |candidates| {
@@ -787,26 +898,29 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
         }
         try merged.appendSlice(allocator, universal.items);
 
-        // Sort by original selector index to preserve CSS source order
         std.mem.sortUnstable(SelectorEntry, merged.items, {}, struct {
             fn lessThan(_: void, a: SelectorEntry, b: SelectorEntry) bool {
-                return a.index < b.index;
+                if (a.importance != b.importance)
+                    return @intFromEnum(a.importance) > @intFromEnum(b.importance);
+                return a.source_order < b.source_order;
             }
         }.lessThan);
 
-        try testCandidates(ctx, merged.items, sel_items, blk_items, data, env, node, allocator, importance, &bloom);
+        try testCandidates(ctx, merged.items, data, env, node, allocator, &bloom);
     }
 
-    if (importance == .normal) {
-        var it = source.presentational_attrs_normal.iterator();
-        while (it.next()) |entry| {
-            const node = entry.key_ptr.*;
-            switch (env.getNodeProperty(.category, node)) {
-                .text => unreachable,
-                .element => {},
+    for (importances) |importance| {
+        if (importance == .normal) {
+            var it = source.presentational_attrs_normal.iterator();
+            while (it.next()) |entry| {
+                const node = entry.key_ptr.*;
+                switch (env.getNodeProperty(.category, node)) {
+                    .text => unreachable,
+                    .element => {},
+                }
+                const block = entry.value_ptr.*;
+                try ctx.appendDeclBlock(node, block, importance);
             }
-            const block = entry.value_ptr.*;
-            try ctx.appendDeclBlock(node, block, importance);
         }
     }
 }
