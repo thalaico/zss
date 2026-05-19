@@ -38,6 +38,7 @@ next_node_group: ?std.meta.Tag(NodeGroup),
 root_node: ?NodeId,
 node_properties: NodeProperties,
 ids_to_nodes: std.AutoHashMapUnmanaged(IdName, NodeId),
+nodes_to_ids: std.AutoHashMapUnmanaged(NodeId, IdName) = .empty,
 
 nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
 nodes_to_attributes: std.AutoHashMapUnmanaged(NodeId, []const NodeAttribute) = .empty,
@@ -126,6 +127,7 @@ pub fn init(
         .root_node = null,
         .node_properties = .{},
         .ids_to_nodes = .empty,
+        .nodes_to_ids = .empty,
         .nodes_to_classes = .empty,
 
         .next_url_id = 0,
@@ -151,6 +153,7 @@ pub fn deinit(env: *Environment) void {
 
     env.node_properties.deinit(env.allocator);
     env.ids_to_nodes.deinit(env.allocator);
+    env.nodes_to_ids.deinit(env.allocator);
     // Free the class name slices stored in nodes_to_classes, then the map itself.
     {
         var it = env.nodes_to_classes.valueIterator();
@@ -607,6 +610,7 @@ pub fn registerId(env: *Environment, id: IdName, node: NodeId) !void {
     // TODO: If `gop.found_existing == true`, the existing element may have been destroyed, so consider allowing the Id to be reused.
     if (gop.found_existing and gop.value_ptr.* != node) return error.IdAlreadyExists;
     gop.value_ptr.* = node;
+    try env.nodes_to_ids.put(env.allocator, node, id);
 }
 
 pub fn getElementById(env: *const Environment, id: IdName) ?NodeId {
