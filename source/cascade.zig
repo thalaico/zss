@@ -301,7 +301,226 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
 }
 
 const PseudoTag = enum(u2) { none, before, after, unrecognized };
-const SelectorEntry = packed struct { index: u32, pseudo: PseudoTag };
+const SelectorEntry = struct {
+    index: u32,
+    pseudo: PseudoTag,
+    fast_match: bool,
+    ancestor_hashes: ?AncestorHashes,
+};
+
+const BLOOM_SIZE = 256;
+const AncestorBloom = struct {
+    counts: [BLOOM_SIZE]u8 = [_]u8{0} ** BLOOM_SIZE,
+
+    fn hash1(val: u32) u8 {
+        return @truncate(val);
+    }
+    fn hash2(val: u32) u8 {
+        return @truncate(val >> 8);
+    }
+    fn addVal(self: *AncestorBloom, val: u32) void {
+        self.counts[hash1(val)] +|= 1;
+        self.counts[hash2(val)] +|= 1;
+    }
+    fn removeVal(self: *AncestorBloom, val: u32) void {
+        self.counts[hash1(val)] -|= 1;
+        self.counts[hash2(val)] -|= 1;
+    }
+    fn mightContain(self: *const AncestorBloom, val: u32) bool {
+        return self.counts[hash1(val)] > 0 and self.counts[hash2(val)] > 0;
+    }
+
+    fn addNode(self: *AncestorBloom, env: *const Environment, node: Environment.NodeId) void {
+        const element_type = env.getNodeProperty(.type, node);
+        if (element_type.name != .any and element_type.name != .anonymous)
+            self.addVal(@intFromEnum(element_type.name));
+        if (env.nodes_to_classes.get(node)) |classes| {
+            for (classes) |cls| self.addVal(@intFromEnum(cls));
+        }
+        if (env.nodes_to_ids.get(node)) |id| self.addVal(@intFromEnum(id));
+    }
+
+    fn removeNode(self: *AncestorBloom, env: *const Environment, node: Environment.NodeId) void {
+        const element_type = env.getNodeProperty(.type, node);
+        if (element_type.name != .any and element_type.name != .anonymous)
+            self.removeVal(@intFromEnum(element_type.name));
+        if (env.nodes_to_classes.get(node)) |classes| {
+            for (classes) |cls| self.removeVal(@intFromEnum(cls));
+        }
+        if (env.nodes_to_ids.get(node)) |id| self.removeVal(@intFromEnum(id));
+    }
+};
+
+const MAX_ANCESTOR_HASHES = 4;
+const AncestorHashes = struct {
+    hashes: [MAX_ANCESTOR_HASHES]u32 = undefined,
+    len: u8 = 0,
+
+    fn add(self: *AncestorHashes, val: u32) void {
+        if (self.len < MAX_ANCESTOR_HASHES) {
+            self.hashes[self.len] = val;
+            self.len += 1;
+        }
+    }
+
+    fn mightMatchBloom(self: *const AncestorHashes, bloom: *const AncestorBloom) bool {
+        for (self.hashes[0..self.len]) |h| {
+            if (!bloom.mightContain(h)) return false;
+        }
+        return true;
+    }
+};
+
+fn canMatchStatic(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    var trailing_idx = last_trailing_idx;
+    while (true) {
+        const trailing = data[trailing_idx].trailing;
+        const start = trailing.compound_selector_start;
+        if (!compoundCanMatchStatic(data, start, trailing_idx)) return false;
+        if (start <= complex_selector_index + 1) break;
+        trailing_idx = start - 1;
+    }
+    return true;
+}
+
+fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.ListIndex, end: selectors.Data.ListIndex) bool {
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class => {
+                idx += 1;
+                switch (data[idx].pseudo_class_selector) {
+                    .hover, .active, .focus, .visited, .unrecognized => return false,
+                    else => {},
+                }
+            },
+            .type, .id, .class, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+        }
+    }
+    return true;
+}
+
+fn isFastMatch(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex, key: SelectorKey) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    if (trailing.compound_selector_start != complex_selector_index + 1) return false;
+    const start = trailing.compound_selector_start;
+    const end = last_trailing_idx;
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .type => {
+                idx += 1;
+                const et = data[idx].type_selector;
+                switch (key) {
+                    .type_name => |tn| if (et.name == tn) continue,
+                    else => {},
+                }
+                if (et.name != .any and et.name != .anonymous) return false;
+            },
+            .class => {
+                idx += 1;
+                switch (key) {
+                    .class => |cls| if (data[idx].class_selector == cls) continue,
+                    else => {},
+                }
+                return false;
+            },
+            .id => {
+                idx += 1;
+                switch (key) {
+                    .id => |id_name| if (data[idx].id_selector == id_name) continue,
+                    else => {},
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) ?AncestorHashes {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    if (trailing.compound_selector_start == complex_selector_index + 1) return null;
+    var hashes = AncestorHashes{};
+    var ti = trailing.compound_selector_start - 1;
+    while (ti > complex_selector_index) {
+        const t = data[ti].trailing;
+        switch (t.combinator) {
+            .descendant, .child => {
+                const start = t.compound_selector_start;
+                const end = ti;
+                var idx = start;
+                while (idx < end) : (idx += 1) {
+                    switch (data[idx].simple_selector_tag) {
+                        .type => {
+                            idx += 1;
+                            const et = data[idx].type_selector;
+                            if (et.name != .any and et.name != .anonymous)
+                                hashes.add(@intFromEnum(et.name));
+                        },
+                        .class => {
+                            idx += 1;
+                            hashes.add(@intFromEnum(data[idx].class_selector));
+                        },
+                        .id => {
+                            idx += 1;
+                            hashes.add(@intFromEnum(data[idx].id_selector));
+                        },
+                        .attribute => |op_case| {
+                            idx += 1;
+                            if (op_case != null) idx += 1;
+                        },
+                        .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class => {
+                            idx += 1;
+                        },
+                        .pseudo_element => idx += 1,
+                        .is => {
+                            idx += 1;
+                            const list = data[idx].is_selector_list;
+                            var skip_idx = list.start;
+                            for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                            idx = skip_idx - 1;
+                        },
+                        .where => {
+                            idx += 1;
+                            const list = data[idx].where_selector_list;
+                            var skip_idx = list.start;
+                            for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                            idx = skip_idx - 1;
+                        },
+                    }
+                }
+            },
+            else => {},
+        }
+        if (t.compound_selector_start <= complex_selector_index + 1) break;
+        ti = t.compound_selector_start - 1;
+    }
+    if (hashes.len == 0) return null;
+    return hashes;
+}
 
 fn testCandidates(
     ctx: *RunContext,
@@ -313,8 +532,22 @@ fn testCandidates(
     node: Environment.NodeId,
     allocator: Allocator,
     importance: Importance,
+    bloom: *const AncestorBloom,
 ) !void {
     for (candidates) |entry| {
+        if (entry.fast_match) {
+            const block = blk_items[entry.index];
+            switch (entry.pseudo) {
+                .none => try ctx.appendDeclBlock(node, block, importance),
+                .before => try ctx.appendPseudoDeclBlock(node, .before, block, importance),
+                .after => try ctx.appendPseudoDeclBlock(node, .after, block, importance),
+                .unrecognized => {},
+            }
+            continue;
+        }
+        if (entry.ancestor_hashes) |ah| {
+            if (!ah.mightMatchBloom(bloom)) continue;
+        }
         const selector = sel_items[entry.index];
         if (zss.selectors.matchElement(data, selector, env, node, allocator)) {
             const block = blk_items[entry.index];
@@ -474,7 +707,9 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
     var universal = std.ArrayListUnmanaged(SelectorEntry){};
 
     for (sel_items, 0..) |selector, i| {
+        if (!canMatchStatic(data, selector)) continue;
         const pe = selectors.extractPseudoElement(data, selector);
+        const key = extractRightmostKey(data, selector);
         const entry = SelectorEntry{
             .index = @intCast(i),
             .pseudo = if (pe) |p| switch (p) {
@@ -482,8 +717,9 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
                 .after => .after,
                 .unrecognized => .unrecognized,
             } else .none,
+            .fast_match = isFastMatch(data, selector, key),
+            .ancestor_hashes = extractAncestorHashes(data, selector),
         };
-        const key = extractRightmostKey(data, selector);
         switch (key) {
             .id => |id| {
                 const gop = try id_index.getOrPut(allocator, id);
@@ -504,15 +740,20 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
         }
     }
 
-    // Single DOM traversal: for each element, collect candidate selectors
-    // from all matching buckets, sort by original source index to preserve
-    // CSS cascade order, then test and apply.
+    // Single DOM traversal with ancestor bloom filter.
+    // For each element, collect candidate selectors from matching buckets,
+    // sort by source index, use bloom filter + fast_match to skip work.
     var merged = std.ArrayListUnmanaged(SelectorEntry){};
+    var bloom = AncestorBloom{};
+    var ancestor_node_stack = std.ArrayListUnmanaged(Environment.NodeId){};
     assert(ctx.document_node_stack.top == null);
     ctx.document_node_stack.top = env.root_node;
     while (ctx.document_node_stack.top) |*top| {
         const node = top.* orelse {
             _ = ctx.document_node_stack.pop();
+            if (ancestor_node_stack.pop()) |parent| {
+                bloom.removeNode(env, parent);
+            }
             continue;
         };
         top.* = node.nextSibling(env);
@@ -520,7 +761,11 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
             .text => continue,
             .element => {},
         }
-        if (node.firstChild(env)) |first_child| try ctx.document_node_stack.push(allocator, first_child);
+        if (node.firstChild(env)) |first_child| {
+            bloom.addNode(env, node);
+            try ancestor_node_stack.append(allocator, node);
+            try ctx.document_node_stack.push(allocator, first_child);
+        }
 
         // Gather candidate selectors for this element from all buckets
         merged.clearRetainingCapacity();
@@ -549,7 +794,7 @@ fn applySource(ctx: *RunContext, source: *const Source, env: *const Environment,
             }
         }.lessThan);
 
-        try testCandidates(ctx, merged.items, sel_items, blk_items, data, env, node, allocator, importance);
+        try testCandidates(ctx, merged.items, sel_items, blk_items, data, env, node, allocator, importance, &bloom);
     }
 
     if (importance == .normal) {
