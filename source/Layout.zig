@@ -12,7 +12,6 @@ const Fonts = zss.Fonts;
 const Images = zss.Images;
 const NodeId = Environment.NodeId;
 
-const cosmetic = @import("Layout/cosmetic.zig");
 pub const BoxGen = @import("Layout/BoxGen.zig");
 pub const BoxTreeManaged = @import("Layout/BoxTreeManaged.zig");
 pub const StyleComputer = @import("Layout/StyleComputer.zig");
@@ -103,20 +102,9 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         try layout.box_gen.run();
     }
 
-    try cosmeticLayout(layout);
-
     layout.computer.deinitStage(.box_gen);
 
     return box_tree;
-}
-
-fn cosmeticLayout(layout: *Layout) !void {
-    layout.computer.active_stage = .cosmetic;
-    defer layout.computer.deinitStage(.cosmetic);
-
-    layout.node_stack.top = layout.inputs.env.root_node;
-
-    try cosmetic.run(layout);
 }
 
 pub fn currentNode(layout: Layout) ?NodeId {

@@ -186,6 +186,31 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
 
     try pushRootInlineBox(box_gen);
 
+    // Set IFC font properties from the containing block's pre-read values.
+    // CSS inheritance means the containing block already has correct inherited
+    // font/color. Setting at creation time (not bottom-up in popFlowBlock)
+    // avoids parent overwriting child IFC fonts.
+    if (box_gen.stacks.block_info.top) |block_info| {
+        const layout = box_gen.getLayout();
+        if (layout.computer.box_gen_stage.map.get(block_info.node)) |bgc| {
+            if (bgc.font) |font_specified| {
+                ifc.font_family = font_specified.font_family;
+                ifc.font_size = font_specified.font_size.px_val();
+                ifc.font_weight = font_specified.font_weight;
+                ifc.font_style = font_specified.font_style;
+                ifc.text_transform = font_specified.text_transform;
+                ifc.overflow_wrap = font_specified.overflow_wrap;
+                ifc.text_decoration = font_specified.text_decoration;
+                ifc.text_align = font_specified.text_align;
+                ifc.line_height = font_specified.line_height;
+            }
+            if (bgc.color) |color_specified| {
+                _, const used_color = solve.colorProperty(color_specified);
+                ifc.font_color = used_color;
+            }
+        }
+    }
+
     // Inject deferred inline ::before from parent block into this IFC.
     if (box_gen.stacks.block_info.top) |*block_info| {
         if (block_info.inline_before_state == .deferred) {
@@ -463,6 +488,9 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             const inline_box_index = try pushInlineBox(box_gen, node);
             const generated_box = GeneratedBox{ .inline_box = .{ .ifc_id = ifc.ptr.id, .index = inline_box_index } };
             try layout.box_tree.setGeneratedBox(node, generated_box);
+
+            writeInlineBoxCosmetic(layout, ifc.ptr, inline_box_index, node);
+
             // CSS 2.1 §9.4.2: inline boxes are visible content only when they
             // have non-zero margins, padding, or borders. An empty <a> wrapping
             // only an abs-positioned child must NOT set this flag — doing so
@@ -803,6 +831,9 @@ fn setDataRootInlineBox(ifc: *const Ifc, inline_box_index: Ifc.Size) void {
     ifc_slice.items(.block_start)[inline_box_index] = .{};
     ifc_slice.items(.block_end)[inline_box_index] = .{};
     ifc_slice.items(.margins)[inline_box_index] = .{};
+    ifc_slice.items(.background)[inline_box_index] = .{};
+    ifc_slice.items(.insets)[inline_box_index] = .{ .x = 0, .y = 0 };
+    ifc_slice.items(.font_color)[inline_box_index] = .transparent;
 }
 
 fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: Ifc.Size, node: NodeId, percentage_base_unit: Unit) void {
@@ -982,6 +1013,38 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
     ifc.items(.block_start)[inline_box_index] = .{ .border = used.border_block_start, .padding = used.padding_block_start };
     ifc.items(.block_end)[inline_box_index] = .{ .border = used.border_block_end, .padding = used.padding_block_end };
     ifc.items(.margins)[inline_box_index] = .{ .start = used.margin_inline_start, .end = used.margin_inline_end };
+}
+
+fn writeInlineBoxCosmetic(layout: *Layout, ifc: *Ifc, inline_box_index: Ifc.Size, node: NodeId) void {
+    const bgc = layout.computer.box_gen_stage.map.get(node) orelse return;
+    const color_specified = bgc.color orelse return;
+    _, const used_color = solve.colorProperty(color_specified);
+
+    const ifc_slice = ifc.slice();
+
+    if (bgc.border_colors) |bc| {
+        const border_colors = solve.borderColors(bc, used_color);
+        ifc_slice.items(.inline_start)[inline_box_index].border_color = border_colors.left;
+        ifc_slice.items(.inline_end)[inline_box_index].border_color = border_colors.right;
+        ifc_slice.items(.block_start)[inline_box_index].border_color = border_colors.top;
+        ifc_slice.items(.block_end)[inline_box_index].border_color = border_colors.bottom;
+    }
+
+    ifc_slice.items(.font_color)[inline_box_index] = used_color;
+
+    if (bgc.font) |font_specified| {
+        ifc_slice.items(.text_decoration)[inline_box_index] = font_specified.text_decoration;
+    }
+
+    if (bgc.background_color) |bg_color| {
+        if (bgc.background_clip) |bg_clip| {
+            if (bgc.background) |bg| {
+                const clips = bg_clip.clip;
+                const background_clip = clips[(bg.image.len - 1) % clips.len];
+                ifc_slice.items(.background)[inline_box_index] = solve.inlineBoxBackground(bg_color.color, background_clip, used_color);
+            }
+        }
+    }
 }
 
 fn inlineBlockSolveSizes(

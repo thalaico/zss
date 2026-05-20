@@ -20,12 +20,10 @@ const StyleComputer = @This();
 
 pub const Stage = enum {
     box_gen,
-    cosmetic,
 
     fn ComputedValues(comptime stage: Stage) type {
         return switch (stage) {
             .box_gen => BoxGenComputedValues,
-            .cosmetic => CosmeticComputedValues,
         };
     }
 };
@@ -52,20 +50,6 @@ const BoxGenComputedValues = struct {
     opacity: ?ComputedValues(.opacity) = null,
 };
 
-const CosmeticComputedValues = struct {
-    box_style: ?ComputedValues(.box_style) = null,
-    border_colors: ?ComputedValues(.border_colors) = null,
-    border_styles: ?ComputedValues(.border_styles) = null,
-    border_radii: ?ComputedValues(.border_radii) = null,
-    background_color: ?ComputedValues(.background_color) = null,
-    background_clip: ?ComputedValues(.background_clip) = null,
-    background: ?ComputedValues(.background) = null,
-    color: ?ComputedValues(.color) = null,
-    insets: ?ComputedValues(.insets) = null,
-    opacity: ?ComputedValues(.opacity) = null,
-    font: ?ComputedValues(.font) = null,
-};
-
 const Current = struct {
     node: NodeId,
     cascaded_values: *const CascadeStorage,
@@ -76,7 +60,6 @@ current: Current,
 allocator: Allocator,
 active_stage: Stage = undefined,
 box_gen_stage: StageData(.box_gen) = .{},
-cosmetic_stage: StageData(.cosmetic) = .{},
 
 fn StageData(comptime stage: Stage) type {
     return struct {
@@ -100,14 +83,12 @@ pub fn deinit(self: *StyleComputer) void {
 fn stagePtr(sc: *StyleComputer, comptime stage: Stage) *StageData(stage) {
     return switch (stage) {
         .box_gen => &sc.box_gen_stage,
-        .cosmetic => &sc.cosmetic_stage,
     };
 }
 
 fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
     return switch (stage) {
         .box_gen => sc.box_gen_stage,
-        .cosmetic => sc.cosmetic_stage,
     };
 }
 

@@ -275,13 +275,13 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         blocks.items(.align_self)[index] = .auto;
         blocks.items(.list_style_type)[index] = .none;
 
+        blocks.items(.border_radii)[index] = .{};
+        blocks.items(.creates_absolute_cb)[index] = true;
+
         // Register the generated box for this node
         try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
-        
-        // Absolute blocks are appended at the end of the blocks array,
-        // outside the skip-based tree. They are not part of the normal
-        // child traversal. The cosmetic pass finds them via node_to_generated_box
-        // (DOM node traversal), so they DO get backgrounds/borders/insets.
+
+        try writeBlockCosmetic(layout, containing_subtree.view(), index, block.node, containing_block_width, containing_block_height, block.position);
     }
 }
 
@@ -597,6 +597,7 @@ pub const BlockInfo = struct {
     absolute_containing_block_id: ?Absolute.ContainingBlock.Id,
     node: NodeId,
     out_of_flow: bool,
+    position: BoxTree.BoxStyle.Position = .static,
     is_table_row: bool = false,
     is_flex_container: bool = false,
     /// justify-content for flex containers (default: flex_start)
@@ -764,6 +765,12 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.flex_basis_px)[index] = -1;
     subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
+    subtree.items(.border_colors)[index] = .{};
+    subtree.items(.border_radii)[index] = .{};
+    subtree.items(.background)[index] = .{};
+    subtree.items(.overflow)[index] = .visible;
+    subtree.items(.opacity)[index] = 1.0;
+    subtree.items(.creates_absolute_cb)[index] = false;
 }
 
 pub fn pushFlowBlock(
@@ -788,6 +795,7 @@ pub fn pushFlowBlock(
         .absolute_containing_block_id = absolute_containing_block_id,
         .node = node,
         .out_of_flow = box_style.position == .absolute or box_style.position == .fixed,
+        .position = box_style.position,
     });
     try box_gen.stacks.containing_block_size.push(layout.allocator, .{
         .width = switch (available_width) {
@@ -826,6 +834,8 @@ pub fn registerFloatLeaf(box_gen: *BoxGen) void {
         subtree.items(.clear_side)[block.index] = block_info.clear_side;
         subtree.items(.visibility)[block.index] = .visible;
         subtree.items(.is_bfc)[block.index] = true; // floats are BFC roots
+        const cb = box_gen.stacks.containing_block_size.top orelse ContainingBlockSize{ .width = 0, .height = null };
+        writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
     }
 
     // Register in parent's float_ctx.
@@ -1006,6 +1016,9 @@ pub fn popFlowBlock(
     subtree.items(.flex_basis_px)[block.index] = block_info.flex_basis_px;
     subtree.items(.align_self)[block.index] = block_info.align_self;
     subtree.items(.list_style_type)[block.index] = .none;
+
+    const cb = box_gen.stacks.containing_block_size.top orelse ContainingBlockSize{ .width = 0, .height = null };
+    writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
 
     // Register this block on the parent's float context if it's a float,
     // OR advance the parent's running cursor if it's a normal-flow child.
@@ -1371,6 +1384,12 @@ fn setDataBlock(
     // Default to false; popFlowBlock and other layout entry points
     // overwrite this when the block actually establishes a BFC.
     subtree.items(.is_bfc)[index] = false;
+    subtree.items(.border_colors)[index] = .{};
+    subtree.items(.border_radii)[index] = .{};
+    subtree.items(.background)[index] = .{};
+    subtree.items(.overflow)[index] = .visible;
+    subtree.items(.opacity)[index] = 1.0;
+    subtree.items(.creates_absolute_cb)[index] = false;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -1399,6 +1418,222 @@ fn setDataBlock(
 
     margins.top = used.margin_block_start;
     margins.bottom = used.margin_block_end;
+}
+
+fn writeBlockCosmetic(
+    layout: *Layout,
+    subtree: Subtree.View,
+    index: Subtree.Size,
+    node: NodeId,
+    containing_block_width: math.Unit,
+    containing_block_height: ?math.Unit,
+    position: BoxTree.BoxStyle.Position,
+) !void {
+    const bgc = layout.computer.box_gen_stage.map.get(node) orelse return;
+
+    const color_specified = bgc.color orelse return;
+    _, const used_color = solve.colorProperty(color_specified);
+
+    if (bgc.border_colors) |bc| {
+        subtree.items(.border_colors)[index] = solve.borderColors(bc, used_color);
+    }
+    if (bgc.border_radii) |br| {
+        subtree.items(.border_radii)[index] = solve.borderRadii(br);
+    }
+    if (bgc.opacity) |op| {
+        subtree.items(.opacity)[index] = solve.opacity(op);
+    }
+
+    subtree.items(.creates_absolute_cb)[index] = switch (position) {
+        .static => false,
+        .relative, .absolute, .fixed => true,
+    };
+    subtree.items(.overflow)[index] = if (bgc.box_style) |bs| blk: {
+        const computed_bs, _ = solve.boxStyle(bs, .not_root, false);
+        break :blk computed_bs.overflow;
+    } else .visible;
+
+    if (bgc.font) |font| {
+        subtree.items(.visibility)[index] = font.visibility;
+
+        const env = layout.inputs.env;
+        if (env.getNodeProperty(.category, node) == .element) {
+            const type_info = env.getNodeProperty(.type, node);
+            var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
+            if (type_iter.eql("li")) {
+                subtree.items(.list_style_type)[index] = font.list_style_type;
+            }
+        }
+    }
+
+    // Resolve insets for positioned elements.
+    const font_size_px: f32 = if (bgc.font) |f| f.font_size.px_val() else 16.0;
+    const cb_size = math.Size{
+        .w = containing_block_width,
+        .h = containing_block_height orelse 0,
+    };
+    const used_insets = &subtree.items(.insets)[index];
+    switch (position) {
+        .static => {},
+        .relative => {
+            const insets_spec = bgc.insets orelse return;
+            solveInsetsRelative(insets_spec, cb_size, font_size_px, used_insets);
+        },
+        .absolute => {
+            const insets_spec = bgc.insets orelse return;
+            solveInsetsAbsolute(insets_spec, cb_size, font_size_px, used_insets);
+        },
+        .fixed => {
+            const insets_spec = bgc.insets orelse return;
+            const icb_size = layout.viewport;
+            solveInsetsAbsolute(insets_spec, icb_size, font_size_px, used_insets);
+        },
+    }
+
+    // Resolve backgrounds (needs box_offsets which are now set by setDataBlock).
+    if (bgc.background_color) |bg_color| {
+        const bg_clip = bgc.background_clip orelse return;
+        const bg = bgc.background orelse return;
+        const box_offsets_ptr = &subtree.items(.box_offsets)[index];
+        const borders_ptr = &subtree.items(.borders)[index];
+        const background_ptr = &subtree.items(.background)[index];
+        try resolveBlockBackgrounds(
+            layout,
+            box_offsets_ptr,
+            borders_ptr,
+            used_color,
+            bg_color,
+            bg_clip,
+            bg,
+            background_ptr,
+        );
+    }
+}
+
+fn solveInsetsRelative(
+    specified: zss.values.groups.Tag.SpecifiedValues(.insets),
+    containing_block_size: math.Size,
+    font_size_px: f32,
+    used: *BoxTree.Insets,
+) void {
+    const left: ?math.Unit = switch (specified.left) {
+        .px => |v| solve.length(.px, v),
+        .percentage => |v| solve.percentage(v, containing_block_size.w),
+        .auto => null,
+        .em => |v| solve.length(.px, v * font_size_px),
+    };
+    const right: ?math.Unit = switch (specified.right) {
+        .px => |v| -solve.length(.px, v),
+        .percentage => |v| -solve.percentage(v, containing_block_size.w),
+        .auto => null,
+        .em => |v| -solve.length(.px, v * font_size_px),
+    };
+    const top: ?math.Unit = switch (specified.top) {
+        .px => |v| solve.length(.px, v),
+        .percentage => |v| solve.percentage(v, containing_block_size.h),
+        .auto => null,
+        .em => |v| solve.length(.px, v * font_size_px),
+    };
+    const bottom: ?math.Unit = switch (specified.bottom) {
+        .px => |v| -solve.length(.px, v),
+        .percentage => |v| -solve.percentage(v, containing_block_size.h),
+        .auto => null,
+        .em => |v| -solve.length(.px, v * font_size_px),
+    };
+    used.* = .{
+        .x = left orelse right orelse 0,
+        .y = top orelse bottom orelse 0,
+    };
+}
+
+fn solveInsetsAbsolute(
+    specified: zss.values.groups.Tag.SpecifiedValues(.insets),
+    containing_block_size: math.Size,
+    font_size_px: f32,
+    used: *BoxTree.Insets,
+) void {
+    var left: math.Unit = 0;
+    var top: math.Unit = 0;
+    switch (specified.left) {
+        .px => |v| left = solve.length(.px, v),
+        .percentage => |v| left = solve.percentage(v, containing_block_size.w),
+        .auto => {},
+        .em => |v| left = solve.length(.px, v * font_size_px),
+    }
+    switch (specified.top) {
+        .px => |v| top = solve.length(.px, v),
+        .percentage => |v| top = solve.percentage(v, containing_block_size.h),
+        .auto => {},
+        .em => |v| top = solve.length(.px, v * font_size_px),
+    }
+    used.* = .{ .x = left, .y = top };
+}
+
+fn resolveBlockBackgrounds(
+    layout: *Layout,
+    box_offsets: *const BoxTree.BoxOffsets,
+    borders: *const BoxTree.Borders,
+    current_color: math.Color,
+    bg_color_spec: zss.values.groups.Tag.SpecifiedValues(.background_color),
+    bg_clip_spec: zss.values.groups.Tag.SpecifiedValues(.background_clip),
+    bg_spec: zss.values.groups.Tag.SpecifiedValues(.background),
+    background_ptr: *BoxTree.BlockBoxBackground,
+) !void {
+    background_ptr.color = solve.color(bg_color_spec.color, current_color);
+    background_ptr.gradient = switch (bg_color_spec.gradient) {
+        .gradient => |g| BoxTree.LinearGradient{
+            .from = math.Color.fromRgbaInt(g.from_rgba),
+            .to = math.Color.fromRgbaInt(g.to_rgba),
+        },
+        else => null,
+    };
+
+    const images = bg_spec.image;
+    const clips = bg_clip_spec.clip;
+    background_ptr.color_clip = solve.backgroundClip(clips[(images.len - 1) % clips.len]);
+
+    var num_images: usize = 0;
+    for (images) |image| switch (image) {
+        .none => {},
+        .image, .url => num_images += 1,
+    };
+    if (num_images == 0) {
+        background_ptr.images = .invalid;
+        return;
+    }
+
+    const handle, const buffer = try layout.box_tree.allocBackgroundImages(@intCast(num_images));
+    var buffer_index: usize = 0;
+    for (images, 0..) |image, img_idx| {
+        if (image == .none) continue;
+        defer buffer_index += 1;
+
+        const image_handle = switch (image) {
+            .image => |ih| ih,
+            .url => |url| layout.inputs.env.urls_to_images.get(url) orelse {
+                buffer[buffer_index] = .{};
+                continue;
+            },
+            .none => unreachable,
+        };
+
+        const dimensions = layout.inputs.images.dimensions(image_handle);
+        buffer[buffer_index] = solve.backgroundImage(
+            image_handle,
+            dimensions,
+            .{
+                .origin = bg_spec.origin[img_idx % bg_spec.origin.len],
+                .position = bg_spec.position[img_idx % bg_spec.position.len],
+                .size = bg_spec.size[img_idx % bg_spec.size.len],
+                .repeat = bg_spec.repeat[img_idx % bg_spec.repeat.len],
+                .attachment = bg_spec.attachment[img_idx % bg_spec.attachment.len],
+                .clip = clips[img_idx % clips.len],
+            },
+            box_offsets,
+            borders,
+        );
+    }
+    background_ptr.images = handle;
 }
 
 fn setDataIfcContainer(
