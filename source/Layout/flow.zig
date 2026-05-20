@@ -95,6 +95,18 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             computer.setComputedValue(.box_gen, .font, font_specified);
             computer.commitNode(.box_gen);
 
+            // Pre-read cosmetic specified values while cascaded_values are
+            // still loaded from setCurrentNode. Stored in box_gen_stage.map
+            // so the cosmetic pass can skip per-node getSpecifiedValue calls.
+            computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+            computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+            computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+            computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+            computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+            computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+            computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+            computer.commitNode(.box_gen);
+
             try pushBlock(box_gen, node, sizes, stacking_context, position);
             if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
                 const info = &box_gen.stacks.block_info.top.?;
@@ -258,10 +270,10 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
     const layout = box_gen.getLayout();
     const computer = &layout.computer;
     const saved_current = computer.current;
-    const saved_computed = computer.stage.box_gen.current_computed;
+    const saved_computed = computer.box_gen_stage.current_computed;
     defer {
         computer.current = saved_current;
-        computer.stage.box_gen.current_computed = saved_computed;
+        computer.box_gen_stage.current_computed = saved_computed;
     }
 
     // Check if this node has cascaded styles for the pseudo-element.

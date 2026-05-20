@@ -26,6 +26,21 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyl
     const stacking_context = rootBlockSolveStackingContext(&layout.computer);
     layout.computer.commitNode(.box_gen);
 
+    var font_specified = layout.computer.getSpecifiedValue(.box_gen, .font);
+    font_specified.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
+    if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
+        font_specified.font_size = .{ .px = 13.0 };
+    }
+    layout.computer.setComputedValue(.box_gen, .font, font_specified);
+    layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
+    layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
+    layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+    layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
+    layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
+    layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
+    layout.computer.setComputedValue(.box_gen, .opacity, layout.computer.getSpecifiedValue(.box_gen, .opacity));
+    layout.computer.commitNode(.box_gen);
+
     switch (inner_block) {
         .flow, .flex, .grid => {
             const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };

@@ -42,6 +42,14 @@ const BoxGenComputedValues = struct {
     font: ?ComputedValues(.font) = null,
     grid_template: ?ComputedValues(.grid_template) = null,
     generated_content: ?ComputedValues(.generated_content) = null,
+    // Cosmetic groups (merged from CosmeticComputedValues to avoid second pass)
+    border_colors: ?ComputedValues(.border_colors) = null,
+    border_radii: ?ComputedValues(.border_radii) = null,
+    background_color: ?ComputedValues(.background_color) = null,
+    background_clip: ?ComputedValues(.background_clip) = null,
+    background: ?ComputedValues(.background) = null,
+    color: ?ComputedValues(.color) = null,
+    opacity: ?ComputedValues(.opacity) = null,
 };
 
 const CosmeticComputedValues = struct {
@@ -66,23 +74,22 @@ const Current = struct {
 env: *const Environment,
 current: Current,
 allocator: Allocator,
-stage: union {
-    box_gen: struct {
-        map: std.AutoHashMapUnmanaged(NodeId, BoxGenComputedValues) = .{},
-        current_computed: BoxGenComputedValues = undefined,
-    },
-    cosmetic: struct {
-        map: std.AutoHashMapUnmanaged(NodeId, CosmeticComputedValues) = .{},
-        current_computed: CosmeticComputedValues = undefined,
-    },
-},
+active_stage: Stage = undefined,
+box_gen_stage: StageData(.box_gen) = .{},
+cosmetic_stage: StageData(.cosmetic) = .{},
+
+fn StageData(comptime stage: Stage) type {
+    return struct {
+        map: std.AutoHashMapUnmanaged(NodeId, stage.ComputedValues()) = .{},
+        current_computed: stage.ComputedValues() = undefined,
+    };
+}
 
 pub fn init(env: *const Environment, allocator: Allocator) StyleComputer {
     return .{
         .env = env,
         .allocator = allocator,
         .current = undefined,
-        .stage = undefined,
     };
 }
 
@@ -90,9 +97,22 @@ pub fn deinit(self: *StyleComputer) void {
     _ = self;
 }
 
+fn stagePtr(sc: *StyleComputer, comptime stage: Stage) *StageData(stage) {
+    return switch (stage) {
+        .box_gen => &sc.box_gen_stage,
+        .cosmetic => &sc.cosmetic_stage,
+    };
+}
+
+fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
+    return switch (stage) {
+        .box_gen => sc.box_gen_stage,
+        .cosmetic => sc.cosmetic_stage,
+    };
+}
+
 pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage) void {
-    const current_stage = &@field(sc.stage, @tagName(stage));
-    current_stage.map.deinit(sc.allocator);
+    sc.stagePtr(stage).map.deinit(sc.allocator);
 }
 
 // TODO: Setting the current node should not require allocating
@@ -106,12 +126,12 @@ pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !
         .cascaded_values = cascaded_values,
     };
 
-    const current_stage = &@field(sc.stage, @tagName(stage));
-    const gop_result = try current_stage.map.getOrPut(sc.allocator, node);
+    const s = sc.stagePtr(stage);
+    const gop_result = try s.map.getOrPut(sc.allocator, node);
     if (!gop_result.found_existing) {
         gop_result.value_ptr.* = .{};
     }
-    current_stage.current_computed = gop_result.value_ptr.*;
+    s.current_computed = gop_result.value_ptr.*;
 }
 
 /// Set up the style computer to read cascaded values for a pseudo-element
@@ -125,15 +145,14 @@ pub fn setPseudoElement(sc: *StyleComputer, comptime stage: Stage, node: NodeId,
         .cascaded_values = cascaded_values,
     };
     // Fresh computed values for the pseudo-element (not stored in the per-node map).
-    const current_stage = &@field(sc.stage, @tagName(stage));
-    current_stage.current_computed = .{};
+    sc.stagePtr(stage).current_computed = .{};
     return true;
 }
 
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
     const node = sc.current.node;
-    const current_stage = &@field(sc.stage, @tagName(stage));
-    current_stage.map.putAssumeCapacity(node, current_stage.current_computed);
+    const s = sc.stagePtr(stage);
+    s.map.putAssumeCapacity(node, s.current_computed);
 }
 
 pub fn getText(sc: StyleComputer) []const u8 {
@@ -172,8 +191,7 @@ pub fn resolvedFontSizePx(sc: StyleComputer, comptime stage: Stage) f32 {
 }
 
 pub fn setComputedValue(sc: *StyleComputer, comptime stage: Stage, comptime group: groups.Tag, value: ComputedValues(group)) void {
-    const current_stage = &@field(sc.stage, @tagName(stage));
-    const field = &@field(current_stage.current_computed, @tagName(group));
+    const field = &@field(sc.stagePtr(stage).current_computed, @tagName(group));
     assert(field.* == null);
     field.* = value;
 }
@@ -283,9 +301,9 @@ fn InheritedValue(comptime group: groups.Tag) type {
         fn get(self: *@This(), sc: StyleComputer, comptime stage: Stage) ComputedValues(group) {
             if (self.value) |value| return value;
 
-            const current_stage = @field(sc.stage, @tagName(stage));
+            const s = sc.stageVal(stage);
             self.value = if (self.node.parent(sc.env)) |parent| blk: { // TODO: Should check for equality with the root node instead
-                if (current_stage.map.get(parent)) |parent_computed_values| {
+                if (s.map.get(parent)) |parent_computed_values| {
                     if (@field(parent_computed_values, @tagName(group))) |inherited_value| {
                         break :blk inherited_value;
                     }

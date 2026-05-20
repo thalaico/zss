@@ -431,7 +431,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 return;
             }
 
-            { // TODO: Grabbing useless data to satisfy inheritance...
+            {
                 const data = .{
                     .content_width = layout.computer.getSpecifiedValue(.box_gen, .content_width),
                     .content_height = layout.computer.getSpecifiedValue(.box_gen, .content_height),
@@ -441,6 +441,22 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 layout.computer.setComputedValue(.box_gen, .content_height, data.content_height);
                 layout.computer.setComputedValue(.box_gen, .z_index, data.z_index);
 
+                var font_specified = layout.computer.getSpecifiedValue(.box_gen, .font);
+                font_specified.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
+                if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
+                    font_specified.font_size = .{ .px = 13.0 };
+                }
+                layout.computer.setComputedValue(.box_gen, .font, font_specified);
+                layout.computer.commitNode(.box_gen);
+
+                layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
+                layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
+                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+                layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
+                layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
+                layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
+                layout.computer.setComputedValue(.box_gen, .insets, layout.computer.getSpecifiedValue(.box_gen, .insets));
+                layout.computer.setComputedValue(.box_gen, .opacity, layout.computer.getSpecifiedValue(.box_gen, .opacity));
                 layout.computer.commitNode(.box_gen);
             }
 
@@ -474,6 +490,21 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             .flow, .flex, .grid => {
                 const sizes = inlineBlockSolveSizes(&layout.computer, position, ifc.containing_block_size);
                 const stacking_context = inlineBlockSolveStackingContext(&layout.computer, position);
+                layout.computer.commitNode(.box_gen);
+
+                var ib_font = layout.computer.getSpecifiedValue(.box_gen, .font);
+                ib_font.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
+                if (ib_font.font_family == .monospace and ib_font.font_size.px_val() == 16.0) {
+                    ib_font.font_size = .{ .px = 13.0 };
+                }
+                layout.computer.setComputedValue(.box_gen, .font, ib_font);
+                layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
+                layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
+                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+                layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
+                layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
+                layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
+                layout.computer.setComputedValue(.box_gen, .opacity, layout.computer.getSpecifiedValue(.box_gen, .opacity));
                 layout.computer.commitNode(.box_gen);
 
                 if (sizes.get(.inline_size)) |_| {

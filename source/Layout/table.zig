@@ -507,7 +507,16 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
     // Commit font group so descendant text nodes inherit font-size during layout.
     computer.setComputedValue(.box_gen, .font, font_specified);
     computer.commitNode(.box_gen);
-    
+
+    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+    computer.commitNode(.box_gen);
+
     // Push table state and pre-compute column count from DOM structure.
     // This lets row 1 cells be positioned horizontally (not stacked).
     try box_gen.table_context.pushTable(box_gen.getLayout().allocator, sizes.inline_size_untagged);
@@ -546,7 +555,16 @@ pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Pos
     const font_specified = computer.getSpecifiedValue(.box_gen, .font);
     computer.setComputedValue(.box_gen, .font, font_specified);
     computer.commitNode(.box_gen);
-    
+
+    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+    computer.commitNode(.box_gen);
+
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .row, .bfc_depth = box_gen.bfc_stack.top.? });
@@ -632,7 +650,16 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const cell_font = computer.getSpecifiedValue(.box_gen, .font);
     computer.setComputedValue(.box_gen, .font, cell_font);
     computer.commitNode(.box_gen);
-    
+
+    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+    computer.commitNode(.box_gen);
+
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try table_ctx.block_type_stack.append(alloc, .{ .block_type = .cell, .bfc_depth = box_gen.bfc_stack.top.? });

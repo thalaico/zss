@@ -320,6 +320,21 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
     const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
 
+    var font_specified = computer.getSpecifiedValue(.box_gen, .font);
+    font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
+    if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
+        font_specified.font_size = .{ .px = 13.0 };
+    }
+    computer.setComputedValue(.box_gen, .font, font_specified);
+    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+    computer.commitNode(.box_gen);
+
     const edge_width = sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged +
         sizes.border_inline_start + sizes.border_inline_end +
         sizes.padding_inline_start + sizes.padding_inline_end;

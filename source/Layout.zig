@@ -98,18 +98,20 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
 
     {
         layout.node_stack.top = layout.inputs.env.root_node;
-        layout.computer.stage = .{ .box_gen = .{} };
-        defer layout.computer.deinitStage(.box_gen);
+        layout.computer.active_stage = .box_gen;
+        errdefer layout.computer.deinitStage(.box_gen);
         try layout.box_gen.run();
     }
 
     try cosmeticLayout(layout);
 
+    layout.computer.deinitStage(.box_gen);
+
     return box_tree;
 }
 
 fn cosmeticLayout(layout: *Layout) !void {
-    layout.computer.stage = .{ .cosmetic = .{} };
+    layout.computer.active_stage = .cosmetic;
     defer layout.computer.deinitStage(.cosmetic);
 
     layout.node_stack.top = layout.inputs.env.root_node;

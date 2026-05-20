@@ -145,20 +145,19 @@ pub fn run(layout: *Layout) !void {
 }
 
 fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comptime is_root: Layout.IsRoot) !void {
+    const bgc = layout.computer.box_gen_stage.map.get(layout.computer.current.node);
     const specified = .{
-        .box_style = layout.computer.getSpecifiedValue(.cosmetic, .box_style),
-        .color = layout.computer.getSpecifiedValue(.cosmetic, .color),
-        .border_colors = layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
-        .border_styles = layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
-        .border_radii = layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
-        .background_color = layout.computer.getSpecifiedValue(.cosmetic, .background_color),
-        // DEBUG: Check what we got from getSpecifiedValue
-        // .background_color will be logged below
-        .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
-        .background = layout.computer.getSpecifiedValue(.cosmetic, .background),
-        .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
-        .opacity = layout.computer.getSpecifiedValue(.cosmetic, .opacity),
-        .font = layout.computer.getSpecifiedValue(.cosmetic, .font),
+        .box_style = if (bgc) |v| v.box_style orelse layout.computer.getSpecifiedValue(.cosmetic, .box_style) else layout.computer.getSpecifiedValue(.cosmetic, .box_style),
+        .color = if (bgc) |v| v.color orelse layout.computer.getSpecifiedValue(.cosmetic, .color) else layout.computer.getSpecifiedValue(.cosmetic, .color),
+        .border_colors = if (bgc) |v| v.border_colors orelse layout.computer.getSpecifiedValue(.cosmetic, .border_colors) else layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
+        .border_styles = if (bgc) |v| v.border_styles orelse layout.computer.getSpecifiedValue(.cosmetic, .border_styles) else layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
+        .border_radii = if (bgc) |v| v.border_radii orelse layout.computer.getSpecifiedValue(.cosmetic, .border_radii) else layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
+        .background_color = if (bgc) |v| v.background_color orelse layout.computer.getSpecifiedValue(.cosmetic, .background_color) else layout.computer.getSpecifiedValue(.cosmetic, .background_color),
+        .background_clip = if (bgc) |v| v.background_clip orelse layout.computer.getSpecifiedValue(.cosmetic, .background_clip) else layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
+        .background = if (bgc) |v| v.background orelse layout.computer.getSpecifiedValue(.cosmetic, .background) else layout.computer.getSpecifiedValue(.cosmetic, .background),
+        .insets = if (bgc) |v| v.insets orelse layout.computer.getSpecifiedValue(.cosmetic, .insets) else layout.computer.getSpecifiedValue(.cosmetic, .insets),
+        .opacity = if (bgc) |v| v.opacity orelse layout.computer.getSpecifiedValue(.cosmetic, .opacity) else layout.computer.getSpecifiedValue(.cosmetic, .opacity),
+        .font = if (bgc) |v| v.font orelse layout.computer.getSpecifiedValue(.cosmetic, .font) else layout.computer.getSpecifiedValue(.cosmetic, .font),
     };
 
     const subtree = layout.box_tree.ptr.getSubtree(ref.subtree).view();
@@ -169,13 +168,9 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
 
     // Propagate text properties to IFCs
     const font_family = specified.font.font_family;
-    // Chrome/Blink's "default_fixed_font_size" quirk: when the cascaded font
-    // family is the monospace generic and font-size resolves to the UA
-    // default (16px), use 13px instead. This is not in the CSS spec but
-    // every browser on Linux/Mac/Windows does it, so author CSS that uses
-    // `font-family: monospace` without an explicit font-size expects it.
-    var font_size_px: f32 = layout.computer.resolvedFontSizePx(.cosmetic);
-    if (font_family == .monospace and font_size_px == 16.0) {
+    const font_precomputed = if (bgc) |v| v.font != null else false;
+    var font_size_px: f32 = if (font_precomputed) specified.font.font_size.px_val() else layout.computer.resolvedFontSizePx(.cosmetic);
+    if (!font_precomputed and font_family == .monospace and font_size_px == 16.0) {
         font_size_px = 13.0;
     }
     const font_weight = specified.font.font_weight;
@@ -673,19 +668,18 @@ fn inlineBoxCosmeticLayout(
 ) void {
     const ifc_slice = ifc.slice();
 
+    const bgc = layout.computer.box_gen_stage.map.get(layout.computer.current.node);
     const specified = .{
-        .box_style = layout.computer.getSpecifiedValue(.cosmetic, .box_style),
-        .color = layout.computer.getSpecifiedValue(.cosmetic, .color),
-        .border_colors = layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
-        .border_styles = layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
-        .border_radii = layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
-        .background_color = layout.computer.getSpecifiedValue(.cosmetic, .background_color),
-        .background_clip = layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
-        .background = layout.computer.getSpecifiedValue(.cosmetic, .background), // TODO: Inline boxes don't need background
-        .insets = layout.computer.getSpecifiedValue(.cosmetic, .insets),
-        // Font properties must be read and committed so child text nodes
-        // inherit font-weight (e.g., <b> making children bold).
-        .font = layout.computer.getSpecifiedValue(.cosmetic, .font),
+        .box_style = if (bgc) |v| v.box_style orelse layout.computer.getSpecifiedValue(.cosmetic, .box_style) else layout.computer.getSpecifiedValue(.cosmetic, .box_style),
+        .color = if (bgc) |v| v.color orelse layout.computer.getSpecifiedValue(.cosmetic, .color) else layout.computer.getSpecifiedValue(.cosmetic, .color),
+        .border_colors = if (bgc) |v| v.border_colors orelse layout.computer.getSpecifiedValue(.cosmetic, .border_colors) else layout.computer.getSpecifiedValue(.cosmetic, .border_colors),
+        .border_styles = if (bgc) |v| v.border_styles orelse layout.computer.getSpecifiedValue(.cosmetic, .border_styles) else layout.computer.getSpecifiedValue(.cosmetic, .border_styles),
+        .border_radii = if (bgc) |v| v.border_radii orelse layout.computer.getSpecifiedValue(.cosmetic, .border_radii) else layout.computer.getSpecifiedValue(.cosmetic, .border_radii),
+        .background_color = if (bgc) |v| v.background_color orelse layout.computer.getSpecifiedValue(.cosmetic, .background_color) else layout.computer.getSpecifiedValue(.cosmetic, .background_color),
+        .background_clip = if (bgc) |v| v.background_clip orelse layout.computer.getSpecifiedValue(.cosmetic, .background_clip) else layout.computer.getSpecifiedValue(.cosmetic, .background_clip),
+        .background = if (bgc) |v| v.background orelse layout.computer.getSpecifiedValue(.cosmetic, .background) else layout.computer.getSpecifiedValue(.cosmetic, .background),
+        .insets = if (bgc) |v| v.insets orelse layout.computer.getSpecifiedValue(.cosmetic, .insets) else layout.computer.getSpecifiedValue(.cosmetic, .insets),
+        .font = if (bgc) |v| v.font orelse layout.computer.getSpecifiedValue(.cosmetic, .font) else layout.computer.getSpecifiedValue(.cosmetic, .font),
     };
 
     const computed_box_style, _ = solve.boxStyle(specified.box_style, .not_root, false);
@@ -693,10 +687,8 @@ fn inlineBoxCosmeticLayout(
     var computed_insets: ComputedValues(.insets) = undefined;
     {
         const used_insets = &ifc_slice.items(.insets)[inline_box_index];
-        // Inline boxes resolve em insets against their own computed font-size.
-        // layout.computer has the inline box's cascade loaded here; reuse the
-        // same API as block cosmetic layout.
-        const inline_font_size_px = layout.computer.resolvedFontSizePx(.cosmetic);
+        const font_precomputed = if (bgc) |v| v.font != null else false;
+        const inline_font_size_px = if (font_precomputed) specified.font.font_size.px_val() else layout.computer.resolvedFontSizePx(.cosmetic);
         switch (computed_box_style.position) {
             .static => solveInsetsStatic(specified.insets, &computed_insets, used_insets),
             .relative => {
