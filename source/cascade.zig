@@ -711,6 +711,88 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
     return null;
 }
 
+const DocHashes = std.AutoHashMapUnmanaged(u32, void);
+
+fn selectorCanMatchInDoc(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex, doc_hashes: *const DocHashes) bool {
+    var trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    while (true) {
+        const trailing = data[trailing_idx].trailing;
+        if (!compoundCanMatchInDoc(data, trailing.compound_selector_start, trailing_idx, doc_hashes)) return false;
+        if (trailing.compound_selector_start <= complex_selector_index + 1) break;
+        trailing_idx = trailing.compound_selector_start - 1;
+    }
+    return true;
+}
+
+fn compoundCanMatchInDoc(data: []const selectors.Data, start: selectors.Data.ListIndex, end: selectors.Data.ListIndex, doc_hashes: *const DocHashes) bool {
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .type => {
+                idx += 1;
+                const et = data[idx].type_selector;
+                if (et.name != .any and et.name != .anonymous) {
+                    if (!doc_hashes.contains(@intFromEnum(et.name))) return false;
+                }
+            },
+            .class => {
+                idx += 1;
+                if (!doc_hashes.contains(@intFromEnum(data[idx].class_selector))) return false;
+            },
+            .id => {
+                idx += 1;
+                if (!doc_hashes.contains(@intFromEnum(data[idx].id_selector))) return false;
+            },
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                if (!selectorListCanMatchInDoc(data, list.start, list.count, doc_hashes)) return false;
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                if (!selectorListCanMatchInDoc(data, list.start, list.count, doc_hashes)) return false;
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+        }
+    }
+    return true;
+}
+
+fn selectorListCanMatchInDoc(data: []const selectors.Data, list_start: selectors.Data.ListIndex, list_count: usize, doc_hashes: *const DocHashes) bool {
+    var alt_start = list_start;
+    for (0..list_count) |_| {
+        if (selectorCanMatchInDoc(data, alt_start, doc_hashes)) return true;
+        alt_start = data[alt_start].next_complex_selector;
+    }
+    return false;
+}
+
+fn filterDeadSelectors(list: *std.ArrayListUnmanaged(SelectorEntry), data: []const selectors.Data, doc_hashes: *const DocHashes) usize {
+    var write: usize = 0;
+    var killed: usize = 0;
+    for (list.items) |entry| {
+        if (!entry.fast_match and !selectorCanMatchInDoc(data, entry.selector, doc_hashes)) {
+            killed += 1;
+            continue;
+        }
+        list.items[write] = entry;
+        write += 1;
+    }
+    list.items = list.items[0..write];
+    return killed;
+}
+
 const RunContext = struct {
     arena: std.heap.ArenaAllocator,
     element_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Environment.NodeId, std.ArrayListUnmanaged(BlockImportance)) = .empty,
@@ -718,6 +800,8 @@ const RunContext = struct {
     pseudo_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Database.PseudoKey, std.ArrayListUnmanaged(BlockImportance)) = .empty,
     cascade_node_stack: zss.Stack([]const *const Node) = .{},
     document_node_stack: zss.Stack(?Environment.NodeId) = .{},
+    doc_hashes: DocHashes = .empty,
+    doc_hashes_built: bool = false,
 
     const BlockImportance = struct {
         block: Block,
@@ -741,6 +825,18 @@ const RunContext = struct {
             gop.value_ptr.* = .{};
         }
         try gop.value_ptr.append(allocator, .{ .block = block, .importance = importance });
+    }
+
+    fn ensureDocHashes(ctx: *RunContext, env: *const Environment) !void {
+        if (ctx.doc_hashes_built) return;
+        ctx.doc_hashes_built = true;
+        const alloc = ctx.arena.allocator();
+        var cls_it = env.nodes_to_classes.valueIterator();
+        while (cls_it.next()) |classes| {
+            for (classes.*) |cls| try ctx.doc_hashes.put(alloc, @intFromEnum(cls), {});
+        }
+        var id_it = env.nodes_to_ids.valueIterator();
+        while (id_it.next()) |id| try ctx.doc_hashes.put(alloc, @intFromEnum(id.*), {});
     }
 };
 
@@ -954,6 +1050,27 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     }
 
     const t_index = std.time.milliTimestamp();
+
+    // Document-level pre-filter: eliminate selectors whose requirements
+    // can never be satisfied by any element in this document.
+    try ctx.ensureDocHashes(env);
+    var killed_total: usize = 0;
+    {
+        killed_total += filterDeadSelectors(&universal, data, &ctx.doc_hashes);
+        var cls_it = class_index.iterator();
+        while (cls_it.next()) |entry| {
+            killed_total += filterDeadSelectors(entry.value_ptr, data, &ctx.doc_hashes);
+        }
+        var type_it = type_index.iterator();
+        while (type_it.next()) |entry| {
+            killed_total += filterDeadSelectors(entry.value_ptr, data, &ctx.doc_hashes);
+        }
+        var id_it = id_index.iterator();
+        while (id_it.next()) |entry| {
+            killed_total += filterDeadSelectors(entry.value_ptr, data, &ctx.doc_hashes);
+        }
+    }
+    const t_filter = std.time.milliTimestamp();
 
     // Two-level cache:
     // L1 (full_cache): keyed by (tag, classes, parent) — full sharing for siblings
@@ -1210,10 +1327,13 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
     }
     const t_dom = std.time.milliTimestamp();
-    std.debug.print("[CASCADE-SRC] attrs={d}ms index={d}ms dom_walk={d}ms nodes={d} L1_hit={d}/{d} L2_hit={d}/{d} dep={d}(bloom_rej={d} no_bloom={d} match_elem={d})\n", .{
+    std.debug.print("[CASCADE-SRC] attrs={d}ms index={d}ms filter={d}ms(killed={d} doc_hashes={d}) dom_walk={d}ms nodes={d} L1_hit={d}/{d} L2_hit={d}/{d} dep={d}(bloom_rej={d} no_bloom={d} match_elem={d})\n", .{
         t_attrs - t0,
         t_index - t_attrs,
-        t_dom - t_index,
+        t_filter - t_index,
+        killed_total,
+        ctx.doc_hashes.count(),
+        t_dom - t_filter,
         node_count,
         full_hit_count,
         full_cache.count(),
