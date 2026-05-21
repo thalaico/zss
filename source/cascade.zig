@@ -595,39 +595,6 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
     return null;
 }
 
-fn testCandidates(
-    ctx: *RunContext,
-    candidates: []const SelectorEntry,
-    data: []const selectors.Data,
-    env: *const Environment,
-    node: Environment.NodeId,
-    allocator: Allocator,
-    bloom: *const AncestorBloom,
-) !void {
-    for (candidates) |entry| {
-        if (entry.fast_match) {
-            switch (entry.pseudo) {
-                .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
-                .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
-                .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
-                .unrecognized => {},
-            }
-            continue;
-        }
-        if (entry.ancestor_hashes) |ah| {
-            if (!ah.mightMatchBloom(bloom)) continue;
-        }
-        if (zss.selectors.matchElement(data, entry.selector, env, node, allocator)) {
-            switch (entry.pseudo) {
-                .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
-                .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
-                .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
-                .unrecognized => {},
-            }
-        }
-    }
-}
-
 const RunContext = struct {
     arena: std.heap.ArenaAllocator,
     element_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Environment.NodeId, std.ArrayListUnmanaged(BlockImportance)) = .empty,
@@ -663,6 +630,7 @@ const RunContext = struct {
 
 /// Runs the CSS cascade.
 pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !void {
+    const t0 = std.time.milliTimestamp();
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
 
@@ -679,12 +647,14 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
     try traverseList(&ctx, list, env, .user, .normal);
     try traverseList(&ctx, list, env, .user_agent, .normal);
 
+    const t_traverse = std.time.milliTimestamp();
+
     var element_iterator = ctx.element_to_decl_block_list.iterator();
     while (element_iterator.next()) |entry| {
         const node = entry.key_ptr.*;
         const cascaded_values = try env.cascade_db.addStorage(env.allocator, node);
         cascaded_values.reset();
-        
+
         // Inherit custom properties from parent
         if (node.parent(env)) |parent_node| {
             if (env.cascade_db.getStorage(parent_node)) |parent_storage| {
@@ -700,6 +670,8 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         }
     }
 
+    const t_apply = std.time.milliTimestamp();
+
     // Apply pseudo-element cascaded values
     var pseudo_iterator = ctx.pseudo_to_decl_block_list.iterator();
     while (pseudo_iterator.next()) |entry| {
@@ -710,6 +682,14 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
             try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
         }
     }
+    const t_end = std.time.milliTimestamp();
+    std.log.warn("[CASCADE] traverse={d}ms apply={d}ms pseudo={d}ms total={d}ms elements={d}", .{
+        t_traverse - t0,
+        t_apply - t_traverse,
+        t_end - t_apply,
+        t_end - t0,
+        ctx.element_to_decl_block_list.count(),
+    });
 }
 
 fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin, importance: Importance) !void {
@@ -784,6 +764,7 @@ fn applySourceMerged(ctx: *RunContext, source: *const Source, env: *const Enviro
 }
 
 fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environment, importances: []const Importance) !void {
+    const t0 = std.time.milliTimestamp();
     for (importances) |importance| {
         const style_attrs = switch (importance) {
             .important => source.style_attrs_important,
@@ -801,6 +782,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
     }
 
+    const t_attrs = std.time.milliTimestamp();
     const allocator = ctx.arena.allocator();
     const data = source.selector_data.items;
 
@@ -855,9 +837,23 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
     }
 
+    const t_index = std.time.milliTimestamp();
+
+    const CachedMatchResult = struct {
+        element_blocks: []const RunContext.BlockImportance,
+        pseudo_before_blocks: []const RunContext.BlockImportance,
+        pseudo_after_blocks: []const RunContext.BlockImportance,
+    };
+    var share_cache = std.AutoArrayHashMapUnmanaged(u64, CachedMatchResult).empty;
+    var shared_count: u32 = 0;
+    var element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var pseudo_before_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var pseudo_after_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+
     var merged = std.ArrayListUnmanaged(SelectorEntry){};
     var bloom = AncestorBloom{};
     var ancestor_node_stack = std.ArrayListUnmanaged(Environment.NodeId){};
+    var node_count: u32 = 0;
     assert(ctx.document_node_stack.top == null);
     ctx.document_node_stack.top = env.root_node;
     while (ctx.document_node_stack.top) |*top| {
@@ -879,8 +875,42 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             try ctx.document_node_stack.push(allocator, first_child);
         }
 
-        merged.clearRetainingCapacity();
+        node_count += 1;
         const element_type = env.getNodeProperty(.type, node);
+        const has_id = env.nodes_to_ids.get(node) != null;
+
+        // Style sharing: siblings with same (tag, classes, parent) match the
+        // same selectors. Compute a share key and check the cache.
+        var share_key: u64 = @intFromEnum(element_type.name);
+        if (env.nodes_to_classes.get(node)) |cls_list| {
+            for (cls_list) |cls| share_key = share_key *% 31 +% @intFromEnum(cls);
+        }
+        // Include parent in key so sharing is same-parent only
+        if (node.parent(env)) |p| {
+            const parent_bits: u128 = @bitCast(p);
+            share_key ^= @as(u64, @truncate(parent_bits)) *% 0x9e3779b97f4a7c15;
+            share_key ^= @as(u64, @truncate(parent_bits >> 64)) *% 0x517cc1b727220a95;
+        }
+
+        if (!has_id) {
+            if (share_cache.get(share_key)) |cached| {
+                // Cache hit: copy cached blocks for this node
+                for (cached.element_blocks) |bi| {
+                    try ctx.appendDeclBlock(node, bi.block, bi.importance);
+                }
+                for (cached.pseudo_before_blocks) |bi| {
+                    try ctx.appendPseudoDeclBlock(node, .before, bi.block, bi.importance);
+                }
+                for (cached.pseudo_after_blocks) |bi| {
+                    try ctx.appendPseudoDeclBlock(node, .after, bi.block, bi.importance);
+                }
+                shared_count += 1;
+                continue;
+            }
+        }
+
+        // Cache miss: collect candidates and match
+        merged.clearRetainingCapacity();
         if (type_index.get(element_type.name)) |candidates| {
             try merged.appendSlice(allocator, candidates.items);
         }
@@ -891,8 +921,8 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 }
             }
         }
-        if (env.nodes_to_ids.get(node)) |id| {
-            if (id_index.get(id)) |candidates| {
+        if (has_id) {
+            if (id_index.get(env.nodes_to_ids.get(node).?)) |candidates| {
                 try merged.appendSlice(allocator, candidates.items);
             }
         }
@@ -906,8 +936,59 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }.lessThan);
 
-        try testCandidates(ctx, merged.items, data, env, node, allocator, &bloom);
+        // Match candidates and collect results for caching
+        element_collect.clearRetainingCapacity();
+        pseudo_before_collect.clearRetainingCapacity();
+        pseudo_after_collect.clearRetainingCapacity();
+
+        for (merged.items) |entry| {
+            const matched = entry.fast_match or blk: {
+                if (entry.ancestor_hashes) |ah| {
+                    if (!ah.mightMatchBloom(&bloom)) break :blk false;
+                }
+                break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
+            };
+            if (matched) {
+                const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
+                switch (entry.pseudo) {
+                    .none => {
+                        try ctx.appendDeclBlock(node, entry.block, entry.importance);
+                        try element_collect.append(allocator, bi);
+                    },
+                    .before => {
+                        try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance);
+                        try pseudo_before_collect.append(allocator, bi);
+                    },
+                    .after => {
+                        try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
+                        try pseudo_after_collect.append(allocator, bi);
+                    },
+                    .unrecognized => {},
+                }
+            }
+        }
+
+        // Cache the result (only for non-ID elements)
+        if (!has_id) {
+            const duped_elem = try allocator.dupe(RunContext.BlockImportance, element_collect.items);
+            const duped_before = try allocator.dupe(RunContext.BlockImportance, pseudo_before_collect.items);
+            const duped_after = try allocator.dupe(RunContext.BlockImportance, pseudo_after_collect.items);
+            try share_cache.put(allocator, share_key, .{
+                .element_blocks = duped_elem,
+                .pseudo_before_blocks = duped_before,
+                .pseudo_after_blocks = duped_after,
+            });
+        }
     }
+    const t_dom = std.time.milliTimestamp();
+    std.log.warn("[CASCADE-SRC] attrs={d}ms index={d}ms dom_walk={d}ms nodes={d} shared={d} unique={d}", .{
+        t_attrs - t0,
+        t_index - t_attrs,
+        t_dom - t_index,
+        node_count,
+        shared_count,
+        share_cache.count(),
+    });
 
     for (importances) |importance| {
         if (importance == .normal) {
