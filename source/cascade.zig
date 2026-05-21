@@ -496,6 +496,102 @@ fn isFastMatch(data: []const selectors.Data, complex_selector_index: selectors.D
     return true;
 }
 
+/// Collect all class/type/id hashes from every compound in a complex selector.
+/// Used to intersect requirements across :where/:is alternatives.
+const MAX_COLLECTED_HASHES = 16;
+const CollectedHashes = struct {
+    buf: [MAX_COLLECTED_HASHES]u32 = undefined,
+    len: u8 = 0,
+
+    fn add(self: *CollectedHashes, val: u32) void {
+        if (self.len < MAX_COLLECTED_HASHES) {
+            self.buf[self.len] = val;
+            self.len += 1;
+        }
+    }
+    fn contains(self: *const CollectedHashes, val: u32) bool {
+        for (self.buf[0..self.len]) |h| {
+            if (h == val) return true;
+        }
+        return false;
+    }
+};
+
+fn collectAllHashes(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) CollectedHashes {
+    var result = CollectedHashes{};
+    const next_complex = data[complex_selector_index].next_complex_selector;
+    var trailing_idx = next_complex - 1;
+    while (true) {
+        const trailing = data[trailing_idx].trailing;
+        const start = trailing.compound_selector_start;
+        var idx = start;
+        while (idx < trailing_idx) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .type => {
+                    idx += 1;
+                    const et = data[idx].type_selector;
+                    if (et.name != .any and et.name != .anonymous)
+                        result.add(@intFromEnum(et.name));
+                },
+                .class => {
+                    idx += 1;
+                    result.add(@intFromEnum(data[idx].class_selector));
+                },
+                .id => {
+                    idx += 1;
+                    result.add(@intFromEnum(data[idx].id_selector));
+                },
+                .attribute => |op_case| {
+                    idx += 1;
+                    if (op_case != null) idx += 1;
+                },
+                .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+                .is => {
+                    idx += 1;
+                    const list = data[idx].is_selector_list;
+                    var skip_idx = list.start;
+                    for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                    idx = skip_idx - 1;
+                },
+                .where => {
+                    idx += 1;
+                    const list = data[idx].where_selector_list;
+                    var skip_idx = list.start;
+                    for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                    idx = skip_idx - 1;
+                },
+            }
+        }
+        if (start <= complex_selector_index + 1) break;
+        trailing_idx = start - 1;
+    }
+    return result;
+}
+
+/// For :where/:is with multiple alternatives, find hashes common to ALL alternatives.
+fn extractCommonHashesFromSelectorList(data: []const selectors.Data, list_start: selectors.Data.ListIndex, list_count: usize, hashes: *AncestorHashes) void {
+    if (list_count == 0) return;
+    // Collect hashes from first alternative
+    const first_hashes = collectAllHashes(data, list_start);
+    if (first_hashes.len == 0) return;
+
+    // Check each hash from first alt against all other alternatives
+    const alt_idx = data[list_start].next_complex_selector;
+    for (first_hashes.buf[0..first_hashes.len]) |h| {
+        var common = true;
+        var check_idx = alt_idx;
+        for (1..list_count) |_| {
+            const alt_hashes = collectAllHashes(data, check_idx);
+            if (!alt_hashes.contains(h)) {
+                common = false;
+                break;
+            }
+            check_idx = data[check_idx].next_complex_selector;
+        }
+        if (common) hashes.add(h);
+    }
+}
+
 fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) ?AncestorHashes {
     const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
     const trailing = data[last_trailing_idx].trailing;
@@ -538,6 +634,12 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                         .is => {
                             idx += 1;
                             const list = data[idx].is_selector_list;
+                            if (list.count == 1) {
+                                const nested = extractAncestorHashes(data, list.start);
+                                if (nested) |nh| for (nh.hashes[0..nh.len]) |h| hashes.add(h);
+                            } else if (list.count >= 2) {
+                                extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
+                            }
                             var skip_idx = list.start;
                             for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                             idx = skip_idx - 1;
@@ -545,6 +647,12 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                         .where => {
                             idx += 1;
                             const list = data[idx].where_selector_list;
+                            if (list.count == 1) {
+                                const nested = extractAncestorHashes(data, list.start);
+                                if (nested) |nh| for (nh.hashes[0..nh.len]) |h| hashes.add(h);
+                            } else if (list.count >= 2) {
+                                extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
+                            }
                             var skip_idx = list.start;
                             for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                             idx = skip_idx - 1;
@@ -566,6 +674,7 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
     const trailing = data[last_trailing_idx].trailing;
     const start = trailing.compound_selector_start;
     const end = last_trailing_idx;
+    var hashes = AncestorHashes{};
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
@@ -573,6 +682,9 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
                 idx += 1;
                 const list = data[idx].is_selector_list;
                 if (list.count == 1) return extractAncestorHashes(data, list.start);
+                if (list.count >= 2) {
+                    extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
+                }
                 var skip_idx = list.start;
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
@@ -581,6 +693,9 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
                 idx += 1;
                 const list = data[idx].where_selector_list;
                 if (list.count == 1) return extractAncestorHashes(data, list.start);
+                if (list.count >= 2) {
+                    extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
+                }
                 var skip_idx = list.start;
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
@@ -592,6 +707,7 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
             },
         }
     }
+    if (hashes.len > 0) return hashes;
     return null;
 }
 
@@ -683,7 +799,7 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         }
     }
     const t_end = std.time.milliTimestamp();
-    std.log.warn("[CASCADE] traverse={d}ms apply={d}ms pseudo={d}ms total={d}ms elements={d}", .{
+    std.debug.print("[CASCADE] traverse={d}ms apply={d}ms pseudo={d}ms total={d}ms elements={d}\n", .{
         t_traverse - t0,
         t_apply - t_traverse,
         t_end - t_apply,
@@ -839,16 +955,36 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
 
     const t_index = std.time.milliTimestamp();
 
-    const CachedMatchResult = struct {
+    // Two-level cache:
+    // L1 (full_cache): keyed by (tag, classes, parent) — full sharing for siblings
+    // L2 (cross_cache): keyed by (tag, classes) — fast_match blocks shared cross-parent,
+    //                    dependent candidates re-evaluated per element
+    const FullCacheResult = struct {
         element_blocks: []const RunContext.BlockImportance,
         pseudo_before_blocks: []const RunContext.BlockImportance,
         pseudo_after_blocks: []const RunContext.BlockImportance,
     };
-    var share_cache = std.AutoArrayHashMapUnmanaged(u64, CachedMatchResult).empty;
-    var shared_count: u32 = 0;
+    const CrossCacheData = struct {
+        fast_element_blocks: []const RunContext.BlockImportance,
+        fast_pseudo_before: []const RunContext.BlockImportance,
+        fast_pseudo_after: []const RunContext.BlockImportance,
+        dependent_candidates: []const SelectorEntry,
+    };
+    var full_cache = std.AutoArrayHashMapUnmanaged(u64, FullCacheResult).empty;
+    var cross_cache = std.AutoArrayHashMapUnmanaged(u64, CrossCacheData).empty;
+    var full_hit_count: u32 = 0;
+    var cross_hit_count: u32 = 0;
+    var dep_match_count: u32 = 0;
+    var dep_bloom_reject: u32 = 0;
+    var dep_no_bloom: u32 = 0;
+    var dep_match_elem: u32 = 0;
     var element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
     var pseudo_before_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
     var pseudo_after_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var fast_element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var fast_pseudo_before_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var fast_pseudo_after_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var dependent_collect = std.ArrayListUnmanaged(SelectorEntry){};
 
     var merged = std.ArrayListUnmanaged(SelectorEntry){};
     var bloom = AncestorBloom{};
@@ -879,22 +1015,21 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         const element_type = env.getNodeProperty(.type, node);
         const has_id = env.nodes_to_ids.get(node) != null;
 
-        // Style sharing: siblings with same (tag, classes, parent) match the
-        // same selectors. Compute a share key and check the cache.
-        var share_key: u64 = @intFromEnum(element_type.name);
+        // Compute keys for both cache levels
+        var cross_key: u64 = @intFromEnum(element_type.name);
         if (env.nodes_to_classes.get(node)) |cls_list| {
-            for (cls_list) |cls| share_key = share_key *% 31 +% @intFromEnum(cls);
+            for (cls_list) |cls| cross_key = cross_key *% 31 +% @intFromEnum(cls);
         }
-        // Include parent in key so sharing is same-parent only
+        var full_key: u64 = cross_key;
         if (node.parent(env)) |p| {
             const parent_bits: u128 = @bitCast(p);
-            share_key ^= @as(u64, @truncate(parent_bits)) *% 0x9e3779b97f4a7c15;
-            share_key ^= @as(u64, @truncate(parent_bits >> 64)) *% 0x517cc1b727220a95;
+            full_key ^= @as(u64, @truncate(parent_bits)) *% 0x9e3779b97f4a7c15;
+            full_key ^= @as(u64, @truncate(parent_bits >> 64)) *% 0x517cc1b727220a95;
         }
 
         if (!has_id) {
-            if (share_cache.get(share_key)) |cached| {
-                // Cache hit: copy cached blocks for this node
+            // L1: same-parent full sharing (siblings skip all matching)
+            if (full_cache.get(full_key)) |cached| {
                 for (cached.element_blocks) |bi| {
                     try ctx.appendDeclBlock(node, bi.block, bi.importance);
                 }
@@ -904,12 +1039,76 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 for (cached.pseudo_after_blocks) |bi| {
                     try ctx.appendPseudoDeclBlock(node, .after, bi.block, bi.importance);
                 }
-                shared_count += 1;
+                full_hit_count += 1;
+                continue;
+            }
+
+            // L2: cross-parent sharing (fast_match blocks shared, dep re-evaluated)
+            if (cross_cache.get(cross_key)) |cached| {
+                element_collect.clearRetainingCapacity();
+                pseudo_before_collect.clearRetainingCapacity();
+                pseudo_after_collect.clearRetainingCapacity();
+
+                for (cached.fast_element_blocks) |bi| {
+                    try ctx.appendDeclBlock(node, bi.block, bi.importance);
+                    try element_collect.append(allocator, bi);
+                }
+                for (cached.fast_pseudo_before) |bi| {
+                    try ctx.appendPseudoDeclBlock(node, .before, bi.block, bi.importance);
+                    try pseudo_before_collect.append(allocator, bi);
+                }
+                for (cached.fast_pseudo_after) |bi| {
+                    try ctx.appendPseudoDeclBlock(node, .after, bi.block, bi.importance);
+                    try pseudo_after_collect.append(allocator, bi);
+                }
+                for (cached.dependent_candidates) |entry| {
+                    dep_match_count += 1;
+                    const matched = blk: {
+                        if (entry.ancestor_hashes) |ah| {
+                            if (!ah.mightMatchBloom(&bloom)) {
+                                dep_bloom_reject += 1;
+                                break :blk false;
+                            }
+                        } else {
+                            dep_no_bloom += 1;
+                        }
+                        dep_match_elem += 1;
+                        break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
+                    };
+                    if (matched) {
+                        const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
+                        switch (entry.pseudo) {
+                            .none => {
+                                try ctx.appendDeclBlock(node, entry.block, entry.importance);
+                                try element_collect.append(allocator, bi);
+                            },
+                            .before => {
+                                try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance);
+                                try pseudo_before_collect.append(allocator, bi);
+                            },
+                            .after => {
+                                try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
+                                try pseudo_after_collect.append(allocator, bi);
+                            },
+                            .unrecognized => {},
+                        }
+                    }
+                }
+                // Populate L1 for this (tag, classes, parent) combo
+                const duped_elem = try allocator.dupe(RunContext.BlockImportance, element_collect.items);
+                const duped_before = try allocator.dupe(RunContext.BlockImportance, pseudo_before_collect.items);
+                const duped_after = try allocator.dupe(RunContext.BlockImportance, pseudo_after_collect.items);
+                try full_cache.put(allocator, full_key, .{
+                    .element_blocks = duped_elem,
+                    .pseudo_before_blocks = duped_before,
+                    .pseudo_after_blocks = duped_after,
+                });
+                cross_hit_count += 1;
                 continue;
             }
         }
 
-        // Cache miss: collect candidates and match
+        // Full miss: collect candidates and match
         merged.clearRetainingCapacity();
         if (type_index.get(element_type.name)) |candidates| {
             try merged.appendSlice(allocator, candidates.items);
@@ -936,10 +1135,13 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }.lessThan);
 
-        // Match candidates and collect results for caching
         element_collect.clearRetainingCapacity();
         pseudo_before_collect.clearRetainingCapacity();
         pseudo_after_collect.clearRetainingCapacity();
+        fast_element_collect.clearRetainingCapacity();
+        fast_pseudo_before_collect.clearRetainingCapacity();
+        fast_pseudo_after_collect.clearRetainingCapacity();
+        dependent_collect.clearRetainingCapacity();
 
         for (merged.items) |entry| {
             const matched = entry.fast_match or blk: {
@@ -948,6 +1150,20 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 }
                 break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
             };
+            // Always collect for cross_cache: fast_match blocks and dependent candidates
+            if (entry.fast_match) {
+                if (matched) {
+                    const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
+                    switch (entry.pseudo) {
+                        .none => try fast_element_collect.append(allocator, bi),
+                        .before => try fast_pseudo_before_collect.append(allocator, bi),
+                        .after => try fast_pseudo_after_collect.append(allocator, bi),
+                        .unrecognized => {},
+                    }
+                }
+            } else {
+                try dependent_collect.append(allocator, entry);
+            }
             if (matched) {
                 const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
                 switch (entry.pseudo) {
@@ -968,26 +1184,45 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }
 
-        // Cache the result (only for non-ID elements)
         if (!has_id) {
+            // Populate L1 (full cache) for same-parent siblings
             const duped_elem = try allocator.dupe(RunContext.BlockImportance, element_collect.items);
             const duped_before = try allocator.dupe(RunContext.BlockImportance, pseudo_before_collect.items);
             const duped_after = try allocator.dupe(RunContext.BlockImportance, pseudo_after_collect.items);
-            try share_cache.put(allocator, share_key, .{
+            try full_cache.put(allocator, full_key, .{
                 .element_blocks = duped_elem,
                 .pseudo_before_blocks = duped_before,
                 .pseudo_after_blocks = duped_after,
             });
+            // Populate L2 (cross cache) if first encounter of this (tag, classes)
+            if (!cross_cache.contains(cross_key)) {
+                const duped_fast_elem = try allocator.dupe(RunContext.BlockImportance, fast_element_collect.items);
+                const duped_fast_before = try allocator.dupe(RunContext.BlockImportance, fast_pseudo_before_collect.items);
+                const duped_fast_after = try allocator.dupe(RunContext.BlockImportance, fast_pseudo_after_collect.items);
+                const duped_dep = try allocator.dupe(SelectorEntry, dependent_collect.items);
+                try cross_cache.put(allocator, cross_key, .{
+                    .fast_element_blocks = duped_fast_elem,
+                    .fast_pseudo_before = duped_fast_before,
+                    .fast_pseudo_after = duped_fast_after,
+                    .dependent_candidates = duped_dep,
+                });
+            }
         }
     }
     const t_dom = std.time.milliTimestamp();
-    std.log.warn("[CASCADE-SRC] attrs={d}ms index={d}ms dom_walk={d}ms nodes={d} shared={d} unique={d}", .{
+    std.debug.print("[CASCADE-SRC] attrs={d}ms index={d}ms dom_walk={d}ms nodes={d} L1_hit={d}/{d} L2_hit={d}/{d} dep={d}(bloom_rej={d} no_bloom={d} match_elem={d})\n", .{
         t_attrs - t0,
         t_index - t_attrs,
         t_dom - t_index,
         node_count,
-        shared_count,
-        share_cache.count(),
+        full_hit_count,
+        full_cache.count(),
+        cross_hit_count,
+        cross_cache.count(),
+        dep_match_count,
+        dep_bloom_reject,
+        dep_no_bloom,
+        dep_match_elem,
     });
 
     for (importances) |importance| {
