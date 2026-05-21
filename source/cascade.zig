@@ -73,7 +73,7 @@ pub const Source = struct {
 
 /// A structure capable of storing the cascaded values of all CSS properties for every document node.
 pub const Database = struct {
-    node_map: std.AutoHashMapUnmanaged(Environment.NodeId, Storage) = .empty,
+    node_storage: []Storage = &.{},
     /// Cascaded values for pseudo-elements (::before/::after) keyed by (node, pseudo).
     pseudo_map: std.AutoHashMapUnmanaged(PseudoKey, Storage) = .empty,
     arena: std.heap.ArenaAllocator.State = .{},
@@ -83,10 +83,13 @@ pub const Database = struct {
         pseudo: selectors.PseudoElement,
     };
 
+    pub fn initNodes(db: *Database, allocator: Allocator, node_count: u32) !void {
+        db.node_storage = try allocator.alloc(Storage, node_count);
+        @memset(db.node_storage, .{});
+    }
+
     pub fn deinit(db: *Database, allocator: Allocator) void {
-        // Deinit custom properties hashmaps
-        var node_it = db.node_map.valueIterator();
-        while (node_it.next()) |storage| {
+        for (db.node_storage) |*storage| {
             storage.custom_properties.deinit(allocator);
         }
         var pseudo_it = db.pseudo_map.valueIterator();
@@ -94,7 +97,8 @@ pub const Database = struct {
             storage.custom_properties.deinit(allocator);
         }
 
-        db.node_map.deinit(allocator);
+        allocator.free(db.node_storage);
+        db.node_storage = &.{};
         db.pseudo_map.deinit(allocator);
 
         var arena = db.arena.promote(allocator);
@@ -102,14 +106,14 @@ pub const Database = struct {
         arena.deinit();
     }
 
-    pub fn addStorage(db: *Database, allocator: Allocator, node: Environment.NodeId) !*Storage {
-        const gop = try db.node_map.getOrPut(allocator, node);
-        if (!gop.found_existing) gop.value_ptr.* = .{};
-        return gop.value_ptr;
+    pub fn addStorage(db: *Database, _: Allocator, node: Environment.NodeId) !*Storage {
+        return &db.node_storage[@intCast(node.value)];
     }
 
     pub fn getStorage(db: *const Database, node: Environment.NodeId) ?*Storage {
-        return db.node_map.getPtr(node);
+        const index: u32 = @intCast(node.value);
+        if (index >= db.node_storage.len) return null;
+        return &db.node_storage[index];
     }
 
     pub fn addPseudoStorage(db: *Database, allocator: Allocator, node: Environment.NodeId, pseudo: selectors.PseudoElement) !*Storage {

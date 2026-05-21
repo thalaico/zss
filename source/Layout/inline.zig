@@ -192,7 +192,9 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     // avoids parent overwriting child IFC fonts.
     if (box_gen.stacks.block_info.top) |block_info| {
         const layout = box_gen.getLayout();
-        if (layout.computer.box_gen_stage.map.get(block_info.node)) |bgc| {
+        const parent_index: u32 = @intCast(block_info.node.value);
+        if (parent_index < layout.computer.box_gen_stage.nodes.len) {
+            const bgc = layout.computer.box_gen_stage.nodes[parent_index];
             if (bgc.font) |font_specified| {
                 ifc.font_family = font_specified.font_family;
                 ifc.font_size = font_specified.font_size.px_val();
@@ -1013,7 +1015,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
 }
 
 fn writeInlineBoxCosmetic(layout: *Layout, ifc: *Ifc, inline_box_index: Ifc.Size, node: NodeId) void {
-    const bgc = layout.computer.box_gen_stage.map.get(node) orelse return;
+    const bgc = layout.computer.box_gen_stage.nodes[@intCast(node.value)];
     const color_specified = bgc.color orelse return;
     _, const used_color = solve.colorProperty(color_specified);
 

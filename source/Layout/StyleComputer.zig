@@ -63,8 +63,9 @@ box_gen_stage: StageData(.box_gen) = .{},
 
 fn StageData(comptime stage: Stage) type {
     return struct {
-        map: std.AutoHashMapUnmanaged(NodeId, stage.ComputedValues()) = .{},
+        nodes: []stage.ComputedValues() = &.{},
         current_computed: stage.ComputedValues() = undefined,
+        current_index: u32 = 0,
     };
 }
 
@@ -93,14 +94,16 @@ fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
 }
 
 pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, count: u32) !void {
-    try sc.stagePtr(stage).map.ensureTotalCapacity(sc.allocator, count);
+    const s = sc.stagePtr(stage);
+    s.nodes = try sc.allocator.alloc(stage.ComputedValues(), count);
+    @memset(s.nodes, .{});
 }
 
 pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage) void {
-    sc.stagePtr(stage).map.deinit(sc.allocator);
+    sc.allocator.free(sc.stagePtr(stage).nodes);
+    sc.stagePtr(stage).nodes = &.{};
 }
 
-// TODO: Setting the current node should not require allocating
 pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !void {
     const cascaded_values: *const CascadeStorage = switch (sc.env.getNodeProperty(.category, node)) {
         .element => sc.env.cascade_db.getStorage(node) orelse &.{},
@@ -111,12 +114,10 @@ pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !
         .cascaded_values = cascaded_values,
     };
 
+    const index: u32 = @intCast(node.value);
     const s = sc.stagePtr(stage);
-    const gop_result = try s.map.getOrPut(sc.allocator, node);
-    if (!gop_result.found_existing) {
-        gop_result.value_ptr.* = .{};
-    }
-    s.current_computed = gop_result.value_ptr.*;
+    s.current_index = index;
+    s.current_computed = s.nodes[index];
 }
 
 /// Set up the style computer to read cascaded values for a pseudo-element
@@ -135,9 +136,8 @@ pub fn setPseudoElement(sc: *StyleComputer, comptime stage: Stage, node: NodeId,
 }
 
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
-    const node = sc.current.node;
     const s = sc.stagePtr(stage);
-    s.map.putAssumeCapacity(node, s.current_computed);
+    s.nodes[s.current_index] = s.current_computed;
 }
 
 pub fn getText(sc: StyleComputer) []const u8 {
@@ -287,9 +287,10 @@ fn InheritedValue(comptime group: groups.Tag) type {
             if (self.value) |value| return value;
 
             const s = sc.stageVal(stage);
-            self.value = if (self.node.parent(sc.env)) |parent| blk: { // TODO: Should check for equality with the root node instead
-                if (s.map.get(parent)) |parent_computed_values| {
-                    if (@field(parent_computed_values, @tagName(group))) |inherited_value| {
+            self.value = if (self.node.parent(sc.env)) |parent| blk: {
+                const parent_index: u32 = @intCast(parent.value);
+                if (parent_index < s.nodes.len) {
+                    if (@field(s.nodes[parent_index], @tagName(group))) |inherited_value| {
                         break :blk inherited_value;
                     }
                 }

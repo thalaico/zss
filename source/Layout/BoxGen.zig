@@ -1422,7 +1422,7 @@ fn writeBlockCosmetic(
     containing_block_height: ?math.Unit,
     position: BoxTree.BoxStyle.Position,
 ) !void {
-    const bgc = layout.computer.box_gen_stage.map.get(node) orelse return;
+    const bgc = layout.computer.box_gen_stage.nodes[@intCast(node.value)];
 
     const color_specified = bgc.color orelse return;
     _, const used_color = solve.colorProperty(color_specified);

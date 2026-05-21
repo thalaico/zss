@@ -42,6 +42,7 @@ nodes_to_ids: std.AutoHashMapUnmanaged(NodeId, IdName) = .empty,
 
 nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
 nodes_to_attributes: std.AutoHashMapUnmanaged(NodeId, []const NodeAttribute) = .empty,
+node_count: u32 = 0,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
@@ -556,23 +557,23 @@ pub const NodeProperty = struct {
 };
 
 const NodeProperties = struct {
-    // TODO: Better memory management
-
-    map: std.AutoHashMapUnmanaged(NodeId, NodeProperty) = .empty,
+    nodes: []NodeProperty = &.{},
     /// Only used to store cascaded values.
     arena: std.heap.ArenaAllocator.State = .{},
 
+    pub fn initNodes(np: *NodeProperties, allocator: Allocator, count: u32) !void {
+        np.nodes = try allocator.alloc(NodeProperty, count);
+        @memset(np.nodes, .{});
+    }
+
     fn deinit(np: *NodeProperties, allocator: Allocator) void {
-        np.map.deinit(allocator);
+        allocator.free(np.nodes);
+        np.nodes = &.{};
         np.arena.promote(allocator).deinit();
     }
 
-    fn getOrPutNode(np: *NodeProperties, allocator: Allocator, node: NodeId) !*NodeProperty {
-        const gop = try np.map.getOrPut(allocator, node);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = .{};
-        }
-        return gop.value_ptr;
+    fn getOrPutNode(np: *NodeProperties, _: Allocator, node: NodeId) *NodeProperty {
+        return &np.nodes[@intCast(node.value)];
     }
 };
 
@@ -582,7 +583,7 @@ pub fn setNodeProperty(
     node: NodeId,
     value: @FieldType(NodeProperty, @tagName(field)),
 ) !void {
-    const value_ptr = try env.node_properties.getOrPutNode(env.allocator, node);
+    const value_ptr = env.node_properties.getOrPutNode(env.allocator, node);
     @field(value_ptr, @tagName(field)) = value;
 }
 
@@ -591,16 +592,17 @@ pub fn getNodeProperty(
     comptime field: std.meta.FieldEnum(NodeProperty),
     node: NodeId,
 ) @FieldType(NodeProperty, @tagName(field)) {
-    const value_ptr: *const NodeProperty = env.node_properties.map.getPtr(node) orelse &.{};
-    return @field(value_ptr, @tagName(field));
+    const index: u32 = @intCast(node.value);
+    if (index >= env.node_properties.nodes.len) return @field(@as(NodeProperty, .{}), @tagName(field));
+    return @field(env.node_properties.nodes[index], @tagName(field));
 }
 
 pub fn getNodePropertyPtr(
     env: *Environment,
     comptime field: std.meta.FieldEnum(NodeProperty),
     node: NodeId,
-) !*@FieldType(NodeProperty, @tagName(field)) {
-    const value_ptr = try env.node_properties.getOrPutNode(env.allocator, node);
+) *@FieldType(NodeProperty, @tagName(field)) {
+    const value_ptr = env.node_properties.getOrPutNode(env.allocator, node);
     return &@field(value_ptr, @tagName(field));
 }
 
