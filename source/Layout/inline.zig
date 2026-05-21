@@ -359,7 +359,6 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
     const ifc = ctx.ifc.top.?;
     const layout = box_gen.getLayout();
 
-    // TODO: Check position and float properties
     switch (inner_inline) {
         .text => {
             const generated_box = GeneratedBox{ .text = ifc.ptr.id };
@@ -472,7 +471,6 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     font_specified.font_size = .{ .px = 13.0 };
                 }
                 layout.computer.setComputedValue(.box_gen, .font, font_specified);
-                layout.computer.commitNode(.box_gen);
 
                 layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
                 layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
@@ -518,7 +516,6 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             .flow, .flex, .grid => {
                 const sizes = inlineBlockSolveSizes(&layout.computer, position, ifc.containing_block_size);
                 const stacking_context = inlineBlockSolveStackingContext(&layout.computer, position);
-                layout.computer.commitNode(.box_gen);
 
                 var ib_font = layout.computer.getSpecifiedValue(.box_gen, .font);
                 ib_font.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };

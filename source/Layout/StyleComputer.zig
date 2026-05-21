@@ -92,6 +92,10 @@ fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
     };
 }
 
+pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, count: u32) !void {
+    try sc.stagePtr(stage).map.ensureTotalCapacity(sc.allocator, count);
+}
+
 pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage) void {
     sc.stagePtr(stage).map.deinit(sc.allocator);
 }

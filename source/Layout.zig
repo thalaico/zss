@@ -98,6 +98,8 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
     {
         layout.node_stack.top = layout.inputs.env.root_node;
         layout.computer.active_stage = .box_gen;
+        const node_count = layout.inputs.env.node_properties.map.count();
+        try layout.computer.ensureCapacity(.box_gen, @intCast(node_count));
         errdefer layout.computer.deinitStage(.box_gen);
         try layout.box_gen.run();
     }

@@ -58,9 +58,6 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
     switch (inner_block) {
         .flow, .flex, .grid => {
             const containing_block_size = box_gen.containingBlockSize();
-            // Check if parent is a flex or grid container — CSS spec says float
-            // and clear have no effect on flex/grid items, and flex children should
-            // use a reduced width for proper text reflow.
             const parent_is_flex_row = if (box_gen.stacks.block_info.top) |parent_info|
                 parent_info.is_flex_container and !parent_info.flex_is_column
             else
@@ -69,35 +66,20 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 parent_info.is_flex_container or parent_info.is_grid_container
             else
                 false;
-            // Read box_style early so flex properties are available after commitNode.
             const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
             const layout_width: ContainingBlockWidth = if (parent_is_flex_row) blk: {
-                // CSS Flexbox §9: flex items are initially laid out at the
-                // container's full width. After all children are laid out,
-                // offsetChildBlocksFlex resolves flexible lengths per §9.7
-                // and re-lays out text at the resolved width.
                 break :blk .{ .normal = containing_block_size.width };
             } else
                 .{ .normal = containing_block_size.width };
             const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height, parent_is_flex_or_grid);
             const stacking_context = solveStackingContext(computer, position);
-            // Read and commit font group so child text nodes inherit font-size
-            // during layout (getTextFont uses InheritedValue from box_gen stage).
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
-            // Resolve font-size em → px using parent's computed font-size.
             font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
-            // Chrome `default_fixed_font_size` quirk: monospace generic family
-            // with UA-default 16px swaps to 13px. Must happen here (box_gen)
-            // so text runs + line-box metrics use the quirked size.
             if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
                 font_specified.font_size = .{ .px = 13.0 };
             }
             computer.setComputedValue(.box_gen, .font, font_specified);
-            computer.commitNode(.box_gen);
 
-            // Pre-read cosmetic specified values while cascaded_values are
-            // still loaded from setCurrentNode. Stored in box_gen_stage.map
-            // so the cosmetic pass can skip per-node getSpecifiedValue calls.
             computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
             computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
             computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));

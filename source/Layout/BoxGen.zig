@@ -140,8 +140,6 @@ pub fn run(box_gen: *BoxGen) !void {
 fn analyzeAllNodes(box_gen: *BoxGen) !void {
     {
         try initial.beginMode(box_gen);
-        // Root has no parent, so no blockification needed beyond what
-        // solve.boxStyle's .root branch already does.
         const root_node, const root_box_style = (try analyzeNode(box_gen.getLayout(), .root, false)) orelse {
             try box_gen.dispatchNullNode(.root, {});
             return;
@@ -150,11 +148,6 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
     }
 
     while (box_gen.stacks.mode.top) |mode| {
-        // CSS Display §2.7 + Flexbox §4: children of flex/grid containers
-        // have their computed display blockified. We pass this flag into
-        // solve.boxStyle so inline/inline-flex children become block/flex
-        // (proper flex items) instead of landing in an inline formatting
-        // context next to their block-level siblings.
         const parent_blockifies = if (box_gen.stacks.block_info.top) |parent_info|
             parent_info.is_flex_container or parent_info.is_grid_container
         else
