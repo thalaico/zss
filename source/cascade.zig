@@ -327,6 +327,7 @@ const SelectorEntry = struct {
     fast_match: bool,
     importance: Importance,
     ancestor_hashes: ?AncestorHashes,
+    alt_ancestor_hashes: ?[]const AncestorHashes = null,
 };
 
 const BLOOM_SIZE = 256;
@@ -635,8 +636,8 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                             idx += 1;
                             const list = data[idx].is_selector_list;
                             if (list.count == 1) {
-                                const nested = extractAncestorHashes(data, list.start);
-                                if (nested) |nh| for (nh.hashes[0..nh.len]) |h| hashes.add(h);
+                                const nested = collectAllHashes(data, list.start);
+                                for (nested.buf[0..nested.len]) |h| hashes.add(h);
                             } else if (list.count >= 2) {
                                 extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
                             }
@@ -648,8 +649,8 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                             idx += 1;
                             const list = data[idx].where_selector_list;
                             if (list.count == 1) {
-                                const nested = extractAncestorHashes(data, list.start);
-                                if (nested) |nh| for (nh.hashes[0..nh.len]) |h| hashes.add(h);
+                                const nested = collectAllHashes(data, list.start);
+                                for (nested.buf[0..nested.len]) |h| hashes.add(h);
                             } else if (list.count >= 2) {
                                 extractCommonHashesFromSelectorList(data, list.start, list.count, &hashes);
                             }
@@ -709,6 +710,154 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
     }
     if (hashes.len > 0) return hashes;
     return null;
+}
+
+const MAX_ALT_HASHES = 8;
+
+fn extractAltAncestorHashes(
+    data: []const selectors.Data,
+    complex_selector_index: selectors.Data.ListIndex,
+    alloc: Allocator,
+) !?[]const AncestorHashes {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+
+    if (trailing.compound_selector_start == complex_selector_index + 1) {
+        return extractAltAncestorHashesWrapped(data, complex_selector_index, alloc);
+    }
+
+    var found_list_start: ?selectors.Data.ListIndex = null;
+    var found_list_count: usize = 0;
+    var multi_where_count: u32 = 0;
+
+    var ti = trailing.compound_selector_start - 1;
+    while (ti > complex_selector_index) {
+        const t = data[ti].trailing;
+        switch (t.combinator) {
+            .descendant, .child => {
+                const start = t.compound_selector_start;
+                const end = ti;
+                var idx = start;
+                while (idx < end) : (idx += 1) {
+                    switch (data[idx].simple_selector_tag) {
+                        .is => {
+                            idx += 1;
+                            const list = data[idx].is_selector_list;
+                            if (list.count >= 2) {
+                                multi_where_count += 1;
+                                found_list_start = list.start;
+                                found_list_count = list.count;
+                            }
+                            var skip_idx = list.start;
+                            for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                            idx = skip_idx - 1;
+                        },
+                        .where => {
+                            idx += 1;
+                            const list = data[idx].where_selector_list;
+                            if (list.count >= 2) {
+                                multi_where_count += 1;
+                                found_list_start = list.start;
+                                found_list_count = list.count;
+                            }
+                            var skip_idx = list.start;
+                            for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                            idx = skip_idx - 1;
+                        },
+                        .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+                        .attribute => |op_case| {
+                            idx += 1;
+                            if (op_case != null) idx += 1;
+                        },
+                    }
+                }
+            },
+            else => {},
+        }
+        if (t.compound_selector_start <= complex_selector_index + 1) break;
+        ti = t.compound_selector_start - 1;
+    }
+
+    if (multi_where_count != 1) return null;
+    const list_start = found_list_start orelse return null;
+    if (found_list_count > MAX_ALT_HASHES) return null;
+
+    const result = try alloc.alloc(AncestorHashes, found_list_count);
+    var alt_start = list_start;
+    for (0..found_list_count) |i| {
+        const alt_hashes = collectAllHashes(data, alt_start);
+        if (alt_hashes.len == 0) return null;
+        var ah = AncestorHashes{};
+        for (alt_hashes.buf[0..alt_hashes.len]) |h| ah.add(h);
+        result[i] = ah;
+        alt_start = data[alt_start].next_complex_selector;
+    }
+
+    return result;
+}
+
+fn extractAltAncestorHashesWrapped(
+    data: []const selectors.Data,
+    complex_selector_index: selectors.Data.ListIndex,
+    alloc: Allocator,
+) !?[]const AncestorHashes {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    const start = trailing.compound_selector_start;
+    const end = last_trailing_idx;
+
+    var found_list_start: ?selectors.Data.ListIndex = null;
+    var found_list_count: usize = 0;
+    var multi_where_count: u32 = 0;
+
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                if (list.count >= 2) {
+                    multi_where_count += 1;
+                    found_list_start = list.start;
+                    found_list_count = list.count;
+                }
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                if (list.count >= 2) {
+                    multi_where_count += 1;
+                    found_list_start = list.start;
+                    found_list_count = list.count;
+                }
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+        }
+    }
+
+    if (multi_where_count != 1) return null;
+    const list_start = found_list_start orelse return null;
+    if (found_list_count > MAX_ALT_HASHES) return null;
+
+    const result = try alloc.alloc(AncestorHashes, found_list_count);
+    var alt_start = list_start;
+    for (0..found_list_count) |i| {
+        const ah = extractAncestorHashes(data, alt_start) orelse return null;
+        result[i] = ah;
+        alt_start = data[alt_start].next_complex_selector;
+    }
+
+    return result;
 }
 
 const DocHashes = std.AutoHashMapUnmanaged(u32, void);
@@ -791,6 +940,49 @@ fn filterDeadSelectors(list: *std.ArrayListUnmanaged(SelectorEntry), data: []con
     }
     list.items = list.items[0..write];
     return killed;
+}
+
+fn isElementOnly(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    if (trailing.compound_selector_start != complex_selector_index + 1) return false;
+    return compoundIsElementOnly(data, trailing.compound_selector_start, last_trailing_idx);
+}
+
+fn compoundIsElementOnly(data: []const selectors.Data, start: selectors.Data.ListIndex, end: selectors.Data.ListIndex) bool {
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .type, .class, .id, .not_class, .not_id, .not_type => idx += 1,
+            .pseudo_element => idx += 1,
+            .attribute, .pseudo_class, .not_pseudo_class => return false,
+            .is => {
+                idx += 1;
+                const list = data[idx].is_selector_list;
+                var alt_start = list.start;
+                for (0..list.count) |_| {
+                    if (!isElementOnly(data, alt_start)) return false;
+                    alt_start = data[alt_start].next_complex_selector;
+                }
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+            .where => {
+                idx += 1;
+                const list = data[idx].where_selector_list;
+                var alt_start = list.start;
+                for (0..list.count) |_| {
+                    if (!isElementOnly(data, alt_start)) return false;
+                    alt_start = data[alt_start].next_complex_selector;
+                }
+                var skip_idx = list.start;
+                for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
+                idx = skip_idx - 1;
+            },
+        }
+    }
+    return true;
 }
 
 const RunContext = struct {
@@ -1015,6 +1207,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             if (!canMatchStatic(data, selector)) continue;
             const pe = selectors.extractPseudoElement(data, selector);
             const key = extractRightmostKey(data, selector);
+            const ah = extractAncestorHashes(data, selector);
             const entry = SelectorEntry{
                 .selector = selector,
                 .block = block,
@@ -1026,7 +1219,8 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 } else .none,
                 .fast_match = isFastMatch(data, selector, key),
                 .importance = importance,
-                .ancestor_hashes = extractAncestorHashes(data, selector),
+                .ancestor_hashes = ah,
+                .alt_ancestor_hashes = if (ah == null) try extractAltAncestorHashes(data, selector, allocator) else null,
             };
             switch (key) {
                 .id => |id| {
@@ -1093,6 +1287,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     var cross_hit_count: u32 = 0;
     var dep_match_count: u32 = 0;
     var dep_bloom_reject: u32 = 0;
+    var dep_alt_bloom_reject: u32 = 0;
     var dep_no_bloom: u32 = 0;
     var dep_match_elem: u32 = 0;
     var element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
@@ -1186,6 +1381,18 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                                 dep_bloom_reject += 1;
                                 break :blk false;
                             }
+                        } else if (entry.alt_ancestor_hashes) |alts| {
+                            var any_alt_match = false;
+                            for (alts) |ah| {
+                                if (ah.mightMatchBloom(&bloom)) {
+                                    any_alt_match = true;
+                                    break;
+                                }
+                            }
+                            if (!any_alt_match) {
+                                dep_alt_bloom_reject += 1;
+                                break :blk false;
+                            }
                         } else {
                             dep_no_bloom += 1;
                         }
@@ -1264,11 +1471,22 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             const matched = entry.fast_match or blk: {
                 if (entry.ancestor_hashes) |ah| {
                     if (!ah.mightMatchBloom(&bloom)) break :blk false;
+                } else if (entry.alt_ancestor_hashes) |alts| {
+                    var any_alt_match = false;
+                    for (alts) |ah| {
+                        if (ah.mightMatchBloom(&bloom)) {
+                            any_alt_match = true;
+                            break;
+                        }
+                    }
+                    if (!any_alt_match) break :blk false;
                 }
                 break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
             };
-            // Always collect for cross_cache: fast_match blocks and dependent candidates
-            if (entry.fast_match) {
+            // Classify for cross_cache:
+            // - fast_match / element_only matched → shared blocks (no re-eval on L2 hit)
+            // - ancestor-dependent → dependent_candidates (re-eval per L2 hit)
+            if (entry.fast_match or isElementOnly(data, entry.selector)) {
                 if (matched) {
                     const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
                     switch (entry.pseudo) {
@@ -1327,7 +1545,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
     }
     const t_dom = std.time.milliTimestamp();
-    std.debug.print("[CASCADE-SRC] attrs={d}ms index={d}ms filter={d}ms(killed={d} doc_hashes={d}) dom_walk={d}ms nodes={d} L1_hit={d}/{d} L2_hit={d}/{d} dep={d}(bloom_rej={d} no_bloom={d} match_elem={d})\n", .{
+    std.debug.print("[CASCADE-SRC] attrs={d}ms index={d}ms filter={d}ms(killed={d} doc_hashes={d}) dom_walk={d}ms nodes={d} L1_hit={d}/{d} L2_hit={d}/{d} dep={d}(bloom_rej={d} alt_bloom_rej={d} no_bloom={d} match_elem={d})\n", .{
         t_attrs - t0,
         t_index - t_attrs,
         t_filter - t_index,
@@ -1341,6 +1559,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         cross_cache.count(),
         dep_match_count,
         dep_bloom_reject,
+        dep_alt_bloom_reject,
         dep_no_bloom,
         dep_match_elem,
     });
