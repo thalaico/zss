@@ -199,7 +199,28 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             containing_block_height,
             false,
         );
-        
+
+        // Pre-read the cosmetic values into box_gen_stage and commit, exactly as
+        // flow.blockElement does for in-flow blocks. Leaf absolutes (childless
+        // out-of-flow boxes — e.g. an empty `position:absolute` div) bypass the
+        // normal flow path, so without this box_gen_stage.nodes[node] stays empty
+        // and writeBlockCosmetic's `orelse return`s skip BOTH inset resolution
+        // (box stuck at 0,0) and background painting (transparent → invisible).
+        // solveAllSizes above already staged `.insets`; this commit flushes them
+        // together with color/border/background/opacity.
+        const computer = &layout.computer;
+        var font_specified = computer.getSpecifiedValue(.box_gen, .font);
+        font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
+        computer.setComputedValue(.box_gen, .font, font_specified);
+        computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+        computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+        computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+        computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+        computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+        computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+        computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+        computer.commitNode(.box_gen);
+
         // Get the computed width and height (these return optionals)
         const width = sizes.get(.inline_size) orelse containing_block_width;
         const height = sizes.get(.block_size) orelse containing_block_height;
