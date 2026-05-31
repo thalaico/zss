@@ -1521,7 +1521,7 @@ pub fn offsetChildBlocksFlex(
             flex_base_sizes[ci] = basis_px;
         } else {
             // flex-basis: auto — use the item's content/intrinsic size
-            flex_base_sizes[ci] = measureContentMainSize(box_tree, subtree, child_idx, flex_is_column);
+            flex_base_sizes[ci] = measureContentMainSize(layout, subtree, subtree_id, child_idx, flex_is_column);
         }
 
         // Hypothetical main size = flex base size clamped at zero
@@ -1637,7 +1637,7 @@ pub fn offsetChildBlocksFlex(
             };
             if (stretch_effective) continue;
             const bo = &subtree.items(.box_offsets)[child_idx];
-            const content_w_new = measureContentMainSize(box_tree, subtree, child_idx, false);
+            const content_w_new = measureContentMainSize(layout, subtree, subtree_id, child_idx, false);
             const left_edge = bo.content_pos.x;
             const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
             const border_w_new = @min(bo.border_size.w, content_w_new);
@@ -1798,7 +1798,8 @@ pub fn offsetChildBlocksFlex(
 /// Instead we recurse through the subtree, accumulating border+padding
 /// edges at each level, until we reach IFC leaf nodes whose glyph-advance
 /// sums give the true content width.
-fn measureContentMainSize(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Subtree.Size, flex_is_column: bool) Unit {
+fn measureContentMainSize(layout: *zss.Layout, subtree: Subtree.View, subtree_id: Subtree.Id, child_idx: Subtree.Size, flex_is_column: bool) Unit {
+    const box_tree = layout.box_tree.ptr;
     if (flex_is_column) {
         return subtree.items(.box_offsets)[child_idx].border_size.h;
     }
@@ -1815,11 +1816,19 @@ fn measureContentMainSize(box_tree: *BoxTree, subtree: Subtree.View, child_idx: 
         else => {},
     }
 
-    // Flex row containers: max-content width is the SUM of children's
-    // max-content widths (CSS Box Sizing §5 + Flexbox §9.9.1).
-    // Block flow containers: max-content width is the MAX of children
-    // (children stack vertically, widest one determines the parent).
-    const is_flex_row = subtree.items(.inner_block)[child_idx] == .flex and !flex_is_column;
+    // Max-content width depends on this node's own layout direction:
+    //   - flex-row container: SUM of children's widths (CSS Flexbox §9.9.1).
+    //   - flex-column container or block flow: MAX of children's widths
+    //     (children stack vertically; the widest one determines the parent).
+    // The child's direction must come from its OWN flex info, not the
+    // enclosing flex container's — a column flex nested in a row flex still
+    // sizes its width as the MAX of its (vertically stacked) items.
+    var is_flex_row = false;
+    if (subtree.items(.inner_block)[child_idx] == .flex) {
+        const key = BoxGen.FlexContainerKey{ .subtree_id = subtree_id, .block_idx = child_idx };
+        const child_is_column = if (layout.box_gen.flex_containers.get(key)) |info| info.flex_is_column else false;
+        is_flex_row = !child_is_column;
+    }
 
     var child_intrinsic: Unit = 0;
     var has_children = false;
@@ -1828,7 +1837,7 @@ fn measureContentMainSize(box_tree: *BoxTree, subtree: Subtree.View, child_idx: 
     while (gc < child_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
             has_children = true;
-            const w = measureContentMainSize(box_tree, subtree, gc, flex_is_column);
+            const w = measureContentMainSize(layout, subtree, subtree_id, gc, false);
             if (is_flex_row) {
                 child_intrinsic += w;
                 child_count += 1;
