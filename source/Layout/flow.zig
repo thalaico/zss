@@ -1698,6 +1698,11 @@ pub fn offsetChildBlocksFlex(
     // --- Phase 6 (§9.5-9.6): Position items ---
     const reverse_cross = flex_wrap == .wrap_reverse;
     var cross_cursor: Unit = if (reverse_cross) total_cross else 0;
+    // For a column flex container the block-size (height) is the MAIN-axis
+    // extent — the tallest line's stacked items plus inter-item gaps — not the
+    // cross extent. Track it per line and return it when flex_is_column; the
+    // cross extent (cross_cursor) remains the height for a row flex.
+    var max_main_extent: Unit = 0;
 
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
@@ -1715,6 +1720,7 @@ pub fn offsetChildBlocksFlex(
             line_total_main += childMainSize(subtree, children[ci], flex_is_column) + main_margin_sums[ci];
         }
         if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
+        max_main_extent = @max(max_main_extent, line_total_main);
 
         // Main-axis alignment (§9.5)
         const free_space = @max(0, container_main - line_total_main);
@@ -1782,6 +1788,10 @@ pub fn offsetChildBlocksFlex(
         }
     }
 
+    // Row flex: container height = cross extent. Column flex: container height
+    // = main extent (CSS Flexbox §9.9 — the content block-size of a column
+    // container is the sum of its items' outer main sizes plus inter-item gaps).
+    if (flex_is_column) return max_main_extent;
     return if (reverse_cross) total_cross else cross_cursor;
 }
 
