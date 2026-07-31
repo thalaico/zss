@@ -1378,7 +1378,7 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
             switch (kind) {
                 .ZeroGlyphIndex => {
                     // Advance already stored from hb_shape; fill extents only.
-                    setMetricsGlyphExtents(metrics, font.?, 0);
+                    setMetricsGlyphExtents(metrics, font, 0);
                 },
                 .BoxStart => {
                     const inline_box_index = @as(Ifc.Size, special.data);
@@ -1406,7 +1406,7 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                 fonts.setFontSize(ifc.font, current_font_size);
             }
             // Advance already stored from hb_shape; fill extents only.
-            setMetricsGlyphExtents(metrics, font.?, glyph_index);
+            setMetricsGlyphExtents(metrics, font, glyph_index);
         }
     }
 }
@@ -1486,7 +1486,16 @@ pub fn computeMinContentWidth(ifc: *const Ifc) Unit {
 
 /// Fill only offset (x_bearing) and width (ink width) from glyph extents.
 /// Advance is already stored from HarfBuzz shaped output — do not overwrite.
-fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font: *hb.hb_font_t, glyph_index: GlyphIndex) void {
+fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font_opt: ?*hb.hb_font_t, glyph_index: GlyphIndex) void {
+    // No resolved font for this IFC (font resolution can fail for unusual
+    // scripts/families): glyph advances were already stored at shape time,
+    // so lay out with zero ink extents instead of crashing. The text won't
+    // paint, but the boxes must still flow.
+    const font = font_opt orelse {
+        metrics.offset = 0;
+        metrics.width = 0;
+        return;
+    };
     var extents: hb.hb_glyph_extents_t = undefined;
     const extents_result = hb.hb_font_get_glyph_extents(font, glyph_index, &extents);
     if (extents_result == 0) {
