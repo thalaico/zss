@@ -87,6 +87,10 @@ fn addUnitTests(b: *Build, config: Config, zss: *Module) *Step.Run {
         .name = "zss-unit-tests",
         .root_module = zss,
         .filters = test_filters,
+        // zgl's bindings use `@call(.always_tail, ...)`, which the x86_64
+        // self-hosted backend (the Debug default) rejects. Force LLVM so
+        // `zig build test-units` actually runs in every optimize mode.
+        .use_llvm = true,
     });
     deps.addHarfbuzz(b, config, unit_tests.root_module);
 
