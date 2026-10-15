@@ -157,6 +157,20 @@ pub fn createDocument(
     errdefer document.deinit(allocator);
     document.node_group = try document.env.addNodeGroup();
 
+    // `NodeProperties` and the cascade `Database` became flat, pre-sized
+    // arrays in 2e29bf7: the caller must size them up front (getOrPutNode and
+    // addStorage index them without growing). Size them from the parse —
+    // every `zml_node` component becomes exactly one tree node in the
+    // analysis walk below, so it is also the final node count.
+    {
+        var zml_node_count: u32 = 0;
+        for (ast.components.items(.tag)) |tag| {
+            if (tag == .zml_node) zml_node_count += 1;
+        }
+        try document.env.node_properties.initNodes(allocator, zml_node_count);
+        try document.env.cascade_db.initNodes(allocator, zml_node_count);
+    }
+
     const root_zml_node_index = blk: {
         var document_children = zml_document_index.children(ast);
         const root_zml_node_index = document_children.nextSkipSpaces(ast) orelse return document;
