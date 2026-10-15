@@ -1033,6 +1033,15 @@ const RunContext = struct {
         }
         var id_it = env.nodes_to_ids.valueIterator();
         while (id_it.next()) |id| try ctx.doc_hashes.put(alloc, @intFromEnum(id.*), {});
+        // Type selectors: every compound containing one is checked against the
+        // doc hashes by compoundCanMatchInDoc, so tag names must be present too.
+        // Without this, any selector mentioning a tag name is dropped by
+        // filterDeadSelectors unless it is a lone type selector.
+        for (env.node_properties.nodes) |np| {
+            const t = np.type;
+            if (t.name != .any and t.name != .anonymous)
+                try ctx.doc_hashes.put(alloc, @intFromEnum(t.name), {});
+        }
     }
 };
 
@@ -1582,4 +1591,67 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }
     }
+}
+
+test "document-level pre-filter keeps selectors containing type selectors" {
+    const allocator = std.testing.allocator;
+
+    const source_code = try zss.syntax.SourceCode.init(
+        \\root #alice {
+        \\  first {}
+        \\  second {
+        \\    grandchild {}
+        \\  }
+        \\  ""
+        \\  third #bob {}
+        \\}
+    );
+    var document = try zss.zml.parseAndCreateDocument(allocator, source_code);
+    defer document.deinit(allocator);
+    const env = &document.env;
+
+    var ctx = RunContext{ .arena = .init(allocator) };
+    defer ctx.arena.deinit();
+    try ctx.ensureDocHashes(env);
+
+    const Check = struct {
+        fn expect(kept: bool, input: []const u8, environment: *Environment, alloc: Allocator, doc_hashes: *const DocHashes) !void {
+            const sc = try zss.syntax.SourceCode.init(input);
+            var ast, const component_list_index = blk: {
+                var parser = zss.syntax.Parser.init(sc, alloc);
+                defer parser.deinit();
+                break :blk try parser.parseListOfComponentValues(alloc);
+            };
+            defer ast.deinit(alloc);
+
+            var parser = selectors.Parser.init(environment, alloc, sc, ast, &.{});
+            defer parser.deinit();
+            var data_list: std.ArrayList(selectors.Data) = .empty;
+            defer data_list.deinit(alloc);
+            try parser.parseComplexSelectorList(&data_list, alloc, component_list_index.children(ast));
+
+            try std.testing.expectEqual(kept, selectorCanMatchInDoc(data_list.items, 0, doc_hashes));
+        }
+    };
+
+    // Every selector that mentions a type name that exists in the document must
+    // survive the pre-filter, not just lone type selectors. Before the
+    // ensureDocHashes fix, all of these (except "first") were dropped.
+    try Check.expect(true, "first", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "root first", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "root > first", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "#alice > first", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "second grandchild", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "#alice first second", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "first + second", env, allocator, &ctx.doc_hashes);
+    try Check.expect(true, "first ~ third", env, allocator, &ctx.doc_hashes);
+
+    // ...but names genuinely absent from the document must still be filtered.
+    // (No id-based negatives here: doc_hashes intentionally shares one u32
+    // keyspace across the type/class/id interners — a collision can only
+    // keep a selector, never drop one, so it is accepted by design, exactly
+    // like the AncestorBloom mixing.)
+    try Check.expect(false, "nosuchtag", env, allocator, &ctx.doc_hashes);
+    try Check.expect(false, "root nosuchtag", env, allocator, &ctx.doc_hashes);
+    try Check.expect(false, "first nosuchtag", env, allocator, &ctx.doc_hashes);
 }
