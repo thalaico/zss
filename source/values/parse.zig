@@ -533,11 +533,28 @@ pub fn color(ctx: *Context) ?types.Color {
         return .{ .rgba = rgba };
     }
 
-    // Check for rgb()/rgba() function notation
+    // Check for rgb()/rgba()/light-dark() function notation
     {
         const item = ctx.next() orelse return null;
         if (item.tag == .function) {
             const fn_loc = item.index.location(ctx.ast);
+
+            // CSS Color 5: light-dark( <color>, <color> ) resolves against the
+            // element's used color scheme. zss renders light mode (media.zig
+            // hardcodes prefers-color-scheme: light), so the first argument is
+            // the used value; the second is still parsed for validation so a
+            // malformed call drops the declaration like Chrome does.
+            if (ctx.source_code.mapIdentifierValue(fn_loc, void, &.{.{ "light-dark", {} }}) != null) {
+                const state = ctx.enterSequence(item.index);
+                defer ctx.resetState(state);
+
+                const light = color(ctx) orelse return null;
+                const comma = ctx.next() orelse return null;
+                if (comma.tag != .token_comma) return null;
+                _ = color(ctx) orelse return null;
+                return light;
+            }
+
             const is_rgb = ctx.source_code.mapIdentifierValue(fn_loc, enum { rgb, rgba }, &.{
                 .{ "rgb", .rgb },
                 .{ "rgba", .rgba },
@@ -1532,6 +1549,18 @@ test "value parsers" {
     try ns.expectValue(color, "#abcd", .{ .rgba = 0xaabbccdd });
     try ns.expectValue(color, "#123456", .{ .rgba = 0x123456ff });
     try ns.expectValue(color, "#12345678", .{ .rgba = 0x12345678 });
+
+    // CSS Color 5 light-dark(): light mode renders the first argument.
+    try ns.expectValue(color, "light-dark(#eee, #222)", .{ .rgba = 0xeeeeeeff });
+    try ns.expectValue(color, "light-dark(red, blue)", .{ .rgba = 0xff0000ff });
+    try ns.expectValue(color, "light-dark(rgb(1, 2, 3), #fff)", .{ .rgba = 0x010203ff });
+    try ns.expectValue(color, "light-dark(#fff, transparent)", .{ .rgba = 0xffffffff });
+    // Nested light-dark() in the dark argument is still validated.
+    try ns.expectValue(color, "light-dark(#012, light-dark(#a00, #0a0))", .{ .rgba = 0x001122ff });
+    // Malformed calls drop the declaration.
+    try ns.expectValue(color, "light-dark(#eee)", null);
+    try ns.expectValue(color, "light-dark(#eee,)", null);
+    try ns.expectValue(color, "light-dark(#eee #222)", null);
 
     try ns.expectValue(borderStyle, "none", .none);
     try ns.expectValue(borderStyle, "ridge", .ridge);
