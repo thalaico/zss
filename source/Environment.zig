@@ -487,6 +487,14 @@ pub const NodeRelative = enum {
     last_child,
 };
 
+/// Element state that lives outside the content attributes and that the host
+/// (the DOM) owns: HTML §4.10.5.1.15 checkedness, §4.10.10 selectedness and
+/// §4.10.18.6 "actually disabled". Selector matching asks for it through
+/// `DocumentTreeVtable.nodeState`, never by reading the attributes directly —
+/// once a script has toggled a checkbox, the `checked` attribute only states
+/// its default.
+pub const ElementState = enum { checked, selected, disabled };
+
 pub const DocumentTreeVtable = struct {
     // TODO: Make these functions "restricted function types"
     //       https://github.com/ziglang/zig/issues/23367
@@ -495,16 +503,62 @@ pub const DocumentTreeVtable = struct {
     /// `null` if no such node exists.
     nodeRelative: *const fn (env: *const Environment, node: NodeId, relative: NodeRelative) ?NodeId,
 
+    /// Returns whether `node` currently has the given state. Hosts without live
+    /// element state use `attributeElementState`.
+    nodeState: *const fn (env: *const Environment, node: NodeId, state: ElementState) bool,
+
     pub const empty_document: DocumentTreeVtable = .{
         .nodeRelative = &empty_document_fns.nodeRelative,
+        .nodeState = &empty_document_fns.nodeState,
     };
 
     const empty_document_fns = struct {
         fn nodeRelative(_: *const Environment, _: NodeId, _: NodeRelative) ?NodeId {
             unreachable;
         }
+        fn nodeState(_: *const Environment, _: NodeId, _: ElementState) bool {
+            unreachable;
+        }
     };
 };
+
+pub fn nodeState(env: *const Environment, node: NodeId, state: ElementState) bool {
+    return env.document_tree_vtable.nodeState(env, node, state);
+}
+
+/// `nodeState` for a document whose element state has never diverged from its
+/// content attributes (a freshly parsed document, or a host without scripts):
+/// HTML's defaults. Checkedness is the `checked` attribute, selectedness the
+/// `selected` attribute, and an element is actually disabled (§4.10.18.6)
+/// when it carries `disabled` itself or sits inside a disabled `fieldset`,
+/// unless it is inside that fieldset's first `legend` child.
+pub fn attributeElementState(env: *const Environment, node: NodeId, state: ElementState) bool {
+    switch (state) {
+        .checked => return env.nodeHasAttributeByName(node, "checked"),
+        .selected => return env.nodeHasAttributeByName(node, "selected"),
+        .disabled => {
+            if (env.nodeHasAttributeByName(node, "disabled")) return true;
+            var child = node;
+            var ancestor = node.parent(env);
+            while (ancestor) |a| : ({
+                child = a;
+                ancestor = a.parent(env);
+            }) {
+                if (!env.nodeTagEql(a, "fieldset") or !env.nodeHasAttributeByName(a, "disabled")) continue;
+                if (!(env.nodeTagEql(child, "legend") and isFirstLegendChild(env, a, child))) return true;
+            }
+            return false;
+        },
+    }
+}
+
+fn isFirstLegendChild(env: *const Environment, fieldset: NodeId, legend: NodeId) bool {
+    var child = fieldset.firstChild(env);
+    while (child) |c| : (child = c.nextSibling(env)) {
+        if (env.nodeTagEql(c, "legend")) return c == legend;
+    }
+    return false;
+}
 
 // TODO: Make this a normal struct
 pub const NodeId = packed struct {

@@ -142,6 +142,7 @@ pub fn createDocument(
             allocator,
             comptime &.{
                 .nodeRelative = Document.tree_vtable_fns.nodeRelative,
+                .nodeState = Environment.attributeElementState,
             },
             .{
                 .type_names = .insensitive,

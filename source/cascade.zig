@@ -432,6 +432,62 @@ fn rightmostCompoundIsPositional(data: []const selectors.Data, complex_selector_
     return compoundIsPositional(data, start, last_trailing_idx);
 }
 
+/// True if the rightmost compound's verdict depends on host-owned element
+/// state (`:checked`, `:enabled`, `:disabled`), which two elements with equal
+/// type, classes and attributes may still differ in — the L1 sibling key must
+/// then carry the state (`elementStateSignature`).
+fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const start = data[last_trailing_idx].trailing.compound_selector_start;
+    var idx = start;
+    while (idx < last_trailing_idx) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class, .not_pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                switch (pc) {
+                    .checked, .enabled, .disabled => return true,
+                    else => {},
+                }
+                idx += selectors.pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where => |_, tag| {
+                idx += 1;
+                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    if (rightmostCompoundHasElementState(data, sel_idx)) return true;
+                    sel_idx = data[sel_idx].next_complex_selector;
+                }
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return false;
+}
+
+/// What the state pseudo-classes can observe about an element. Only form
+/// controls can carry such state (`:enabled`/`:disabled` are gated on
+/// `isFormElement`, `:checked` on input/option), so every other element gets a
+/// constant without asking the host — the host's answer for `.disabled` walks
+/// the ancestor chain (disabled fieldsets), which must not be paid per element.
+fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 {
+    const stateful = inline for (.{ "input", "button", "select", "textarea", "fieldset", "option", "optgroup" }) |tag| {
+        if (env.nodeTagEql(node, tag)) break true;
+    } else false;
+    if (!stateful) return 0;
+    var bits: u64 = 0;
+    if (env.nodeState(node, .checked)) bits |= 1;
+    if (env.nodeState(node, .selected)) bits |= 2;
+    if (env.nodeState(node, .disabled)) bits |= 4;
+    return (bits +% 1) *% 0xd6e8feb86659fd93;
+}
+
 /// True if the rightmost compound's verdict is the same for every element of
 /// the same type and classes: no attribute selectors, and no pseudo-class
 /// beyond the ones that are constant per type (`:root`, `:link`) or never
@@ -1357,6 +1413,8 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     // element sits among its siblings (see rightmostCompoundIsPositional).
     // When it does, the L1 sibling-sharing key must carry the position.
     var positional_selectors = false;
+    // Likewise for host-owned element state (see rightmostCompoundHasElementState).
+    var state_selectors = false;
 
     for (importances) |importance| {
         const selector_list = switch (importance) {
@@ -1386,6 +1444,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 .alt_ancestor_hashes = if (ah == null) try extractAltAncestorHashes(data, selector, allocator) else null,
             };
             if (!entry.fast_match and rightmostCompoundIsPositional(data, selector)) positional_selectors = true;
+            if (rightmostCompoundHasElementState(data, selector)) state_selectors = true;
             switch (key) {
                 .id => |id| {
                     const gop = try id_index.getOrPut(allocator, id);
@@ -1522,6 +1581,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }
         if (positional_selectors) full_key ^= positionalSignature(env, node);
+        if (state_selectors) full_key ^= elementStateSignature(env, node);
 
         if (!has_id) {
             // L1: same-parent full sharing (siblings skip all matching)
@@ -1789,6 +1849,79 @@ test "sibling-dependent selectors are not shared between look-alike siblings" {
     // the first one's verdict ([2, 2, 2, 2]), then applied the shared `p {}`
     // block ahead of the re-evaluated dependents ([2, 0, 0, 0]).
     try std.testing.expectEqualSlices(i32, &expected, &actual);
+}
+
+test "descendant and sibling combinators backtrack over candidates" {
+    const allocator = std.testing.allocator;
+
+    // Acid3 test 42's two shapes. Chain: #div1 > div2 > div3 > div4 > div5 > div6.
+    // `#div1 > div div > div` must match div4, div5 AND div6 — for div5 the
+    // middle `div` has to anchor at div2 (a child of #div1), not at the nearest
+    // ancestor div3. Siblings: `#div1 ~ div div + div > div` matches only the
+    // deepest element in the third sibling's subtree.
+    const doc_source = try zss.syntax.SourceCode.init(
+        \\body {
+        \\  div #div1 {
+        \\    div { div { div { div { div {} } } } }
+        \\  }
+        \\  div {}
+        \\  div {
+        \\    div {
+        \\      div {}
+        \\      div { div {} }
+        \\    }
+        \\  }
+        \\}
+    );
+    var document = try zss.zml.parseAndCreateDocument(allocator, doc_source);
+    defer document.deinit(allocator);
+    const env = &document.env;
+
+    const css = try zss.syntax.SourceCode.init(
+        \\div { z-index: 0; }
+        \\#div1 > div div > div { z-index: 1; }
+        \\#div1 ~ div div + div > div { z-index: 2; }
+    );
+    var stylesheet = try zss.Stylesheet.parseAndCreate(allocator, css, env);
+    defer stylesheet.deinit(allocator);
+
+    const cascade_list: List = .{ .author = &.{&.{ .leaf = &stylesheet.cascade_source }} };
+    try run(&cascade_list, env, allocator);
+
+    const Z = struct {
+        fn of(e: *const Environment, doc: *const zss.zml.Document, node: zss.zml.Document.Node) !i32 {
+            const storage = e.cascade_db.getStorage(node.toZssNode(doc)) orelse return error.TestFailure;
+            const z = storage.getPtr(.z_index) orelse return error.TestFailure;
+            return z.z_index.declared.integer;
+        }
+    };
+
+    const body = document.rootNode().?;
+    const div1 = body.firstChild(&document).?;
+    // Chain under #div1.
+    const expected_chain = [_]i32{ 0, 0, 1, 1, 1 };
+    var node = div1.firstChild(&document);
+    var i: usize = 0;
+    while (node) |n| : (node = n.firstChild(&document)) {
+        try std.testing.expectEqual(expected_chain[i], try Z.of(env, &document, n));
+        i += 1;
+    }
+    try std.testing.expectEqual(expected_chain.len, i);
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div1));
+
+    // Siblings: div1, div2, div3 > div31 > (div310, div311 > div3111).
+    const div2 = div1.nextSibling(&document).?;
+    const div3 = div2.nextSibling(&document).?;
+    const div31 = div3.firstChild(&document).?;
+    const div310 = div31.firstChild(&document).?;
+    const div311 = div310.nextSibling(&document).?;
+    const div3111 = div311.firstChild(&document).?;
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div2));
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div3));
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div31));
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div310));
+    try std.testing.expectEqual(@as(i32, 0), try Z.of(env, &document, div311));
+    try std.testing.expectEqual(@as(i32, 2), try Z.of(env, &document, div3111));
 }
 
 test "document-level pre-filter keeps selectors containing type selectors" {

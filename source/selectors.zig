@@ -306,6 +306,20 @@ fn matchLang(env: *const Environment, element: NodeId, range: AttributeValue, al
     return false;
 }
 
+/// Selectors 4 §14.6.2: `:checked` matches checkbox and radio `input`s whose
+/// checkedness is true and `option`s whose selectedness is true. The states
+/// come from the host (`Environment.nodeState`); the `checked`/`selected`
+/// attributes are only their defaults.
+fn matchChecked(env: *const Environment, element: NodeId, allocator: Allocator) bool {
+    if (env.nodeTagEql(element, "option")) return env.nodeState(element, .selected);
+    if (!env.nodeTagEql(element, "input")) return false;
+    const type_value = env.nodeAttributeValueByName(element, "type") orelse return false;
+    const type_str = env.getAttributeValueString(allocator, type_value, .sensitive) catch return false;
+    defer allocator.free(type_str);
+    if (!std.ascii.eqlIgnoreCase(type_str, "checkbox") and !std.ascii.eqlIgnoreCase(type_str, "radio")) return false;
+    return env.nodeState(element, .checked);
+}
+
 /// `payload` is the Data following the `pseudo_class_selector`; only read for
 /// pseudo-classes with an argument (`pseudoClassPayload`).
 fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: NodeId, env: *const Environment, allocator: Allocator) bool {
@@ -369,13 +383,13 @@ fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: NodeId, e
         },
         .enabled => {
             if (!isFormElement(env, element)) return false;
-            return !env.nodeHasAttributeByName(element, "disabled");
+            return !env.nodeState(element, .disabled);
         },
         .disabled => {
             if (!isFormElement(env, element)) return false;
-            return env.nodeHasAttributeByName(element, "disabled");
+            return env.nodeState(element, .disabled);
         },
-        .checked => return env.nodeHasAttributeByName(element, "checked"),
+        .checked => return matchChecked(env, element, allocator),
         .empty => return isEmpty(env, element),
         .unrecognized => return false,
         .ignored => return true,
@@ -409,63 +423,84 @@ fn matchComplexSelector(
     match_candidate: NodeId,
     allocator: std.mem.Allocator,
 ) bool {
-    var trailing_index = last_trailing;
-    var trailing = data[trailing_index].trailing;
-    var element: ?NodeId = match_candidate;
-    if (!matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) return false;
-    compound_loop: while (trailing.compound_selector_start != first_compound) {
-        trailing_index = trailing.compound_selector_start - 1;
-        trailing = data[trailing_index].trailing;
-        switch (trailing.combinator) {
-            .descendant => {
-                element = (element orelse return false).parent(env);
-                while (element) |e| : (element = e.parent(env)) {
-                    switch (env.getNodeProperty(.category, e)) {
-                        .element => {},
-                        .text => unreachable,
-                    }
-                    if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e, allocator)) continue :compound_loop;
-                } else return false;
-            },
-            .child => {
-                element = (element orelse return false).parent(env);
-                while (element) |e| : (element = e.parent(env)) {
-                    switch (env.getNodeProperty(.category, e)) {
-                        .element => break,
-                        .text => unreachable,
-                    }
-                } else return false;
-                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) continue :compound_loop;
-                return false;
-            },
-            .subsequent_sibling => {
-                element = (element orelse return false).previousSibling(env);
-                while (element) |e| : (element = e.previousSibling(env)) {
-                    switch (env.getNodeProperty(.category, e)) {
-                        .element => {
-                            if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, e, allocator)) continue :compound_loop;
-                        },
-                        .text => {},
-                    }
+    const trailing = data[last_trailing].trailing;
+    if (!matchCompoundSelector(data, trailing.compound_selector_start, last_trailing, env, match_candidate, allocator)) return false;
+    return matchLeftOfCompound(data, first_compound, trailing.compound_selector_start, env, match_candidate, allocator);
+}
+
+/// Matches the part of a complex selector to the left of the compound selector
+/// starting at `compound_start`, given that compound already matched `anchor`.
+///
+/// Selectors 4 §16 (combinators) describe a relationship between two elements;
+/// the descendant and subsequent-sibling combinators relate the anchor to ANY
+/// of several candidates, so a match of the left-hand compound against one
+/// candidate is not final: if the rest of the selector fails from there, the
+/// next candidate must be tried. `#a > div div > div` against the chain
+/// `#a > b > c > d > e` matches `e` only by anchoring the middle `div` at `b`,
+/// not at `c` (the nearest match) — committing to the nearest candidate is the
+/// classic bug Acid3 test 42 checks for.
+fn matchLeftOfCompound(
+    data: []const Data,
+    first_compound: Data.ListIndex,
+    compound_start: Data.ListIndex,
+    env: *const Environment,
+    anchor: NodeId,
+    allocator: std.mem.Allocator,
+) bool {
+    if (compound_start == first_compound) return true;
+    const trailing_index = compound_start - 1;
+    const trailing = data[trailing_index].trailing;
+    const left_start = trailing.compound_selector_start;
+    switch (trailing.combinator) {
+        .descendant => {
+            var element = anchor.parent(env);
+            while (element) |e| : (element = e.parent(env)) {
+                switch (env.getNodeProperty(.category, e)) {
+                    .element => {},
+                    .text => unreachable,
                 }
-            },
-            .next_sibling => {
-                element = (element orelse return false).previousSibling(env);
-                while (element) |e| : (element = e.previousSibling(env)) {
-                    switch (env.getNodeProperty(.category, e)) {
-                        .element => break,
-                        .text => {},
-                    }
-                } else return false;
-                if (matchCompoundSelector(data, trailing.compound_selector_start, trailing_index, env, element.?, allocator)) continue :compound_loop;
-                return false;
-            },
-            .column => panic("TODO: Unsupported selector combinator: {s}\n", .{@tagName(trailing.combinator)}),
-            // end_* values only appear in the last trailing and are never reached in this loop.
-            .end_none, .end_before, .end_after => unreachable,
-        }
+                if (matchCompoundSelector(data, left_start, trailing_index, env, e, allocator) and
+                    matchLeftOfCompound(data, first_compound, left_start, env, e, allocator)) return true;
+            }
+            return false;
+        },
+        .child => {
+            const parent = anchor.parent(env) orelse return false;
+            switch (env.getNodeProperty(.category, parent)) {
+                .element => {},
+                .text => unreachable,
+            }
+            if (!matchCompoundSelector(data, left_start, trailing_index, env, parent, allocator)) return false;
+            return matchLeftOfCompound(data, first_compound, left_start, env, parent, allocator);
+        },
+        .subsequent_sibling => {
+            var element = anchor.previousSibling(env);
+            while (element) |e| : (element = e.previousSibling(env)) {
+                switch (env.getNodeProperty(.category, e)) {
+                    .element => {
+                        if (matchCompoundSelector(data, left_start, trailing_index, env, e, allocator) and
+                            matchLeftOfCompound(data, first_compound, left_start, env, e, allocator)) return true;
+                    },
+                    .text => {},
+                }
+            }
+            return false;
+        },
+        .next_sibling => {
+            var element = anchor.previousSibling(env);
+            const sibling = while (element) |e| : (element = e.previousSibling(env)) {
+                switch (env.getNodeProperty(.category, e)) {
+                    .element => break e,
+                    .text => {},
+                }
+            } else return false;
+            if (!matchCompoundSelector(data, left_start, trailing_index, env, sibling, allocator)) return false;
+            return matchLeftOfCompound(data, first_compound, left_start, env, sibling, allocator);
+        },
+        .column => panic("TODO: Unsupported selector combinator: {s}\n", .{@tagName(trailing.combinator)}),
+        // end_* values only appear in the last trailing and are never reached here.
+        .end_none, .end_before, .end_after => unreachable,
     }
-    return true;
 }
 
 fn matchCompoundSelector(
