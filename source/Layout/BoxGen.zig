@@ -165,30 +165,27 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
 fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
     // Layout absolutely positioned elements that were collected during analyzeAllNodes
     const absolute_blocks = box_gen.absolute.blocks.items;
-    
+
     if (absolute_blocks.len == 0) return;
-    
-    
+
     const layout = box_gen.getLayout();
-    
+
     for (absolute_blocks) |block| {
         // Find the containing block for this absolute element
         const containing_block_ref = findContainingBlockRef(&box_gen.absolute, block.containing_block) orelse {
             std.log.warn("[layoutAbsoluteBlocks] Could not find containing block for node", .{});
             continue;
         };
-        
-        
+
         // Get containing block size
         const containing_subtree = layout.box_tree.ptr.getSubtree(containing_block_ref.subtree);
         const containing_slice = containing_subtree.blocks.slice();
         const containing_box_offsets = containing_slice.items(.box_offsets)[containing_block_ref.index];
         const containing_block_size = containing_box_offsets.border_size;
-        
-        
+
         // Get element's computed styles and compute sizes
         try layout.computer.setCurrentNode(.box_gen, block.node);
-        
+
         // Compute sizes using the same function as normal flow
         const containing_block_width = containing_block_size.w;
         const containing_block_height = containing_block_size.h;
@@ -224,7 +221,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // Get the computed width and height (these return optionals)
         const width = sizes.get(.inline_size) orelse containing_block_width;
         const height = sizes.get(.block_size) orelse containing_block_height;
-        
+
         // Position (left/top) is resolved by the cosmetic pass into insets.
         // We don't compute it here to avoid double-counting.
         // Create block box at the computed position and size
@@ -232,14 +229,14 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // Instead, manually create the block in the containing block's subtree (reuse from earlier)
         const index = try layout.box_tree.appendBlockBox(containing_subtree);
         const ref = BlockRef{ .subtree = containing_block_ref.subtree, .index = index };
-        
+
         // Re-get the slice since appendBlockBox might have reallocated
         const blocks = containing_subtree.blocks.slice();
-        
+
         // Offset is zero: the cosmetic pass writes CSS left/top into insets,
         // and the renderer sums offset + insets. Setting both would double-count.
         blocks.items(.offset)[index] = .{ .x = 0, .y = 0 };
-        
+
         // Set the size
         blocks.items(.box_offsets)[index] = .{
             .border_pos = .{ .x = 0, .y = 0 },
@@ -253,7 +250,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
                 .h = height - sizes.border_block_start - sizes.border_block_end - sizes.padding_block_start - sizes.padding_block_end,
             },
         };
-        
+
         // Set borders and margins
         blocks.items(.borders)[index] = .{
             .left = sizes.border_inline_start,
@@ -261,14 +258,14 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
             .top = sizes.border_block_start,
             .bottom = sizes.border_block_end,
         };
-        
+
         blocks.items(.margins)[index] = .{
             .left = sizes.margin_inline_start_untagged,
             .right = sizes.margin_inline_end_untagged,
             .top = sizes.margin_block_start,
             .bottom = sizes.margin_block_end,
         };
-        
+
         // Initialize all required fields
         blocks.items(.skip)[index] = 1; // Absolute blocks are leaf nodes
         blocks.items(.type)[index] = .block; // Regular block type
@@ -303,14 +300,14 @@ fn findContainingBlockRef(absolute: *const Absolute, id: Absolute.ContainingBloc
     const slice = absolute.containing_blocks.slice();
     const ids = slice.items(.id);
     const refs = slice.items(.ref);
-    
+
     for (ids, refs, 0..) |containing_id, ref, i| {
         _ = i;
         if (containing_id == id) {
             return ref;
         }
     }
-    
+
     return null;
 }
 
@@ -345,7 +342,16 @@ fn dispatch(
     box_style: BoxTree.BoxStyle,
 ) !void {
     switch (box_style.outer) {
-        .none => box_gen.getLayout().advanceNode(),
+        .none => {
+            // No box, but the element still has computed values
+            // (CSS-CASCADE-4§4.4 — computation does not depend on box
+            // generation): commit them so `BoxTree.computed_styles` covers it.
+            // Its descendants are not visited.
+            const layout = box_gen.getLayout();
+            layout.computer.stageCosmeticValues(.box_gen);
+            layout.computer.commitNode(.box_gen);
+            layout.advanceNode();
+        },
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
         .absolute => {
@@ -391,20 +397,14 @@ fn dispatchBlockElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
-    // Check if this is a table element by checking tag name
+    // Route table elements to table layout mode by tag name
     const env = box_gen.getLayout().inputs.env;
-    if (env.getNodeProperty(.category, node) == .element) {
-        const type_info = env.getNodeProperty(.type, node);
-        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-        
-        // Route table elements to table layout mode
-        if (type_iter.eql("table")) {
-            return try table.tableElement(box_gen, node, box_style.position);
-        } else if (type_iter.eql("tr")) {
-            return try table.rowElement(box_gen, node, box_style.position);
-        }
+    if (env.nodeTagEql(node, "table")) {
+        return try table.tableElement(box_gen, node, box_style.position);
+    } else if (env.nodeTagEql(node, "tr")) {
+        return try table.rowElement(box_gen, node, box_style.position);
     }
-    
+
     // Regular block element handling
     // Get inner box style based on outer type
     const inner_box_style = switch (box_style.outer) {
@@ -439,17 +439,12 @@ fn dispatchInlineElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
-    // Check if this is a table-cell element
+    // Route table-cell elements to table layout mode by tag name
     const env = box_gen.getLayout().inputs.env;
-    if (env.getNodeProperty(.category, node) == .element) {
-        const type_info = env.getNodeProperty(.type, node);
-        var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-        
-        if (type_iter.eql("td") or type_iter.eql("th")) {
-            return try table.cellElement(box_gen, node);
-        }
+    if (env.nodeTagEql(node, "td") or env.nodeTagEql(node, "th")) {
+        return try table.cellElement(box_gen, node);
     }
-    
+
     // Regular inline element handling
     switch (is_root) {
         .root => {
@@ -1010,9 +1005,7 @@ pub fn popFlowBlock(
         }
     }
     const inner_block: BoxTree.BoxStyle.InnerBlock =
-        if (block_info.is_flex_container) .flex
-        else if (block_info.is_grid_container) .grid
-        else .flow;
+        if (block_info.is_flex_container) .flex else if (block_info.is_grid_container) .grid else .flow;
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
@@ -1471,12 +1464,8 @@ fn writeBlockCosmetic(
         subtree.items(.visibility)[index] = font.visibility;
 
         const env = layout.inputs.env;
-        if (env.getNodeProperty(.category, node) == .element) {
-            const type_info = env.getNodeProperty(.type, node);
-            var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-            if (type_iter.eql("li")) {
-                subtree.items(.list_style_type)[index] = font.list_style_type;
-            }
+        if (env.nodeTagEql(node, "li")) {
+            subtree.items(.list_style_type)[index] = font.list_style_type;
         }
     }
 

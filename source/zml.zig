@@ -169,6 +169,8 @@ pub fn createDocument(
         }
         try document.env.node_properties.initNodes(allocator, zml_node_count);
         try document.env.cascade_db.initNodes(allocator, zml_node_count);
+        // Layout sizes its per-node computed-style table from this.
+        document.env.node_count = zml_node_count;
     }
 
     const root_zml_node_index = blk: {

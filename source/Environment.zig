@@ -46,7 +46,6 @@ node_count: u32 = 0,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
-
 /// Viewport dimensions in CSS pixels, used for @media query evaluation.
 /// Set to 0 to disable media query filtering (all @media blocks included).
 viewport_width_px: u32 = 0,
@@ -382,21 +381,21 @@ pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Alloc
             .insensitive => &env.attribute_values_insensitive,
         },
     };
-    
+
     const index = @intFromEnum(value);
     const range_entry = interner.indexer.entries.items(.value)[index];
     const range = range_entry;
-    
+
     // Collect string from segmented storage into a contiguous buffer
     var result = std.ArrayListUnmanaged(u8){};
     errdefer result.deinit(allocator);
     try result.ensureTotalCapacity(allocator, range.len);
-    
+
     var it = interner.string.iterator(range.position, range.len);
     while (it.next()) |segment| {
         result.appendSliceAssumeCapacity(segment);
     }
-    
+
     return try result.toOwnedSlice(allocator);
 }
 
@@ -710,6 +709,18 @@ pub fn nodeHasAttributeByName(env: *const Environment, node: NodeId, name_str: [
         if (it.eql(name_str)) return true;
     }
     return false;
+}
+
+/// True if `node` is an element whose type (tag) name is `tag`. Handles the
+/// `anonymous`/`any` sentinels, which have no interned string — zml's `*`
+/// elements are anonymous, and indexing the interner with a sentinel is out
+/// of bounds. Assumes `tag` is lowercase.
+pub fn nodeTagEql(env: *const Environment, node: NodeId, tag: []const u8) bool {
+    if (env.getNodeProperty(.category, node) != .element) return false;
+    const type_name = env.getNodeProperty(.type, node).name;
+    if (type_name == .anonymous or type_name == .any) return false;
+    var it = env.type_names.iterator(@intFromEnum(type_name));
+    return it.eql(tag);
 }
 
 pub const Testing = struct {

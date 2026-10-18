@@ -53,14 +53,14 @@ fn getRealCharWidth(fonts: *const Fonts) Unit {
 /// Table layout context
 pub const Context = struct {
     pub const BlockType = enum { table, row, cell };
- 
+
     /// Entry pairing a block type with the bfc_stack depth at push time.
     /// Used to correlate null node pops with the correct table element.
     pub const BlockEntry = struct {
         block_type: BlockType,
         bfc_depth: usize,
     };
-    
+
     /// Current table depth (0 = not in table, >0 = in table)
     table_depth: usize = 0,
     /// Current row being processed
@@ -90,7 +90,7 @@ pub const Context = struct {
     /// Each entry records the bfc_stack depth at push time so null node
     /// processing can match pops to the correct table element.
     block_type_stack: std.ArrayListUnmanaged(BlockEntry) = .{},
-    
+
     pub const State = struct {
         row: usize,
         column: usize,
@@ -101,16 +101,16 @@ pub const Context = struct {
         has_auto_widths: bool,
         col_explicit: [MAX_COLUMNS]Unit,
     };
-    
+
     pub fn init(_: Allocator) Context {
         return .{};
     }
-    
+
     pub fn deinit(ctx: *Context, allocator: Allocator) void {
         ctx.block_type_stack.deinit(allocator);
         ctx.stack.deinit(allocator);
     }
-    
+
     pub fn pushTable(ctx: *Context, allocator: Allocator, table_width: Unit) !void {
         try ctx.stack.append(allocator, .{
             .row = ctx.current_row,
@@ -133,7 +133,7 @@ pub const Context = struct {
         ctx.col_explicit = [_]Unit{0} ** MAX_COLUMNS;
         ctx.has_auto_widths = false;
     }
-    
+
     pub fn popTable(ctx: *Context) void {
         if (ctx.stack.items.len == 0) return;
         const state = ctx.stack.pop().?;
@@ -148,7 +148,7 @@ pub const Context = struct {
         ctx.col_explicit = state.col_explicit;
         ctx.row_x_cursor = ctx.border_spacing;
     }
-    
+
     pub fn beginRow(ctx: *Context) void {
         // Update known_columns from observed max (keeps pre-computed value if larger)
         if (ctx.current_row >= 1 and ctx.max_columns > ctx.known_columns) {
@@ -158,7 +158,7 @@ pub const Context = struct {
         ctx.row_x_cursor = ctx.border_spacing; // Start with left border-spacing
         ctx.current_row += 1;
     }
-    
+
     pub fn addCell(ctx: *Context) void {
         // Auto-wrap to new row if we've exceeded finalized column count
         if (ctx.known_columns > 0 and ctx.current_column >= ctx.known_columns) {
@@ -166,18 +166,18 @@ pub const Context = struct {
             ctx.row_x_cursor = ctx.border_spacing;
             ctx.current_row += 1;
         }
-        
+
         ctx.current_column += 1;
         if (ctx.current_column > ctx.max_columns) {
             ctx.max_columns = ctx.current_column;
         }
     }
-    
+
     /// Advance the row cursor by the given cell width.
     pub fn advanceCursor(ctx: *Context, cell_width: Unit) void {
         ctx.row_x_cursor += cell_width + ctx.border_spacing; // Add spacing between cells
     }
-    
+
     /// Get the default cell width for auto-width cells.
     /// Uses known_columns after row 1, else divides table width by max seen so far.
     pub fn getDefaultCellWidth(ctx: *const Context) Unit {
@@ -206,10 +206,7 @@ pub const Context = struct {
 /// Check if a node's tag name matches the given string.
 /// Creates a fresh iterator each time (eql consumes the iterator).
 fn nodeTagEql(env: *const Environment, node: NodeId, tag: []const u8) bool {
-    if (env.getNodeProperty(.category, node) != .element) return false;
-    const type_info = env.getNodeProperty(.type, node);
-    var it = env.type_names.iterator(@intFromEnum(type_info.name));
-    return it.eql(tag);
+    return env.nodeTagEql(node, tag);
 }
 
 /// Count columns by finding the first <tr> with <td>/<th> children.
@@ -235,7 +232,6 @@ fn countCellsInRow(tr: NodeId, env: *const Environment) usize {
     }
     return count;
 }
-
 
 /// Iterates through <tr> elements in a table, descending into <tbody>/<thead>/<tfoot>.
 const TrIterator = struct {
@@ -479,7 +475,6 @@ fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Enviro
     }
 
     ctx.has_auto_widths = true;
-
 }
 
 pub fn beginMode(box_gen: *BoxGen) !void {
@@ -495,7 +490,7 @@ fn endMode(box_gen: *BoxGen) void {
 pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
-    
+
     // Treat table as a block, but track it in table context
     const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, position);
@@ -530,7 +525,7 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
         // Pre-scan cell content to compute auto-layout column widths
         computeAutoColumnWidths(&box_gen.table_context, node, env, box_gen.getLayout().inputs.fonts);
     }
-    
+
     const alloc = box_gen.getLayout().allocator;
     box_gen.bfc_stack.top.? += 1;
     try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .table, .bfc_depth = box_gen.bfc_stack.top.? });
@@ -544,10 +539,10 @@ pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.P
 pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
-    
+
     // Begin tracking this row
     box_gen.table_context.beginRow();
-    
+
     // Treat row as a block
     const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, position);
@@ -582,10 +577,10 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
     const table_ctx = &box_gen.table_context;
-    
+
     // Track cell for column counting
     table_ctx.addCell();
-    
+
     // Read colspan from the DOM node
     const env = box_gen.getLayout().inputs.env;
     const colspan: usize = env.getNodeProperty(.colspan, node);
@@ -596,7 +591,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
             table_ctx.max_columns = table_ctx.current_column;
         }
     }
-    
+
     // Check whether the cell has an explicit CSS width BEFORE solveAllSizes
     // consumes the specified value. The old heuristic (resolved_width < table_w)
     // was wrong: auto-resolved widths are reduced by padding, making them look
@@ -608,10 +603,8 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
     const stacking_context = flow.solveStackingContext(computer, .static);
 
-
     const resolved_width = sizes.inline_size_untagged;
     const table_w = table_ctx.table_width;
-
 
     // 0-based column index for auto-layout lookup (points to first spanned column)
     const col_idx = if (table_ctx.current_column >= colspan) table_ctx.current_column - colspan else 0;
@@ -645,7 +638,7 @@ pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
     // Advance cursor by full border-box width (content + padding + border)
     const cell_border_box = cell_width + sizes.padding_inline_start + sizes.padding_inline_end + sizes.border_inline_start + sizes.border_inline_end;
     table_ctx.advanceCursor(cell_border_box);
-    
+
     // Commit font group for child text inheritance.
     const cell_font = computer.getSpecifiedValue(.box_gen, .font);
     computer.setComputedValue(.box_gen, .font, cell_font);

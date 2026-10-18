@@ -28,6 +28,40 @@ pub const Stage = enum {
     }
 };
 
+/// The computed values (CSS-CASCADE-4§4.4) of every property group for one
+/// element, as filled in during box generation. A group is `null` when the
+/// layout pass did not compute it for this element.
+pub const NodeComputedValues = BoxGenComputedValues;
+
+/// The per-element computed values retained after layout, indexed by
+/// `NodeId.value`. Owned by the `BoxTree` that layout produced; freed by
+/// `BoxTree.deinit`. Slices inside the values (multi-value groups such as
+/// `background`) point into the `Environment`'s cascade storage, so the
+/// table is only valid while that `Environment` is alive.
+pub const ComputedStyles = struct {
+    nodes: []NodeComputedValues = &.{},
+
+    pub const empty: ComputedStyles = .{};
+
+    pub fn deinit(cs: *ComputedStyles, allocator: Allocator) void {
+        allocator.free(cs.nodes);
+        cs.nodes = &.{};
+    }
+
+    /// The computed values for `node`, or `null` if layout never computed
+    /// styles for it. Every element that box generation visits is covered —
+    /// including `display: none` elements themselves — but the descendants of
+    /// a `display: none` element are not visited and so have no entry. Text
+    /// nodes have no entry (computed values belong to elements).
+    pub fn get(cs: *const ComputedStyles, node: NodeId) ?*const NodeComputedValues {
+        const index = node.value;
+        if (index >= cs.nodes.len) return null;
+        const values = &cs.nodes[index];
+        if (values.box_style == null) return null;
+        return values;
+    }
+};
+
 const BoxGenComputedValues = struct {
     box_style: ?ComputedValues(.box_style) = null,
     content_width: ?ComputedValues(.content_width) = null,
@@ -93,15 +127,44 @@ fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
     };
 }
 
-pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, count: u32) !void {
+/// Allocate the per-node table for `stage` with `allocator` — the allocator
+/// that will own the table once `takeStage` hands it to the `BoxTree`.
+pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, allocator: Allocator, count: u32) !void {
     const s = sc.stagePtr(stage);
-    s.nodes = try sc.allocator.alloc(stage.ComputedValues(), count);
+    s.nodes = try allocator.alloc(stage.ComputedValues(), count);
     @memset(s.nodes, .{});
 }
 
-pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage) void {
-    sc.allocator.free(sc.stagePtr(stage).nodes);
+pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage, allocator: Allocator) void {
+    allocator.free(sc.stagePtr(stage).nodes);
     sc.stagePtr(stage).nodes = &.{};
+}
+
+/// Move the box-generation stage's per-node table out of the computer so it
+/// outlives layout. The caller (`Layout.run`) stores it on the `BoxTree`.
+pub fn takeStage(sc: *StyleComputer, comptime stage: Stage) ComputedStyles {
+    comptime assert(stage == .box_gen);
+    const s = sc.stagePtr(stage);
+    const nodes = s.nodes;
+    s.nodes = &.{};
+    return .{ .nodes = nodes };
+}
+
+/// Stage the inherited/cosmetic groups of the current element (font with its
+/// font-size resolved to px, color, borders, background, opacity) without
+/// committing. Mirrors what the flow/inline paths stage before they commit a
+/// box, for elements that generate no box but still have computed values.
+pub fn stageCosmeticValues(sc: *StyleComputer, comptime stage: Stage) void {
+    var font = sc.getSpecifiedValue(stage, .font);
+    font.font_size = .{ .px = sc.resolvedFontSizePx(stage) };
+    sc.setComputedValue(stage, .font, font);
+    sc.setComputedValue(stage, .color, sc.getSpecifiedValue(stage, .color));
+    sc.setComputedValue(stage, .border_colors, sc.getSpecifiedValue(stage, .border_colors));
+    sc.setComputedValue(stage, .border_radii, sc.getSpecifiedValue(stage, .border_radii));
+    sc.setComputedValue(stage, .background_color, sc.getSpecifiedValue(stage, .background_color));
+    sc.setComputedValue(stage, .background_clip, sc.getSpecifiedValue(stage, .background_clip));
+    sc.setComputedValue(stage, .background, sc.getSpecifiedValue(stage, .background));
+    sc.setComputedValue(stage, .opacity, sc.getSpecifiedValue(stage, .opacity));
 }
 
 pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !void {
@@ -153,7 +216,6 @@ pub fn getTextFont(sc: StyleComputer, comptime stage: Stage) ComputedValues(.fon
     var inherited_value = InheritedValue(.font){ .node = node };
     return inherited_value.get(sc, stage);
 }
-
 
 /// Get the current element's resolved font-size in px.
 /// Resolves em values against the parent's computed font-size.

@@ -18,10 +18,14 @@ ifcs: ArrayListUnmanaged(*InlineFormattingContext) = .{},
 sct: StackingContextTree = .{},
 node_to_generated_box: std.AutoHashMapUnmanaged(NodeId, GeneratedBox) = .{},
 background_images: BackgroundImages = .{},
+/// Per-element computed values from the layout that produced this tree.
+/// See `Layout.StyleComputer.ComputedStyles` for lifetime and coverage.
+computed_styles: zss.Layout.StyleComputer.ComputedStyles = .empty,
 allocator: Allocator,
 debug: Debug = .{},
 
 pub fn deinit(box_tree: *BoxTree) void {
+    box_tree.computed_styles.deinit(box_tree.allocator);
     for (box_tree.subtrees.items) |subtree| {
         subtree.deinit(box_tree.allocator);
         box_tree.allocator.destroy(subtree);
@@ -80,7 +84,6 @@ pub const BorderRadii = struct {
     bottom_right: math.Unit = 0,
     bottom_left: math.Unit = 0,
 };
-
 
 pub const Margins = struct {
     left: math.Unit = 0,

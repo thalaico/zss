@@ -447,10 +447,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
             // dropped: "a<br>b" rendered as "a b" on one line, breaking
             // herokuapp/checkbox, contact-form layouts, address blocks,
             // etc.
-            const env_ptr = layout.computer.env;
-            const node_type = env_ptr.getNodeProperty(.type, node);
-            var name_iter = env_ptr.type_names.iterator(@intFromEnum(node_type.name));
-            if (name_iter.eql("br")) {
+            if (layout.computer.env.nodeTagEql(node, "br")) {
                 try ifcAddLineBreak(layout.box_tree, ifc.ptr);
                 ctx.ifc.top.?.has_visible_content = true;
                 layout.advanceNode();
@@ -1709,12 +1706,12 @@ pub fn splitIntoLineBoxes(
             ifc.ascender = 0;
             ifc.descender = 0;
         }
-        top_height    = ifc.ascender;
+        top_height = ifc.ascender;
         bottom_height = ifc.descender;
     } else {
-        ifc.ascender  = 0;
+        ifc.ascender = 0;
         ifc.descender = 0;
-        top_height    = 0;
+        top_height = 0;
         bottom_height = 0;
     }
 
@@ -1839,10 +1836,7 @@ pub fn splitIntoLineBoxes(
             var rewound = false;
             if (!overflow_break_word) {
                 if (last_break_i) |bi| {
-                    if (last_break_elements_1 > s.line_box.elements[0]
-                        and s.current_inline_box == last_break_current_inline_box
-                        and s.inline_box_stack.items.len == last_break_stack_depth)
-                    {
+                    if (last_break_elements_1 > s.line_box.elements[0] and s.current_inline_box == last_break_current_inline_box and s.inline_box_stack.items.len == last_break_stack_depth) {
                         s.cursor = last_break_cursor;
                         s.line_box.elements[1] = last_break_elements_1;
                         s.finishLineBox();
@@ -1947,7 +1941,6 @@ pub fn splitIntoLineBoxes(
         .longest_line_box_length = s.longest_line_box_length,
     };
 }
-
 
 /// Resolve em values in horizontal edges to px.
 fn resolveHorizontalEdgesEm(edges: ComputedValues(.horizontal_edges), fs: f32) ComputedValues(.horizontal_edges) {

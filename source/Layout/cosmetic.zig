@@ -138,7 +138,7 @@ pub fn run(layout: *Layout) !void {
     // The main loop above visits all nodes in the document tree, including nodes with
     // absolute positioned boxes. Since absolute blocks are registered in node_to_generated_box,
     // they will be found and processed at line 89-96.
-    // 
+    //
     // We don't need a separate pass for absolute blocks.
     assert(context.mode.pop() == .InitialContainingBlock);
     layout.popNode();
@@ -265,12 +265,8 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         const node = subtree.items(.node)[ref.index];
         if (node) |n| {
             const env = layout.inputs.env;
-            if (env.getNodeProperty(.category, n) == .element) {
-                const type_info = env.getNodeProperty(.type, n);
-                var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-                if (type_iter.eql("li")) {
-                    subtree.items(.list_style_type)[ref.index] = specified.font.list_style_type;
-                }
+            if (env.nodeTagEql(n, "li")) {
+                subtree.items(.list_style_type)[ref.index] = specified.font.list_style_type;
             }
         }
     }
@@ -562,7 +558,7 @@ fn solveInsetsAbsolute(
         .auto => computed.bottom = .auto,
         .em => |value| computed.bottom = .{ .px = value * font_size_px },
     }
-    
+
     used.* = .{
         .x = left,
         .y = top,
