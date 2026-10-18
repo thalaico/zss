@@ -379,6 +379,16 @@ pub fn eqlAttributeValues(env: *const Environment, case: Utf8StringInterner.Case
     }
 }
 
+/// True when the interned attribute value is the empty string.
+pub fn attributeValueIsEmpty(env: *const Environment, value: AttributeValue) bool {
+    const interner = switch (env.case_options.attribute_values) {
+        .insensitive => &env.attribute_values_insensitive,
+        .sensitive => &env.attribute_values_sensitive,
+    };
+    const range = interner.indexer.entries.items(.value)[@intFromEnum(value)];
+    return range.len == 0;
+}
+
 /// Helper to extract attribute value string for substring matching.
 /// Allocates a temporary buffer — caller must free the returned slice.
 pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Allocator, value: AttributeValue, case: Utf8StringInterner.Case) ![]u8 {
@@ -502,6 +512,18 @@ pub const ElementState = enum {
     hover,
     active,
     focus,
+    /// `:focus-within`: the element or a descendant has focus.
+    focus_within,
+    /// `:focus-visible`: focus that the UA shows (keyboard focus, or focus on
+    /// a text-entry control).
+    focus_visible,
+    /// `:target`: the element the document URL's fragment names.
+    target,
+    /// `:indeterminate`: checkbox indeterminate flag, radio group with no
+    /// checked member, `progress` without a value.
+    indeterminate,
+    /// `:placeholder-shown`: a text control with a placeholder and an empty value.
+    placeholder_shown,
 };
 
 pub const DocumentTreeVtable = struct {
@@ -543,7 +565,29 @@ pub fn nodeState(env: *const Environment, node: NodeId, state: ElementState) boo
 /// unless it is inside that fieldset's first `legend` child.
 pub fn attributeElementState(env: *const Environment, node: NodeId, state: ElementState) bool {
     switch (state) {
-        .hover, .active, .focus => return false,
+        .hover, .active, .focus, .focus_within, .focus_visible, .target => return false,
+        // Without scripts nothing sets the indeterminate flag; a radio group
+        // with no checked member is also indeterminate, but that needs the
+        // group walk a host does from its form model.
+        .indeterminate => return false,
+        .placeholder_shown => {
+            if (!env.nodeHasAttributeByName(node, "placeholder")) return false;
+            if (env.nodeTagEql(node, "input")) {
+                const v = env.nodeAttributeValueByName(node, "value") orelse return true;
+                return env.attributeValueIsEmpty(v);
+            }
+            if (env.nodeTagEql(node, "textarea")) {
+                var child = node.firstChild(env);
+                while (child) |ch| : (child = ch.nextSibling(env)) {
+                    switch (env.getNodeProperty(.category, ch)) {
+                        .text => if (env.getText(env.getNodeProperty(.text, ch)).len > 0) return false,
+                        .element => {},
+                    }
+                }
+                return true;
+            }
+            return false;
+        },
         .checked => return env.nodeHasAttributeByName(node, "checked"),
         .selected => return env.nodeHasAttributeByName(node, "selected"),
         .disabled => {

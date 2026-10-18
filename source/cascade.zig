@@ -446,7 +446,7 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
-                    .checked, .enabled, .disabled, .hover, .active, .focus => return true,
+                    .checked, .enabled, .disabled, .hover, .active, .focus, .focus_within, .focus_visible, .target, .indeterminate, .placeholder_shown => return true,
                     else => {},
                 }
                 idx += selectors.pseudoClassPayload(pc);
@@ -472,23 +472,30 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
 }
 
 /// What the state pseudo-classes can observe about an element. Only form
-/// controls can carry such state (`:enabled`/`:disabled` are gated on
-/// `isFormElement`, `:checked` on input/option), so every other element gets a
-/// constant without asking the host — the host's answer for `.disabled` walks
-/// the ancestor chain (disabled fieldsets), which must not be paid per element.
+/// controls can carry control state (`:enabled`/`:disabled` are gated on
+/// `isFormElement`, `:checked` on input/option, `:placeholder-shown` on text
+/// controls), so every other element gets a constant without asking the host
+/// — the host's answer for `.disabled` walks the ancestor chain (disabled
+/// fieldsets), which must not be paid per element.
 fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 {
     const stateful = inline for (.{ "input", "button", "select", "textarea", "fieldset", "option", "optgroup" }) |tag| {
         if (env.nodeTagEql(node, tag)) break true;
     } else false;
     var bits: u64 = 0;
-    // Every element can be hovered, active or focused.
+    // Every element can be hovered, active, focused, contain focus or be
+    // the URL's target.
     if (env.nodeState(node, .hover)) bits |= 8;
     if (env.nodeState(node, .active)) bits |= 16;
     if (env.nodeState(node, .focus)) bits |= 32;
+    if (env.nodeState(node, .focus_within)) bits |= 64;
+    if (env.nodeState(node, .focus_visible)) bits |= 128;
+    if (env.nodeState(node, .target)) bits |= 256;
     if (stateful) {
         if (env.nodeState(node, .checked)) bits |= 1;
         if (env.nodeState(node, .selected)) bits |= 2;
         if (env.nodeState(node, .disabled)) bits |= 4;
+        if (env.nodeState(node, .indeterminate)) bits |= 512;
+        if (env.nodeState(node, .placeholder_shown)) bits |= 1024;
     }
     return (bits +% 1) *% 0xd6e8feb86659fd93;
 }
@@ -496,7 +503,7 @@ fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 
 /// True if the rightmost compound's verdict is the same for every element of
 /// the same type and classes: no attribute selectors, and no pseudo-class
 /// beyond the ones that are constant per type (`:root`, `:link`) or never
-/// match (`:hover` & co.). Such selectors may be shared through the L2 cache.
+/// match (`:visited`). Such selectors may be shared through the L2 cache.
 fn rightmostCompoundIsSelfInvariant(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
     if (rightmostCompoundIsPositional(data, complex_selector_index)) return false;
     const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
@@ -610,7 +617,11 @@ fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.Li
             .pseudo_class => {
                 idx += 1;
                 switch (data[idx].pseudo_class_selector) {
-                    .hover, .active, .focus, .visited, .unrecognized => return false,
+                    // `:visited` never matches (no history); an unrecognized
+                    // pseudo-class matches nothing. The user-action
+                    // pseudo-classes are answered by the host's element-state
+                    // hook, so their rules stay in the index.
+                    .visited, .unrecognized => return false,
                     else => {},
                 }
                 idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);

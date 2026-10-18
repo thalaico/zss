@@ -166,6 +166,19 @@ pub const PseudoClass = enum {
     nth_last_of_type,
     /// Followed by a `lang_value` Data (the language range).
     lang,
+    any_link,
+    scope,
+    focus_within,
+    focus_visible,
+    target,
+    required,
+    optional,
+    read_only,
+    read_write,
+    placeholder_shown,
+    default,
+    indeterminate,
+    defined,
     unrecognized,
     ignored,
 };
@@ -259,145 +272,14 @@ fn sameElementType(a: ElementType, b: ElementType) bool {
     return a.namespace == b.namespace and a.name == b.name;
 }
 
-/// 1-based position of `element` among its element siblings (Selectors 4 §14),
-/// counted from the start or the end, optionally only among siblings of the
-/// same type (the *-of-type family).
-fn siblingIndex(env: *const Environment, element: NodeId, comptime of_type: bool, comptime from_end: bool) i32 {
-    const my_type = env.getNodeProperty(.type, element);
-    var index: i32 = 1;
-    var sib = if (from_end) element.nextSibling(env) else element.previousSibling(env);
-    while (sib) |s| : (sib = if (from_end) s.nextSibling(env) else s.previousSibling(env)) {
-        if (env.getNodeProperty(.category, s) != .element) continue;
-        if (of_type and !sameElementType(my_type, env.getNodeProperty(.type, s))) continue;
-        index += 1;
-    }
-    return index;
-}
-
-/// Selectors 4 §14.3.1: no element children and no text children with any
-/// content (comments and processing instructions never enter the tree).
-fn isEmpty(env: *const Environment, element: NodeId) bool {
-    var child = element.firstChild(env);
-    while (child) |ch| : (child = ch.nextSibling(env)) {
-        switch (env.getNodeProperty(.category, ch)) {
-            .element => return false,
-            .text => if (env.getText(env.getNodeProperty(.text, ch)).len > 0) return false,
-        }
-    }
-    return true;
-}
-
-/// Selectors 4 §8: the element's language is the nearest `lang` attribute on
-/// it or an ancestor; the range matches when it equals the language or is a
-/// dash-delimited prefix of it, ASCII case-insensitively (BCP 47 §2.1).
-fn matchLang(env: *const Environment, element: NodeId, range: AttributeValue, allocator: Allocator) bool {
-    const range_str = env.getAttributeValueString(allocator, range, .insensitive) catch return false;
-    defer allocator.free(range_str);
-    if (range_str.len == 0) return false;
-    var e: ?NodeId = element;
-    while (e) |node| : (e = node.parent(env)) {
-        const value = env.nodeAttributeValueByName(node, "lang") orelse continue;
-        const lang = env.getAttributeValueString(allocator, value, .insensitive) catch return false;
-        defer allocator.free(lang);
-        if (lang.len == 0) return false; // lang="" — the element has no language
-        if (std.ascii.eqlIgnoreCase(lang, range_str)) return true;
-        return lang.len > range_str.len and std.ascii.startsWithIgnoreCase(lang, range_str) and lang[range_str.len] == '-';
-    }
+/// The `input` types that take text (HTML §4.10.5): the ones whose controls
+/// are `:read-write` unless readonly/disabled, and the ones that show a
+/// placeholder.
+pub fn isTextEntryInputType(type_value: []const u8) bool {
+    const text_types = [_][]const u8{ "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number" };
+    for (text_types) |t| if (std.ascii.eqlIgnoreCase(type_value, t)) return true;
     return false;
 }
-
-/// Selectors 4 §14.6.2: `:checked` matches checkbox and radio `input`s whose
-/// checkedness is true and `option`s whose selectedness is true. The states
-/// come from the host (`Environment.nodeState`); the `checked`/`selected`
-/// attributes are only their defaults.
-fn matchChecked(env: *const Environment, element: NodeId, allocator: Allocator) bool {
-    if (env.nodeTagEql(element, "option")) return env.nodeState(element, .selected);
-    if (!env.nodeTagEql(element, "input")) return false;
-    const type_value = env.nodeAttributeValueByName(element, "type") orelse return false;
-    const type_str = env.getAttributeValueString(allocator, type_value, .sensitive) catch return false;
-    defer allocator.free(type_str);
-    if (!std.ascii.eqlIgnoreCase(type_str, "checkbox") and !std.ascii.eqlIgnoreCase(type_str, "radio")) return false;
-    return env.nodeState(element, .checked);
-}
-
-/// `payload` is the Data following the `pseudo_class_selector`; only read for
-/// pseudo-classes with an argument (`pseudoClassPayload`).
-fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: NodeId, env: *const Environment, allocator: Allocator) bool {
-    switch (pseudo_class) {
-        .root => return element == env.root_node,
-        .last_of_type => {
-            const my_type = env.getNodeProperty(.type, element);
-            var sib = element.nextSibling(env);
-            while (sib) |s| : (sib = s.nextSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element and sameElementType(my_type, env.getNodeProperty(.type, s))) return false;
-            }
-            return true;
-        },
-        .only_of_type => return siblingIndex(env, element, true, false) == 1 and siblingIndex(env, element, true, true) == 1,
-        .nth_child => return payload.nth.matches(siblingIndex(env, element, false, false)),
-        .nth_last_child => return payload.nth.matches(siblingIndex(env, element, false, true)),
-        .nth_of_type => return payload.nth.matches(siblingIndex(env, element, true, false)),
-        .nth_last_of_type => return payload.nth.matches(siblingIndex(env, element, true, true)),
-        .lang => return matchLang(env, element, payload.lang_value, allocator),
-        .link => {
-            const type_info = env.getNodeProperty(.type, element);
-            var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
-            return type_iter.eql("a");
-        },
-        .visited => return false,
-        .hover => return env.nodeState(element, .hover),
-        .active => return env.nodeState(element, .active),
-        .focus => return env.nodeState(element, .focus),
-        .first_child => {
-            var sib = element.previousSibling(env);
-            while (sib) |s| : (sib = s.previousSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element) return false;
-            }
-            return true;
-        },
-        .last_child => {
-            var sib = element.nextSibling(env);
-            while (sib) |s| : (sib = s.nextSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element) return false;
-            }
-            return true;
-        },
-        .only_child => {
-            var prev = element.previousSibling(env);
-            while (prev) |s| : (prev = s.previousSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element) return false;
-            }
-            var next = element.nextSibling(env);
-            while (next) |s| : (next = s.nextSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element) return false;
-            }
-            return true;
-        },
-        .first_of_type => {
-            const my_type = env.getNodeProperty(.type, element);
-            var sib = element.previousSibling(env);
-            while (sib) |s| : (sib = s.previousSibling(env)) {
-                if (env.getNodeProperty(.category, s) == .element) {
-                    if (matchTypeSelector(my_type, env.getNodeProperty(.type, s))) return false;
-                }
-            }
-            return true;
-        },
-        .enabled => {
-            if (!isFormElement(env, element)) return false;
-            return !env.nodeState(element, .disabled);
-        },
-        .disabled => {
-            if (!isFormElement(env, element)) return false;
-            return env.nodeState(element, .disabled);
-        },
-        .checked => return matchChecked(env, element, allocator),
-        .empty => return isEmpty(env, element),
-        .unrecognized => return false,
-        .ignored => return true,
-    }
-}
-
 
 /// Returns `true` if the complex selector matches `match_candidate`.
 /// Asserts that `match_candidate` is an element node.
@@ -408,321 +290,577 @@ pub fn matchElement(
     match_candidate: NodeId,
     allocator: std.mem.Allocator,
 ) bool {
-    switch (env.getNodeProperty(.category, match_candidate)) {
-        .element => {},
-        .text => unreachable,
+    return Matcher(EnvTree).matchElement(data, complex_selector_index, env, .{ .env = env }, match_candidate, allocator);
+}
+
+/// The Environment's own retained document tree, as the matcher sees it:
+/// what the cascade matches against.
+pub const EnvTree = struct {
+    env: *const Environment,
+    /// The `:scope` element; null means the root element.
+    scope: ?NodeId = null,
+
+    pub const Node = NodeId;
+
+    pub fn isElement(t: EnvTree, n: NodeId) bool {
+        return t.env.getNodeProperty(.category, n) == .element;
     }
+    pub fn parent(t: EnvTree, n: NodeId) ?NodeId {
+        return n.parent(t.env);
+    }
+    pub fn previousSibling(t: EnvTree, n: NodeId) ?NodeId {
+        return n.previousSibling(t.env);
+    }
+    pub fn nextSibling(t: EnvTree, n: NodeId) ?NodeId {
+        return n.nextSibling(t.env);
+    }
+    pub fn firstChild(t: EnvTree, n: NodeId) ?NodeId {
+        return n.firstChild(t.env);
+    }
+    pub fn isRoot(t: EnvTree, n: NodeId) bool {
+        return t.env.root_node != null and std.meta.eql(n, t.env.root_node.?);
+    }
+    pub fn scopeNode(t: EnvTree) ?NodeId {
+        return t.scope;
+    }
+    pub fn typeMatches(t: EnvTree, n: NodeId, selector_type: ElementType) bool {
+        return matchTypeSelector(selector_type, t.env.getNodeProperty(.type, n));
+    }
+    pub fn sameType(t: EnvTree, a: NodeId, b: NodeId) bool {
+        return sameElementType(t.env.getNodeProperty(.type, a), t.env.getNodeProperty(.type, b));
+    }
+    pub fn hasId(t: EnvTree, n: NodeId, id: IdName) bool {
+        const with_id = t.env.getElementById(id) orelse return false;
+        return std.meta.eql(n, with_id);
+    }
+    pub fn hasClass(t: EnvTree, n: NodeId, class_name: ClassName) bool {
+        return t.env.nodeHasClass(n, class_name);
+    }
+    pub fn hasAttribute(t: EnvTree, n: NodeId, name: AttributeName) bool {
+        return t.env.nodeHasAttribute(n, name);
+    }
+    pub fn hasAttributeByName(t: EnvTree, n: NodeId, name: []const u8) bool {
+        return t.env.nodeHasAttributeByName(n, name);
+    }
+    pub fn attributeEquals(t: EnvTree, n: NodeId, name: AttributeName, value: AttributeValue, case: Utf8StringInterner.Case) bool {
+        const node_value = t.env.nodeGetAttributeValue(n, name) orelse return false;
+        return t.env.eqlAttributeValues(case, node_value, value);
+    }
+    pub fn attributeString(t: EnvTree, allocator: Allocator, n: NodeId, name: AttributeName, case: Utf8StringInterner.Case) Allocator.Error!?[]u8 {
+        const node_value = t.env.nodeGetAttributeValue(n, name) orelse return null;
+        return try t.env.getAttributeValueString(allocator, node_value, case);
+    }
+    pub fn attributeStringByName(t: EnvTree, allocator: Allocator, n: NodeId, name: []const u8, case: Utf8StringInterner.Case) Allocator.Error!?[]u8 {
+        const node_value = t.env.nodeAttributeValueByName(n, name) orelse return null;
+        return try t.env.getAttributeValueString(allocator, node_value, case);
+    }
+    pub fn tagEql(t: EnvTree, n: NodeId, tag: []const u8) bool {
+        return t.env.nodeTagEql(n, tag);
+    }
+    pub fn localNameHasDash(t: EnvTree, n: NodeId) bool {
+        const type_name = t.env.getNodeProperty(.type, n).name;
+        if (type_name == .anonymous or type_name == .any) return false;
+        var it = t.env.type_names.iterator(@intFromEnum(type_name));
+        while (it.next()) |segment| {
+            if (std.mem.indexOfScalar(u8, segment, '-') != null) return true;
+        }
+        return false;
+    }
+    pub fn hasText(t: EnvTree, n: NodeId) bool {
+        return switch (t.env.getNodeProperty(.category, n)) {
+            .element => false,
+            .text => t.env.getText(t.env.getNodeProperty(.text, n)).len > 0,
+        };
+    }
+    pub fn state(t: EnvTree, n: NodeId, s: Environment.ElementState) bool {
+        return t.env.nodeState(n, s);
+    }
+};
 
-    const last_trailing = data[complex_selector_index].next_complex_selector - 1;
-    return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, match_candidate, allocator);
-}
+/// Selectors 4 matching over any document tree. `EnvTree` is the reference
+/// implementation of the interface a tree provides: `Node`; `isElement`,
+/// `parent`, `previousSibling`, `nextSibling`, `firstChild`, `isRoot`,
+/// `scopeNode`, `typeMatches`, `sameType`, `hasId`, `hasClass`,
+/// `hasAttribute`, `hasAttributeByName`, `attributeEquals`,
+/// `attributeString`, `attributeStringByName`, `tagEql`, `localNameHasDash`,
+/// `hasText`, `state`. Selector names come from `env`'s interners, so a host
+/// tree compares its own strings against them.
+pub fn Matcher(comptime Tree: type) type {
+    return struct {
+        const Node = Tree.Node;
 
-fn matchComplexSelector(
-    data: []const Data,
-    first_compound: Data.ListIndex,
-    last_trailing: Data.ListIndex,
-    env: *const Environment,
-    match_candidate: NodeId,
-    allocator: std.mem.Allocator,
-) bool {
-    const trailing = data[last_trailing].trailing;
-    if (!matchCompoundSelector(data, trailing.compound_selector_start, last_trailing, env, match_candidate, allocator)) return false;
-    return matchLeftOfCompound(data, first_compound, trailing.compound_selector_start, env, match_candidate, allocator);
-}
+        fn eql(a: Node, b: Node) bool {
+            return std.meta.eql(a, b);
+        }
 
-/// Matches the part of a complex selector to the left of the compound selector
-/// starting at `compound_start`, given that compound already matched `anchor`.
-///
-/// Selectors 4 §16 (combinators) describe a relationship between two elements;
-/// the descendant and subsequent-sibling combinators relate the anchor to ANY
-/// of several candidates, so a match of the left-hand compound against one
-/// candidate is not final: if the rest of the selector fails from there, the
-/// next candidate must be tried. `#a > div div > div` against the chain
-/// `#a > b > c > d > e` matches `e` only by anchoring the middle `div` at `b`,
-/// not at `c` (the nearest match) — committing to the nearest candidate is the
-/// classic bug Acid3 test 42 checks for.
-fn matchLeftOfCompound(
-    data: []const Data,
-    first_compound: Data.ListIndex,
-    compound_start: Data.ListIndex,
-    env: *const Environment,
-    anchor: NodeId,
-    allocator: std.mem.Allocator,
-) bool {
-    if (compound_start == first_compound) return true;
-    const trailing_index = compound_start - 1;
-    const trailing = data[trailing_index].trailing;
-    const left_start = trailing.compound_selector_start;
-    switch (trailing.combinator) {
-        .descendant => {
-            var element = anchor.parent(env);
-            while (element) |e| : (element = e.parent(env)) {
-                switch (env.getNodeProperty(.category, e)) {
-                    .element => {},
-                    .text => unreachable,
-                }
-                if (matchCompoundSelector(data, left_start, trailing_index, env, e, allocator) and
-                    matchLeftOfCompound(data, first_compound, left_start, env, e, allocator)) return true;
+        /// Returns `true` if the complex selector matches `match_candidate`.
+        /// Asserts that `match_candidate` is an element node.
+        pub fn matchElement(
+            data: []const Data,
+            complex_selector_index: Data.ListIndex,
+            env: *const Environment,
+            tree: Tree,
+            match_candidate: Node,
+            allocator: Allocator,
+        ) bool {
+            assert(tree.isElement(match_candidate));
+            const last_trailing = data[complex_selector_index].next_complex_selector - 1;
+            return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, tree, match_candidate, allocator);
+        }
+
+        /// Returns `true` if any complex selector in the list starting at
+        /// `first_complex_selector_index` and ending at `end` matches.
+        pub fn matchSelectorList(
+            data: []const Data,
+            first_complex_selector_index: Data.ListIndex,
+            end: Data.ListIndex,
+            env: *const Environment,
+            tree: Tree,
+            match_candidate: Node,
+            allocator: Allocator,
+        ) bool {
+            var index = first_complex_selector_index;
+            while (index < end) : (index = data[index].next_complex_selector) {
+                if (@This().matchElement(data, index, env, tree, match_candidate, allocator)) return true;
             }
             return false;
-        },
-        .child => {
-            const parent = anchor.parent(env) orelse return false;
-            switch (env.getNodeProperty(.category, parent)) {
-                .element => {},
-                .text => unreachable,
+        }
+
+        fn matchComplexSelector(
+            data: []const Data,
+            first_compound: Data.ListIndex,
+            last_trailing: Data.ListIndex,
+            env: *const Environment,
+            tree: Tree,
+            match_candidate: Node,
+            allocator: Allocator,
+        ) bool {
+            const trailing = data[last_trailing].trailing;
+            if (!matchCompoundSelector(data, trailing.compound_selector_start, last_trailing, env, tree, match_candidate, allocator)) return false;
+            return matchLeftOfCompound(data, first_compound, trailing.compound_selector_start, env, tree, match_candidate, allocator);
+        }
+
+        /// Matches the part of a complex selector to the left of the compound selector
+        /// starting at `compound_start`, given that compound already matched `anchor`.
+        ///
+        /// Selectors 4 §16 (combinators) describe a relationship between two elements;
+        /// the descendant and subsequent-sibling combinators relate the anchor to ANY
+        /// of several candidates, so a match of the left-hand compound against one
+        /// candidate is not final: if the rest of the selector fails from there, the
+        /// next candidate must be tried. `#a > div div > div` against the chain
+        /// `#a > b > c > d > e` matches `e` only by anchoring the middle `div` at `b`,
+        /// not at `c` (the nearest match) — committing to the nearest candidate is the
+        /// classic bug Acid3 test 42 checks for.
+        fn matchLeftOfCompound(
+            data: []const Data,
+            first_compound: Data.ListIndex,
+            compound_start: Data.ListIndex,
+            env: *const Environment,
+            tree: Tree,
+            anchor: Node,
+            allocator: Allocator,
+        ) bool {
+            if (compound_start == first_compound) return true;
+            const trailing_index = compound_start - 1;
+            const trailing = data[trailing_index].trailing;
+            const left_start = trailing.compound_selector_start;
+            switch (trailing.combinator) {
+                .descendant => {
+                    var element = tree.parent(anchor);
+                    while (element) |e| : (element = tree.parent(e)) {
+                        if (!tree.isElement(e)) break;
+                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator) and
+                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator)) return true;
+                    }
+                    return false;
+                },
+                .child => {
+                    const parent = tree.parent(anchor) orelse return false;
+                    if (!tree.isElement(parent)) return false;
+                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, parent, allocator)) return false;
+                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, parent, allocator);
+                },
+                .subsequent_sibling => {
+                    var element = tree.previousSibling(anchor);
+                    while (element) |e| : (element = tree.previousSibling(e)) {
+                        if (!tree.isElement(e)) continue;
+                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator) and
+                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator)) return true;
+                    }
+                    return false;
+                },
+                .next_sibling => {
+                    var element = tree.previousSibling(anchor);
+                    const sibling = while (element) |e| : (element = tree.previousSibling(e)) {
+                        if (tree.isElement(e)) break e;
+                    } else return false;
+                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, sibling, allocator)) return false;
+                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, sibling, allocator);
+                },
+                // Selectors 4 §16.4: the column combinator relates cells to
+                // columns; no browser implements it, and neither does this.
+                .column => return false,
+                // end_* values only appear in the last trailing and are never reached here.
+                .end_none, .end_before, .end_after => unreachable,
             }
-            if (!matchCompoundSelector(data, left_start, trailing_index, env, parent, allocator)) return false;
-            return matchLeftOfCompound(data, first_compound, left_start, env, parent, allocator);
-        },
-        .subsequent_sibling => {
-            var element = anchor.previousSibling(env);
-            while (element) |e| : (element = e.previousSibling(env)) {
-                switch (env.getNodeProperty(.category, e)) {
-                    .element => {
-                        if (matchCompoundSelector(data, left_start, trailing_index, env, e, allocator) and
-                            matchLeftOfCompound(data, first_compound, left_start, env, e, allocator)) return true;
+        }
+
+        /// Case for comparing a selector's attribute value with an element's
+        /// (Selectors 4 §6.4): sensitive unless the selector says `i`, or the
+        /// attribute is one HTML defines as ASCII case-insensitive.
+        fn attributeCase(env: *const Environment, name: AttributeName, oc: Data.AttributeOperatorCase) Utf8StringInterner.Case {
+            return switch (oc.case) {
+                .default => if (isCaseInsensitiveHtmlAttribute(env, name)) .insensitive else .sensitive,
+                .same_case => .sensitive,
+                .ignore_case => .insensitive,
+            };
+        }
+
+        fn matchAttributeOperator(
+            env: *const Environment,
+            tree: Tree,
+            element: Node,
+            name: AttributeName,
+            oc: Data.AttributeOperatorCase,
+            selector_value: AttributeValue,
+            allocator: Allocator,
+        ) bool {
+            const case = attributeCase(env, name, oc);
+            if (oc.operator == .equals) return tree.attributeEquals(element, name, selector_value, case);
+            const node_str = (tree.attributeString(allocator, element, name, case) catch return false) orelse return false;
+            defer allocator.free(node_str);
+            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
+            defer allocator.free(selector_str);
+            switch (oc.operator) {
+                .equals => unreachable,
+                // [attr~=val]: val is one of the whitespace-separated words
+                .list_contains => {
+                    if (selector_str.len == 0) return false;
+                    var it = std.mem.tokenizeAny(u8, node_str, " \t\n\r\x0c");
+                    while (it.next()) |word| {
+                        if (std.mem.eql(u8, word, selector_str)) return true;
+                    }
+                    return false;
+                },
+                // Selectors 4 §6.2: an empty value never matches the substring operators.
+                .starts_with => return selector_str.len > 0 and std.mem.startsWith(u8, node_str, selector_str),
+                .ends_with => return selector_str.len > 0 and std.mem.endsWith(u8, node_str, selector_str),
+                .contains => return selector_str.len > 0 and std.mem.indexOf(u8, node_str, selector_str) != null,
+                // [attr|=val]: val, or val followed by "-"
+                .equals_or_prefix_dash => {
+                    if (std.mem.eql(u8, node_str, selector_str)) return true;
+                    return std.mem.startsWith(u8, node_str, selector_str) and
+                        node_str.len > selector_str.len and node_str[selector_str.len] == '-';
+                },
+            }
+        }
+
+        fn matchCompoundSelector(
+            data: []const Data,
+            start: Data.ListIndex,
+            end: Data.ListIndex,
+            env: *const Environment,
+            tree: Tree,
+            element: Node,
+            allocator: Allocator,
+        ) bool {
+            var index = start;
+            while (index < end) : (index += 1) {
+                switch (data[index].simple_selector_tag) {
+                    .type => {
+                        index += 1;
+                        if (!tree.typeMatches(element, data[index].type_selector)) return false;
                     },
-                    .text => {},
+                    .id => {
+                        index += 1;
+                        if (!tree.hasId(element, data[index].id_selector)) return false;
+                    },
+                    .class => {
+                        index += 1;
+                        if (!tree.hasClass(element, data[index].class_selector)) return false;
+                    },
+                    .attribute => |op_case| {
+                        index += 1;
+                        const attr_selector = data[index].attribute_selector;
+                        if (op_case) |oc| {
+                            index += 1;
+                            const selector_value = data[index].attribute_selector_value;
+                            if (!matchAttributeOperator(env, tree, element, attr_selector.name, oc, selector_value, allocator)) return false;
+                        } else {
+                            // [attr] — attribute just needs to exist
+                            if (!tree.hasAttribute(element, attr_selector.name)) return false;
+                        }
+                    },
+                    .not_class => {
+                        index += 1;
+                        if (tree.hasClass(element, data[index].class_selector)) return false;
+                    },
+                    .not_id => {
+                        index += 1;
+                        if (tree.hasId(element, data[index].id_selector)) return false;
+                    },
+                    .not_type => {
+                        index += 1;
+                        if (tree.typeMatches(element, data[index].type_selector)) return false;
+                    },
+                    .not_pseudo_class => {
+                        index += 1;
+                        const negated_pc = data[index].pseudo_class_selector;
+                        const payload = if (pseudoClassPayload(negated_pc) > 0) data[index + 1] else data[index];
+                        index += pseudoClassPayload(negated_pc);
+                        // If the pseudo-class MATCHES, the :not() fails.
+                        if (matchPseudoClass(negated_pc, payload, element, env, tree, allocator)) return false;
+                    },
+                    .pseudo_class => {
+                        index += 1;
+                        const pseudo_class = data[index].pseudo_class_selector;
+                        const payload = if (pseudoClassPayload(pseudo_class) > 0) data[index + 1] else data[index];
+                        index += pseudoClassPayload(pseudo_class);
+                        if (!matchPseudoClass(pseudo_class, payload, element, env, tree, allocator)) return false;
+                    },
+                    .pseudo_element => {
+                        index += 1;
+                        const pseudo_element = data[index].pseudo_element_selector;
+                        switch (pseudo_element) {
+                            // Skip recognized pseudo-elements — the cascade handles them.
+                            .before, .after => {},
+                            .unrecognized => return false,
+                        }
+                    },
+                    // :is() / :where(): the element matches any complex selector of
+                    // the nested list (the lists differ only in specificity, which the
+                    // parser handled). The nested selector data is stored inline after
+                    // the list entry, chained through next_complex_selector.
+                    inline .is, .where => |_, tag| {
+                        index += 1;
+                        const list = if (tag == .is) data[index].is_selector_list else data[index].where_selector_list;
+                        var matched = false;
+                        var sel_idx = list.start;
+                        for (0..list.count) |_| {
+                            const next = data[sel_idx].next_complex_selector;
+                            if (!matched and matchComplexSelector(data, sel_idx + 1, next - 1, env, tree, element, allocator)) matched = true;
+                            sel_idx = next;
+                        }
+                        if (!matched) return false;
+                        index = sel_idx - 1; // -1 compensates for the while loop increment
+                    },
                 }
             }
+            return true;
+        }
+
+        /// 1-based position of `element` among its element siblings (Selectors 4 §14),
+        /// counted from the start or the end, optionally only among siblings of the
+        /// same type (the *-of-type family).
+        fn siblingIndex(tree: Tree, element: Node, comptime of_type: bool, comptime from_end: bool) i32 {
+            var index: i32 = 1;
+            var sib = if (from_end) tree.nextSibling(element) else tree.previousSibling(element);
+            while (sib) |s| : (sib = if (from_end) tree.nextSibling(s) else tree.previousSibling(s)) {
+                if (!tree.isElement(s)) continue;
+                if (of_type and !tree.sameType(element, s)) continue;
+                index += 1;
+            }
+            return index;
+        }
+
+        /// Selectors 4 §14.3.1: no element children and no text children with any
+        /// content (comments and processing instructions never enter the tree).
+        fn isEmpty(tree: Tree, element: Node) bool {
+            var child = tree.firstChild(element);
+            while (child) |ch| : (child = tree.nextSibling(ch)) {
+                if (tree.isElement(ch) or tree.hasText(ch)) return false;
+            }
+            return true;
+        }
+
+        /// Selectors 4 §8: the element's language is the nearest `lang` attribute on
+        /// it or an ancestor; the range matches when it equals the language or is a
+        /// dash-delimited prefix of it, ASCII case-insensitively (BCP 47 §2.1).
+        fn matchLang(env: *const Environment, tree: Tree, element: Node, range: AttributeValue, allocator: Allocator) bool {
+            const range_str = env.getAttributeValueString(allocator, range, .insensitive) catch return false;
+            defer allocator.free(range_str);
+            if (range_str.len == 0) return false;
+            var e: ?Node = element;
+            while (e) |node| : (e = tree.parent(node)) {
+                if (!tree.isElement(node)) break;
+                const lang = (tree.attributeStringByName(allocator, node, "lang", .insensitive) catch return false) orelse continue;
+                defer allocator.free(lang);
+                if (lang.len == 0) return false; // lang="" — the element has no language
+                if (std.ascii.eqlIgnoreCase(lang, range_str)) return true;
+                return lang.len > range_str.len and std.ascii.startsWithIgnoreCase(lang, range_str) and lang[range_str.len] == '-';
+            }
             return false;
-        },
-        .next_sibling => {
-            var element = anchor.previousSibling(env);
-            const sibling = while (element) |e| : (element = e.previousSibling(env)) {
-                switch (env.getNodeProperty(.category, e)) {
-                    .element => break e,
-                    .text => {},
-                }
+        }
+
+        fn inputType(tree: Tree, element: Node, allocator: Allocator) ?[]u8 {
+            return (tree.attributeStringByName(allocator, element, "type", .insensitive) catch return null);
+        }
+
+        /// Selectors 4 §14.6.2: `:checked` matches checkbox and radio `input`s whose
+        /// checkedness is true and `option`s whose selectedness is true. The states
+        /// come from the host (`Environment.nodeState`); the `checked`/`selected`
+        /// attributes are only their defaults.
+        fn matchChecked(tree: Tree, element: Node, allocator: Allocator) bool {
+            if (tree.tagEql(element, "option")) return tree.state(element, .selected);
+            if (!tree.tagEql(element, "input")) return false;
+            const type_str = inputType(tree, element, allocator) orelse return false;
+            defer allocator.free(type_str);
+            if (!std.ascii.eqlIgnoreCase(type_str, "checkbox") and !std.ascii.eqlIgnoreCase(type_str, "radio")) return false;
+            return tree.state(element, .checked);
+        }
+
+        /// HTML §4.16.3 `:link`/`:any-link`: `a` and `area` elements with an `href`.
+        fn isLink(tree: Tree, element: Node) bool {
+            if (!tree.tagEql(element, "a") and !tree.tagEql(element, "area")) return false;
+            return tree.hasAttributeByName(element, "href");
+        }
+
+        /// Form controls that are candidates for `:required`/`:optional`
+        /// (HTML §4.16.3): input, select, textarea.
+        fn isRequirable(tree: Tree, element: Node) bool {
+            return tree.tagEql(element, "input") or tree.tagEql(element, "select") or tree.tagEql(element, "textarea");
+        }
+
+        /// HTML §4.16.3 `:read-write`: text-entry inputs and textareas that are
+        /// neither readonly nor disabled, and editing hosts (contenteditable).
+        fn isReadWrite(tree: Tree, element: Node, allocator: Allocator) bool {
+            if (tree.tagEql(element, "input")) {
+                const type_str = inputType(tree, element, allocator);
+                defer if (type_str) |t| allocator.free(t);
+                // A missing or unknown type is "text" (HTML §4.10.5.1.1).
+                if (type_str != null and type_str.?.len > 0 and !isTextEntryInputType(type_str.?)) return false;
+                return !tree.hasAttributeByName(element, "readonly") and !tree.state(element, .disabled);
+            }
+            if (tree.tagEql(element, "textarea")) {
+                return !tree.hasAttributeByName(element, "readonly") and !tree.state(element, .disabled);
+            }
+            const ce = (tree.attributeStringByName(allocator, element, "contenteditable", .insensitive) catch return false) orelse return false;
+            defer allocator.free(ce);
+            return ce.len == 0 or std.mem.eql(u8, ce, "true") or std.mem.eql(u8, ce, "plaintext-only");
+        }
+
+        /// HTML §4.10.6 default button: the first submit button in tree order
+        /// among the form's descendants.
+        fn isDefaultButton(tree: Tree, element: Node, allocator: Allocator) bool {
+            // Walk up to the form owner.
+            var form: ?Node = tree.parent(element);
+            while (form) |f| : (form = tree.parent(f)) {
+                if (!tree.isElement(f)) return false;
+                if (tree.tagEql(f, "form")) break;
             } else return false;
-            if (!matchCompoundSelector(data, left_start, trailing_index, env, sibling, allocator)) return false;
-            return matchLeftOfCompound(data, first_compound, left_start, env, sibling, allocator);
-        },
-        .column => panic("TODO: Unsupported selector combinator: {s}\n", .{@tagName(trailing.combinator)}),
-        // end_* values only appear in the last trailing and are never reached here.
-        .end_none, .end_before, .end_after => unreachable,
-    }
+            // Depth-first over the form's descendants until the first submit button.
+            var node: ?Node = tree.firstChild(form.?);
+            while (node) |n| {
+                if (tree.isElement(n) and isSubmitButton(tree, n, allocator)) return eql(n, element);
+                if (tree.isElement(n)) {
+                    if (tree.firstChild(n)) |c| {
+                        node = c;
+                        continue;
+                    }
+                }
+                var cur = n;
+                node = while (true) {
+                    if (tree.nextSibling(cur)) |ns| break ns;
+                    const p = tree.parent(cur) orelse break null;
+                    if (eql(p, form.?)) break null;
+                    cur = p;
+                };
+            }
+            return false;
+        }
+
+        fn isSubmitButton(tree: Tree, element: Node, allocator: Allocator) bool {
+            if (tree.tagEql(element, "button")) {
+                const t = inputType(tree, element, allocator) orelse return true;
+                defer allocator.free(t);
+                return std.ascii.eqlIgnoreCase(t, "submit");
+            }
+            if (tree.tagEql(element, "input")) {
+                const t = inputType(tree, element, allocator) orelse return false;
+                defer allocator.free(t);
+                return std.ascii.eqlIgnoreCase(t, "submit") or std.ascii.eqlIgnoreCase(t, "image");
+            }
+            return false;
+        }
+
+        /// `payload` is the Data following the `pseudo_class_selector`; only read for
+        /// pseudo-classes with an argument (`pseudoClassPayload`).
+        fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: Node, env: *const Environment, tree: Tree, allocator: Allocator) bool {
+            switch (pseudo_class) {
+                .root => return tree.isRoot(element),
+                // Selectors 4 §9.1: the scoping root, or the root element when
+                // there is none.
+                .scope => return if (tree.scopeNode()) |s| eql(s, element) else tree.isRoot(element),
+                .first_child => return siblingIndex(tree, element, false, false) == 1,
+                .last_child => return siblingIndex(tree, element, false, true) == 1,
+                .only_child => return siblingIndex(tree, element, false, false) == 1 and siblingIndex(tree, element, false, true) == 1,
+                .first_of_type => return siblingIndex(tree, element, true, false) == 1,
+                .last_of_type => return siblingIndex(tree, element, true, true) == 1,
+                .only_of_type => return siblingIndex(tree, element, true, false) == 1 and siblingIndex(tree, element, true, true) == 1,
+                .nth_child => return payload.nth.matches(siblingIndex(tree, element, false, false)),
+                .nth_last_child => return payload.nth.matches(siblingIndex(tree, element, false, true)),
+                .nth_of_type => return payload.nth.matches(siblingIndex(tree, element, true, false)),
+                .nth_last_of_type => return payload.nth.matches(siblingIndex(tree, element, true, true)),
+                .lang => return matchLang(env, tree, element, payload.lang_value, allocator),
+                .link, .any_link => return isLink(tree, element),
+                // No history: nothing has been visited.
+                .visited => return false,
+                .hover => return tree.state(element, .hover),
+                .active => return tree.state(element, .active),
+                .focus => return tree.state(element, .focus),
+                .focus_within => return tree.state(element, .focus_within),
+                .focus_visible => return tree.state(element, .focus_visible),
+                .target => return tree.state(element, .target),
+                .enabled => {
+                    if (!isFormElement(tree, element)) return false;
+                    return !tree.state(element, .disabled);
+                },
+                .disabled => {
+                    if (!isFormElement(tree, element)) return false;
+                    return tree.state(element, .disabled);
+                },
+                .checked => return matchChecked(tree, element, allocator),
+                .indeterminate => return tree.state(element, .indeterminate),
+                .placeholder_shown => {
+                    if (!tree.tagEql(element, "input") and !tree.tagEql(element, "textarea")) return false;
+                    return tree.state(element, .placeholder_shown);
+                },
+                .required => return isRequirable(tree, element) and tree.hasAttributeByName(element, "required"),
+                .optional => return isRequirable(tree, element) and !tree.hasAttributeByName(element, "required"),
+                .read_write => return isReadWrite(tree, element, allocator),
+                .read_only => return !isReadWrite(tree, element, allocator),
+                .default => {
+                    if (tree.tagEql(element, "option")) return tree.hasAttributeByName(element, "selected");
+                    if (tree.tagEql(element, "input")) {
+                        const t = inputType(tree, element, allocator) orelse return false;
+                        defer allocator.free(t);
+                        if (std.ascii.eqlIgnoreCase(t, "checkbox") or std.ascii.eqlIgnoreCase(t, "radio")) {
+                            return tree.hasAttributeByName(element, "checked");
+                        }
+                    }
+                    return isSubmitButton(tree, element, allocator) and isDefaultButton(tree, element, allocator);
+                },
+                // Without a custom element registry every built-in element is
+                // defined and every custom element (a name with "-") is not.
+                .defined => return !tree.localNameHasDash(element),
+                .empty => return isEmpty(tree, element),
+                .unrecognized => return false,
+                .ignored => return true,
+            }
+        }
+
+        /// Check if element is a form element (input, button, select, textarea, fieldset).
+        /// Used by :enabled and :disabled pseudo-class matchers.
+        fn isFormElement(tree: Tree, element: Node) bool {
+            inline for (.{ "input", "button", "select", "textarea", "fieldset", "optgroup", "option" }) |tag| {
+                if (tree.tagEql(element, tag)) return true;
+            }
+            return false;
+        }
+    };
 }
 
-fn matchCompoundSelector(
-    data: []const Data,
-    start: Data.ListIndex,
-    end: Data.ListIndex,
-    env: *const Environment,
-    element: NodeId,
-    allocator: std.mem.Allocator,
-) bool {
-    var index = start;
-    while (index < end) : (index += 1) {
-        switch (data[index].simple_selector_tag) {
-            .type => {
-                index += 1;
-                const selector_type = data[index].type_selector;
-                const element_type = env.getNodeProperty(.type, element);
-                if (!matchTypeSelector(selector_type, element_type)) return false;
-            },
-            .id => {
-                index += 1;
-                const id = data[index].id_selector;
-                const element_with_id = env.getElementById(id) orelse return false;
-                if (element != element_with_id) return false;
-            },
-            .class => {
-                index += 1;
-                const class_name = data[index].class_selector;
-                if (!env.nodeHasClass(element, class_name)) return false;
-            },
-            .attribute => |op_case| {
-                index += 1;
-                const attr_selector = data[index].attribute_selector;
-                if (op_case) |oc| {
-                    // [attr<op>val] — attribute must exist and value must match operator
-                    index += 1;
-                    const selector_value = data[index].attribute_selector_value;
-                    const node_value = env.nodeGetAttributeValue(element, attr_selector.name) orelse return false;
-                    const case = switch (oc.case) {
-                        // Selectors 4 §6.4: attribute values are case-sensitive by
-                        // default, except the HTML attributes whose values the HTML
-                        // spec defines as ASCII case-insensitive (`type`, `lang`, …).
-                        .default => if (isCaseInsensitiveHtmlAttribute(env, attr_selector.name)) Utf8StringInterner.Case.insensitive else Utf8StringInterner.Case.sensitive,
-                        .same_case => Utf8StringInterner.Case.sensitive,
-                        .ignore_case => Utf8StringInterner.Case.insensitive,
-                    };
-                    switch (oc.operator) {
-                        .equals => {
-                            if (!env.eqlAttributeValues(case, node_value, selector_value)) return false;
-                        },
-                        .list_contains => {
-                            // [attr~=val] matches if attr contains val as whitespace-separated word
-                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
-                            defer allocator.free(node_str);
-                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
-                            defer allocator.free(selector_str);
-                            
-                            var it = std.mem.splitScalar(u8, node_str, ' ');
-                            while (it.next()) |word| {
-                                if (std.mem.eql(u8, word, selector_str)) break;
-                            } else return false;
-                        },
-                        .starts_with => {
-                            // [attr^=val] matches if attr starts with val
-                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
-                            defer allocator.free(node_str);
-                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
-                            defer allocator.free(selector_str);
-                            if (!std.mem.startsWith(u8, node_str, selector_str)) return false;
-                        },
-                        .ends_with => {
-                            // [attr$=val] matches if attr ends with val
-                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
-                            defer allocator.free(node_str);
-                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
-                            defer allocator.free(selector_str);
-                            if (!std.mem.endsWith(u8, node_str, selector_str)) return false;
-                        },
-                        .contains => {
-                            // [attr*=val] matches if attr contains val anywhere
-                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
-                            defer allocator.free(node_str);
-                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
-                            defer allocator.free(selector_str);
-                            if (std.mem.indexOf(u8, node_str, selector_str) == null) return false;
-                        },
-                        .equals_or_prefix_dash => {
-                            // [attr|=val] matches if attr is val or starts with val-
-                            const node_str = env.getAttributeValueString(allocator, node_value, case) catch return false;
-                            defer allocator.free(node_str);
-                            const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
-                            defer allocator.free(selector_str);
-                            
-                            if (std.mem.eql(u8, node_str, selector_str)) {
-                                // Exact match
-                            } else if (std.mem.startsWith(u8, node_str, selector_str) and 
-                                       node_str.len > selector_str.len and 
-                                       node_str[selector_str.len] == '-') {
-                                // Prefix followed by dash
-                            } else {
-                                return false;
-                            }
-                        },
-                    }
-                } else {
-                    // [attr] — attribute just needs to exist
-                    if (!env.nodeHasAttribute(element, attr_selector.name)) return false;
-                }
-            },
-            .not_class => {
-                index += 1;
-                const class_name = data[index].class_selector;
-                if (env.nodeHasClass(element, class_name)) return false;
-            },
-            .not_id => {
-                index += 1;
-                const id = data[index].id_selector;
-                const element_with_id = env.getElementById(id);
-                if (element_with_id != null and element == element_with_id.?) return false;
-            },
-            .not_type => {
-                index += 1;
-                const selector_type = data[index].type_selector;
-                const element_type = env.getNodeProperty(.type, element);
-                if (matchTypeSelector(selector_type, element_type)) return false;
-            },
-            .not_pseudo_class => {
-                index += 1;
-                const negated_pc = data[index].pseudo_class_selector;
-                const payload = if (pseudoClassPayload(negated_pc) > 0) data[index + 1] else data[index];
-                index += pseudoClassPayload(negated_pc);
-                // If the pseudo-class MATCHES, the :not() fails.
-                if (matchPseudoClass(negated_pc, payload, element, env, allocator)) return false;
-            },
-            .pseudo_class => {
-                index += 1;
-                const pseudo_class = data[index].pseudo_class_selector;
-                const payload = if (pseudoClassPayload(pseudo_class) > 0) data[index + 1] else data[index];
-                index += pseudoClassPayload(pseudo_class);
-                if (!matchPseudoClass(pseudo_class, payload, element, env, allocator)) return false;
-            },
-            .pseudo_element => {
-                index += 1;
-                const pseudo_element = data[index].pseudo_element_selector;
-                switch (pseudo_element) {
-                    // Skip recognized pseudo-elements — the cascade handles them.
-                    .before, .after => {},
-                    .unrecognized => return false,
-                }
-            },
-            .is => {
-                index += 1;
-                const list = data[index].is_selector_list;
-                // Try matching element against each selector in the :is() list (OR logic).
-                // Nested selectors are stored as a linked list via next_complex_selector;
-                // traverse the chain rather than using list.start + i (which is incorrect).
-                var matched = false;
-                var sel_idx = list.start;
-                var i: u8 = 0;
-                while (i < list.count) : (i += 1) {
-                    const next = data[sel_idx].next_complex_selector;
-                    if (matchComplexSelector(data, sel_idx + 1, next - 1, env, element, allocator)) {
-                        matched = true;
-                        break;
-                    }
-                    sel_idx = next;
-                }
-                if (!matched) return false;
-                // Skip past inline nested selector data that follows this entry.
-                // The parser places the nested data after the is_selector_list entry.
-                // Traverse the chain to find the extent.
-                var skip_idx = list.start;
-                for (0..list.count) |_| {
-                    skip_idx = data[skip_idx].next_complex_selector;
-                }
-                index = skip_idx - 1; // -1 compensates for the while loop increment
-            },
-            .where => {
-                index += 1;
-                const list = data[index].where_selector_list;
-                // Same as :is() but with zero specificity (already handled during parsing).
-                // Use chain traversal, not list.start + i.
-                var matched = false;
-                var sel_idx = list.start;
-                var i: u8 = 0;
-                while (i < list.count) : (i += 1) {
-                    const next = data[sel_idx].next_complex_selector;
-                    if (matchComplexSelector(data, sel_idx + 1, next - 1, env, element, allocator)) {
-                        matched = true;
-                        break;
-                    }
-                    sel_idx = next;
-                }
-                if (!matched) return false;
-                // Skip past inline nested selector data (same as .is case).
-                var skip_idx = list.start;
-                for (0..list.count) |_| {
-                    skip_idx = data[skip_idx].next_complex_selector;
-                }
-                index = skip_idx - 1;
-            },
-    }
-    }
-    return true;
-}
-
-/// Check if element is a form element (input, button, select, textarea, fieldset).
-/// Used by :enabled and :disabled pseudo-class matchers.
-fn isFormElement(env: *const Environment, element: NodeId) bool {
-    const type_info = env.getNodeProperty(.type, element);
-    const name_index = @intFromEnum(type_info.name);
-    // Check each form element type with a fresh iterator
-    inline for (.{ "input", "button", "select", "textarea", "fieldset" }) |tag| {
-        var it = env.type_names.iterator(name_index);
-        if (it.eql(tag)) return true;
-    }
-    return false;
-}
-
-fn matchTypeSelector(selector_type: ElementType, element_type: ElementType) bool {
+pub fn matchTypeSelector(selector_type: ElementType, element_type: ElementType) bool {
     assert(element_type.namespace != .any);
     assert(element_type.name != .any);
 
