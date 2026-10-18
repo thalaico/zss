@@ -12,11 +12,38 @@ const Config = struct {
     target: ResolvedTarget,
     enable_harfbuzz: bool,
     enable_opengl: bool,
+    /// Use the system HarfBuzz + FreeType instead of the vendored package:
+    /// `source/harfbuzz_system.zig` imports the host's headers (from
+    /// `system_include_dirs`) and the HOST links the libraries. Hosts choose
+    /// this when they need features the vendored FreeType is built without
+    /// (WOFF2 needs FreeType with brotli) or already link the system
+    /// libraries for other reasons (Cairo) and must not mix two FreeTypes.
+    /// The package's own module cannot be used for that: its build script
+    /// links the vendored static libraries into the shared module.
+    system_harfbuzz: bool,
+    system_include_dirs: []const []const u8,
 };
 
 const deps = struct {
+    var system_harfbuzz_module: ?*Module = null;
+
     fn addHarfbuzz(b: *Build, config: Config, module: *Module) void {
         if (!config.enable_harfbuzz) return;
+        if (config.system_harfbuzz) {
+            const shim = system_harfbuzz_module orelse blk: {
+                const m = b.createModule(.{
+                    .root_source_file = b.path("source/harfbuzz_system.zig"),
+                    .target = config.target,
+                    .optimize = config.optimize,
+                    .link_libc = true,
+                });
+                for (config.system_include_dirs) |dir| m.addSystemIncludePath(.{ .cwd_relative = dir });
+                system_harfbuzz_module = m;
+                break :blk m;
+            };
+            module.addImport("harfbuzz", shim);
+            return;
+        }
         if (b.lazyDependency("harfbuzz", .{
             .optimize = config.optimize,
             .target = config.target,
@@ -61,6 +88,8 @@ pub fn build(b: *Build) void {
         .target = b.standardTargetOptions(.{}),
         .enable_harfbuzz = b.option(bool, "enable-harfbuzz", "Enable Harfbuzz support") orelse true,
         .enable_opengl = b.option(bool, "enable-opengl", "Enable OpenGL support") orelse true,
+        .system_harfbuzz = b.option(bool, "system-harfbuzz", "Use the system HarfBuzz and FreeType (headers + libraries from the host) instead of the vendored static builds") orelse false,
+        .system_include_dirs = b.option([]const []const u8, "system-include-dir", "Include directory for the system HarfBuzz/FreeType headers (repeatable)") orelse &.{},
     };
 
     const zss = b.addModule("zss", .{

@@ -267,7 +267,7 @@ pub const Font = struct {
     cursor: types.Cursor,
     pub const initial_values = Font{
         .font = .default,
-        .font_family = .sans_serif,
+        .font_family = .serif, // the UA "standard font" (Chrome: Times New Roman)
         .font_size = .{ .px = 16.0 }, // 16px default
         .font_weight = .normal,
         .font_style = .normal,

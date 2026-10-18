@@ -15,6 +15,35 @@ pub const Handle = enum(u8) {
 pub const FontEntry = struct {
     hb_font: *hb.hb_font_t,
     ft_face: hb.FT_Face,
+    /// The family's other faces (CSS Fonts 4 §5.2 font matching reduced to
+    /// the bold / italic axes). Null falls back to the regular face: a run
+    /// is then shaped with regular advances, which is what the painter can
+    /// draw without a matching face anyway.
+    bold: ?Variant = null,
+    italic: ?Variant = null,
+    bold_italic: ?Variant = null,
+
+    pub const Variant = struct {
+        hb_font: *hb.hb_font_t,
+        ft_face: hb.FT_Face,
+    };
+
+    /// The face for a run's font-weight / font-style (§5.2 step 4, with the
+    /// bold threshold at 600 and oblique treated as italic).
+    pub fn variantFor(entry: FontEntry, weight: types.FontWeight, style: types.FontStyle) Variant {
+        const wants_bold = weight.isBold();
+        const wants_italic = style != .normal;
+        if (wants_bold and wants_italic) {
+            if (entry.bold_italic) |v| return v;
+            if (entry.bold) |v| return v;
+            if (entry.italic) |v| return v;
+        } else if (wants_bold) {
+            if (entry.bold) |v| return v;
+        } else if (wants_italic) {
+            if (entry.italic) |v| return v;
+        }
+        return .{ .hb_font = entry.hb_font, .ft_face = entry.ft_face };
+    }
 };
 
 /// Opaque handle to the vendored FreeType library instance.
@@ -103,6 +132,64 @@ pub fn addCustomFont(fonts: *Fonts, ft_face: FT_Face, hb_font: *hb.hb_font_t) Ha
     fonts.custom_entries[idx] = .{ .hb_font = hb_font, .ft_face = ft_face };
     fonts.custom_count += 1;
     return @enumFromInt(5 + idx);
+}
+
+/// Attach the bold / italic / bold-italic faces of a registered family
+/// (generic or custom handle). The caller owns the hb_font_t objects.
+pub fn setVariants(fonts: *Fonts, handle: Handle, bold: ?FontEntry.Variant, italic: ?FontEntry.Variant, bold_italic: ?FontEntry.Variant) void {
+    const entry = fonts.entryPtr(handle) orelse return;
+    entry.bold = bold;
+    entry.italic = italic;
+    entry.bold_italic = bold_italic;
+}
+
+fn entryPtr(fonts: *Fonts, handle: Handle) ?*FontEntry {
+    const raw = @intFromEnum(handle);
+    if (raw >= 5) {
+        const idx = raw - 5;
+        if (idx >= fonts.custom_count) return null;
+        return if (fonts.custom_entries[idx]) |*e| e else null;
+    }
+    const slot: usize = switch (handle) {
+        .sans_serif => 0,
+        .serif => 1,
+        .monospace => 2,
+        .system_ui => 3,
+        else => return null,
+    };
+    return if (fonts.fonts[slot]) |*e| e else null;
+}
+
+fn entryFor(fonts: *const Fonts, handle: Handle) ?FontEntry {
+    const raw = @intFromEnum(handle);
+    if (raw >= 5) {
+        const idx = raw - 5;
+        if (idx >= fonts.custom_count) return null;
+        return fonts.custom_entries[idx];
+    }
+    return switch (handle) {
+        .sans_serif => fonts.fonts[0],
+        .serif => fonts.fonts[1],
+        .monospace => fonts.fonts[2],
+        .system_ui => fonts.fonts[3],
+        else => null,
+    };
+}
+
+/// The HarfBuzz font to shape a run with: the family's face matching the
+/// run's weight and style, or its regular face.
+pub fn getVariant(fonts: *const Fonts, handle: Handle, weight: types.FontWeight, style: types.FontStyle) ?*hb.hb_font_t {
+    const entry = fonts.entryFor(handle) orelse return null;
+    return entry.variantFor(weight, style).hb_font;
+}
+
+/// `setFontSize` for the face `getVariant` would return.
+pub fn setFontSizeVariant(fonts: *const Fonts, handle: Handle, weight: types.FontWeight, style: types.FontStyle, size_px: f32) void {
+    const entry = fonts.entryFor(handle) orelse return;
+    const v = entry.variantFor(weight, style);
+    const size_26_6: i32 = @intFromFloat(size_px * 64.0);
+    _ = hb.FT_Set_Char_Size(v.ft_face, 0, size_26_6, 72, 72);
+    hb.hb_ft_font_changed(v.hb_font);
 }
 
 /// Reserve a custom slot without populating it (e.g. when @font-face download failed).

@@ -85,9 +85,9 @@ pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: Font
     ifc.font_family = font_props.font_family;
     ifc.font_size = font_props.font_size.px_val();
 
-    // Shape text with HarfBuzz
-    layout.inputs.fonts.setFontSize(handle, font_props.font_size.px_val());
-    if (layout.inputs.fonts.get(handle)) |hb_font| {
+    // Shape text with HarfBuzz, with the family's face for the run's weight/style
+    layout.inputs.fonts.setFontSizeVariant(handle, font_props.font_weight, font_props.font_style, font_props.font_size.px_val());
+    if (layout.inputs.fonts.getVariant(handle, font_props.font_weight, font_props.font_style)) |hb_font| {
         const glyph_start: u32 = @intCast(ifc.glyphs.len);
         const transformed = switch (font_props.text_transform) {
             .none => text,
@@ -381,9 +381,11 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 ifc.ptr.font_size = font.font_size.px_val();
                 ifc.ptr.line_height = font.line_height;
             }
-            // Resize the FreeType face so HarfBuzz shapes at the actual font-size.
-            layout.inputs.fonts.setFontSize(handle, font.font_size.px_val());
-            if (layout.inputs.fonts.get(handle)) |hb_font| {
+            // Resize the FreeType face so HarfBuzz shapes at the actual font-size,
+            // using the family's face for this run's weight/style (a bold run is
+            // measured with the bold face — its advances differ from regular).
+            layout.inputs.fonts.setFontSizeVariant(handle, font.font_weight, font.font_style, font.font_size.px_val());
+            if (layout.inputs.fonts.getVariant(handle, font.font_weight, font.font_style)) |hb_font| {
                 // Record glyph range for this text node's font run.
                 const glyph_start: u32 = @intCast(ifc.ptr.glyphs.len);
                 const raw_text = layout.computer.getText();
@@ -691,8 +693,8 @@ fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.P
         .none => .invalid,
     };
 
-    layout.inputs.fonts.setFontSize(handle, font_size_px);
-    if (layout.inputs.fonts.get(handle)) |hb_font| {
+    layout.inputs.fonts.setFontSizeVariant(handle, parent_font.font_weight, parent_font.font_style, font_size_px);
+    if (layout.inputs.fonts.getVariant(handle, parent_font.font_weight, parent_font.font_style)) |hb_font| {
         const glyph_start: u32 = @intCast(ifc.glyphs.len);
         try ifcAddText(layout.box_tree, ifc, text, hb_font);
         const glyph_end: u32 = @intCast(ifc.glyphs.len);
@@ -1353,15 +1355,17 @@ fn inlineBlockSolveStackingContext(
 }
 
 fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
-    const font = fonts.get(ifc.font);
+    var font = fonts.get(ifc.font);
     const ifc_slice = ifc.slice();
     const glyphs_slice = ifc.glyphs.slice();
     const runs = ifc.font_runs.items;
 
-    // Track current font run for per-run font sizing.
-    // Runs cover text glyphs only; special glyphs (BoxStart, etc.) fall between runs.
+    // Track the current font run: each run's extents must come from the face
+    // (weight/style variant) and size it was shaped with — glyph indices are
+    // per face. Runs cover text glyphs only; special glyphs (BoxStart, etc.)
+    // fall between runs.
     var run_idx: usize = 0;
-    var current_font_size: f32 = ifc.font_size;
+    var current_run: ?usize = null;
 
     var i: usize = 0;
     while (i < glyphs_slice.len) : (i += 1) {
@@ -1392,15 +1396,15 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                 .LineBreak => setMetricsLineBreak(metrics),
             }
         } else {
-            // Advance to the font run covering this glyph and set its font size.
+            // Advance to the font run covering this glyph; restore its face and size.
             while (run_idx < runs.len and runs[run_idx].glyph_end <= i) {
                 run_idx += 1;
             }
-            if (run_idx < runs.len and i >= runs[run_idx].glyph_start and
-                runs[run_idx].font_size != current_font_size)
-            {
-                current_font_size = runs[run_idx].font_size;
-                fonts.setFontSize(ifc.font, current_font_size);
+            if (run_idx < runs.len and i >= runs[run_idx].glyph_start and current_run != run_idx) {
+                current_run = run_idx;
+                const run = runs[run_idx];
+                font = fonts.getVariant(ifc.font, run.font_weight, run.font_style) orelse font;
+                fonts.setFontSizeVariant(ifc.font, run.font_weight, run.font_style, run.font_size);
             }
             // Advance already stored from hb_shape; fill extents only.
             setMetricsGlyphExtents(metrics, font, glyph_index);
@@ -1693,14 +1697,24 @@ pub fn splitIntoLineBoxes(
             const desc_design: f32 = @floatFromInt(dm.descender);
             const line_gap: f32 = @floatFromInt(dm.line_gap);
             const total_design = asc_design + desc_design + line_gap;
-            // Compute total line height in layout units, rounding once at the end
-            // (Chrome keeps fractional px and only rounds at paint time).
-            const scale = ifc.font_size * @as(f32, @floatFromInt(units_per_pixel)) / upem;
-            const total_lu: i32 = @intFromFloat(@round(total_design * scale));
-            // Split line-gap half above baseline, half below (CSS-aligned
-            // half-leading). Baseline stays at ascender + line_gap/2 from top.
-            const ascender_with_half_leading = asc_design + line_gap * 0.5;
-            ifc.ascender = @intFromFloat(@round(@as(f32, @floatFromInt(total_lu)) * ascender_with_half_leading / total_design));
+            // Blink (SimpleFontData::PlatformInit) rounds ascent, descent and
+            // line gap to whole CSS pixels EACH, then sums them: Liberation Sans
+            // at 16px is 14 + 3 + 1 = 18px, not round(18.39) = 18 by luck —
+            // Noto Sans at 16px is 17 + 5 + 0 = 22px where the unrounded sum is
+            // 21.75. Rounding the sum instead left every line box up to 0.5px
+            // off, which compounds down a page (computed-style probe: 18.5px vs
+            // Chrome's 18px for every one-line block).
+            _ = total_design;
+            const px_scale = ifc.font_size / upem;
+            const asc_px: f32 = @round(asc_design * px_scale);
+            const desc_px: f32 = @round(desc_design * px_scale);
+            const gap_px: f32 = @round(line_gap * px_scale);
+            const upp: f32 = @floatFromInt(units_per_pixel);
+            const total_lu: i32 = @intFromFloat((asc_px + desc_px + gap_px) * upp);
+            // Half-leading: the line gap is split half above the ascent, half
+            // below the descent (CSS2 §10.8.1); the baseline sits at
+            // ascent + gap/2 from the top of the line box.
+            ifc.ascender = @intFromFloat(asc_px * upp + @floor(gap_px * upp / 2));
             ifc.descender = total_lu - ifc.ascender;
         } else {
             ifc.ascender = 0;
