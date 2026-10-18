@@ -446,7 +446,7 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
-                    .checked, .enabled, .disabled => return true,
+                    .checked, .enabled, .disabled, .hover, .active, .focus => return true,
                     else => {},
                 }
                 idx += selectors.pseudoClassPayload(pc);
@@ -480,11 +480,16 @@ fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 
     const stateful = inline for (.{ "input", "button", "select", "textarea", "fieldset", "option", "optgroup" }) |tag| {
         if (env.nodeTagEql(node, tag)) break true;
     } else false;
-    if (!stateful) return 0;
     var bits: u64 = 0;
-    if (env.nodeState(node, .checked)) bits |= 1;
-    if (env.nodeState(node, .selected)) bits |= 2;
-    if (env.nodeState(node, .disabled)) bits |= 4;
+    // Every element can be hovered, active or focused.
+    if (env.nodeState(node, .hover)) bits |= 8;
+    if (env.nodeState(node, .active)) bits |= 16;
+    if (env.nodeState(node, .focus)) bits |= 32;
+    if (stateful) {
+        if (env.nodeState(node, .checked)) bits |= 1;
+        if (env.nodeState(node, .selected)) bits |= 2;
+        if (env.nodeState(node, .disabled)) bits |= 4;
+    }
     return (bits +% 1) *% 0xd6e8feb86659fd93;
 }
 
@@ -503,7 +508,7 @@ fn rightmostCompoundIsSelfInvariant(data: []const selectors.Data, complex_select
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
-                    .root, .link, .visited, .hover, .active, .focus, .unrecognized, .ignored => {},
+                    .root, .link, .visited, .unrecognized, .ignored => {},
                     else => return false,
                 }
                 idx += selectors.pseudoClassPayload(pc);

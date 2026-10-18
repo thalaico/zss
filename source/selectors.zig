@@ -345,7 +345,9 @@ fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: NodeId, e
             return type_iter.eql("a");
         },
         .visited => return false,
-        .hover, .active, .focus => return false,
+        .hover => return env.nodeState(element, .hover),
+        .active => return env.nodeState(element, .active),
+        .focus => return env.nodeState(element, .focus),
         .first_child => {
             var sib = element.previousSibling(env);
             while (sib) |s| : (sib = s.previousSibling(env)) {

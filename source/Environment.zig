@@ -493,7 +493,16 @@ pub const NodeRelative = enum {
 /// `DocumentTreeVtable.nodeState`, never by reading the attributes directly —
 /// once a script has toggled a checkbox, the `checked` attribute only states
 /// its default.
-pub const ElementState = enum { checked, selected, disabled };
+pub const ElementState = enum {
+    checked,
+    selected,
+    disabled,
+    /// Selectors 4 §13.2 user-action pseudo-classes. The host owns the
+    /// pointer and focus state; a document without a user agent has none.
+    hover,
+    active,
+    focus,
+};
 
 pub const DocumentTreeVtable = struct {
     // TODO: Make these functions "restricted function types"
@@ -534,6 +543,7 @@ pub fn nodeState(env: *const Environment, node: NodeId, state: ElementState) boo
 /// unless it is inside that fieldset's first `legend` child.
 pub fn attributeElementState(env: *const Environment, node: NodeId, state: ElementState) bool {
     switch (state) {
+        .hover, .active, .focus => return false,
         .checked => return env.nodeHasAttributeByName(node, "checked"),
         .selected => return env.nodeHasAttributeByName(node, "selected"),
         .disabled => {
