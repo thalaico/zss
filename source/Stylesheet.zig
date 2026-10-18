@@ -282,6 +282,7 @@ const RuleProcessor = struct {
         const viewport: media.Viewport = .{
             .width_px = ctx.env.viewport_width_px,
             .height_px = ctx.env.viewport_height_px,
+            .configured = ctx.env.viewport_configured,
         };
 
         if (!media.evaluate(condition, viewport)) {
@@ -412,6 +413,7 @@ test "@media rule processing" {
     // but @media print should not.
     env.viewport_width_px = 800;
     env.viewport_height_px = 600;
+    env.viewport_configured = true;
 
     var stylesheet = try create(allocator, ast, rule_list_index, source_code, &env);
     defer stylesheet.deinit(allocator);

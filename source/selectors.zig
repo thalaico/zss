@@ -44,11 +44,29 @@ pub const Data = union {
     attribute_selector: ElementAttribute,
     attribute_selector_value: AttributeValue,
     pseudo_class_selector: PseudoClass,
+    /// Argument of the :nth-*() pseudo-classes (follows their `pseudo_class_selector`).
+    nth: Nth,
+    /// Argument of :lang() (follows its `pseudo_class_selector`).
+    lang_value: AttributeValue,
     pseudo_element_selector: PseudoElement,
     /// :is() pseudo-class with nested selector list
     is_selector_list: NestedSelectorList,
     /// :where() pseudo-class with nested selector list
     where_selector_list: NestedSelectorList,
+
+    /// Selectors 4 §3 An+B: matches sibling indices `a*n + b` for n >= 0.
+    pub const Nth = packed struct {
+        a: i16,
+        b: i16,
+
+        pub fn matches(nth: Nth, index: i32) bool {
+            const a: i32 = nth.a;
+            const b: i32 = nth.b;
+            if (a == 0) return index == b;
+            const diff = index - b;
+            return @rem(diff, a) == 0 and @divTrunc(diff, a) >= 0;
+        }
+    };
 
     /// Reference to a list of nested selectors (for :is/:where)
     pub const NestedSelectorList = packed struct {
@@ -124,7 +142,42 @@ pub const Combinator = enum(u8) {
 
 pub const PseudoElement = enum { before, after, unrecognized };
 
-pub const PseudoClass = enum { root, link, visited, hover, active, focus, first_child, last_child, only_child, enabled, disabled, checked, empty, first_of_type, unrecognized, ignored };
+pub const PseudoClass = enum {
+    root,
+    link,
+    visited,
+    hover,
+    active,
+    focus,
+    first_child,
+    last_child,
+    only_child,
+    enabled,
+    disabled,
+    checked,
+    empty,
+    first_of_type,
+    last_of_type,
+    only_of_type,
+    /// Followed by a `nth` Data (Selectors 4 §3: An+B).
+    nth_child,
+    nth_last_child,
+    nth_of_type,
+    nth_last_of_type,
+    /// Followed by a `lang_value` Data (the language range).
+    lang,
+    unrecognized,
+    ignored,
+};
+
+/// Number of extra Data entries that follow a `pseudo_class_selector` of
+/// this kind (its argument).
+pub fn pseudoClassPayload(pseudo_class: PseudoClass) Data.ListIndex {
+    return switch (pseudo_class) {
+        .nth_child, .nth_last_child, .nth_of_type, .nth_last_of_type, .lang => 1,
+        else => 0,
+    };
+}
 
 pub const AttributeOperator = enum { equals, list_contains, equals_or_prefix_dash, starts_with, ends_with, contains };
 
@@ -182,9 +235,96 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
 
 /// Returns true if the given pseudo-class matches the element.
 /// Used by both .pseudo_class and .not_pseudo_class matching.
-fn matchPseudoClass(pseudo_class: PseudoClass, element: NodeId, env: *const Environment) bool {
+/// HTML attributes whose values selectors match ASCII case-insensitively
+/// (Selectors 4 §6.4 / HTML "case-sensitivity of selectors").
+const case_insensitive_html_attributes = [_][]const u8{
+    "accept",   "accept-charset", "align",    "alink",    "axis",     "bgcolor",  "charset",  "checked",
+    "clear",    "codetype",       "color",    "compact",  "declare",  "defer",    "dir",      "direction",
+    "disabled", "enctype",        "face",     "frame",    "hreflang", "http-equiv", "lang",   "language",
+    "link",     "media",          "method",   "multiple", "nohref",   "noresize", "noshade",  "nowrap",
+    "readonly", "rel",            "rev",      "rules",    "scope",    "scrolling", "selected", "shape",
+    "target",   "text",           "type",     "valign",   "valuetype", "vlink",
+};
+
+fn isCaseInsensitiveHtmlAttribute(env: *const Environment, name: AttributeName) bool {
+    if (name == .anonymous) return false;
+    for (case_insensitive_html_attributes) |candidate| {
+        var it = env.attribute_names.iterator(@intFromEnum(name));
+        if (it.eql(candidate)) return true;
+    }
+    return false;
+}
+
+fn sameElementType(a: ElementType, b: ElementType) bool {
+    return a.namespace == b.namespace and a.name == b.name;
+}
+
+/// 1-based position of `element` among its element siblings (Selectors 4 §14),
+/// counted from the start or the end, optionally only among siblings of the
+/// same type (the *-of-type family).
+fn siblingIndex(env: *const Environment, element: NodeId, comptime of_type: bool, comptime from_end: bool) i32 {
+    const my_type = env.getNodeProperty(.type, element);
+    var index: i32 = 1;
+    var sib = if (from_end) element.nextSibling(env) else element.previousSibling(env);
+    while (sib) |s| : (sib = if (from_end) s.nextSibling(env) else s.previousSibling(env)) {
+        if (env.getNodeProperty(.category, s) != .element) continue;
+        if (of_type and !sameElementType(my_type, env.getNodeProperty(.type, s))) continue;
+        index += 1;
+    }
+    return index;
+}
+
+/// Selectors 4 §14.3.1: no element children and no text children with any
+/// content (comments and processing instructions never enter the tree).
+fn isEmpty(env: *const Environment, element: NodeId) bool {
+    var child = element.firstChild(env);
+    while (child) |ch| : (child = ch.nextSibling(env)) {
+        switch (env.getNodeProperty(.category, ch)) {
+            .element => return false,
+            .text => if (env.getText(env.getNodeProperty(.text, ch)).len > 0) return false,
+        }
+    }
+    return true;
+}
+
+/// Selectors 4 §8: the element's language is the nearest `lang` attribute on
+/// it or an ancestor; the range matches when it equals the language or is a
+/// dash-delimited prefix of it, ASCII case-insensitively (BCP 47 §2.1).
+fn matchLang(env: *const Environment, element: NodeId, range: AttributeValue, allocator: Allocator) bool {
+    const range_str = env.getAttributeValueString(allocator, range, .insensitive) catch return false;
+    defer allocator.free(range_str);
+    if (range_str.len == 0) return false;
+    var e: ?NodeId = element;
+    while (e) |node| : (e = node.parent(env)) {
+        const value = env.nodeAttributeValueByName(node, "lang") orelse continue;
+        const lang = env.getAttributeValueString(allocator, value, .insensitive) catch return false;
+        defer allocator.free(lang);
+        if (lang.len == 0) return false; // lang="" — the element has no language
+        if (std.ascii.eqlIgnoreCase(lang, range_str)) return true;
+        return lang.len > range_str.len and std.ascii.startsWithIgnoreCase(lang, range_str) and lang[range_str.len] == '-';
+    }
+    return false;
+}
+
+/// `payload` is the Data following the `pseudo_class_selector`; only read for
+/// pseudo-classes with an argument (`pseudoClassPayload`).
+fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: NodeId, env: *const Environment, allocator: Allocator) bool {
     switch (pseudo_class) {
         .root => return element == env.root_node,
+        .last_of_type => {
+            const my_type = env.getNodeProperty(.type, element);
+            var sib = element.nextSibling(env);
+            while (sib) |s| : (sib = s.nextSibling(env)) {
+                if (env.getNodeProperty(.category, s) == .element and sameElementType(my_type, env.getNodeProperty(.type, s))) return false;
+            }
+            return true;
+        },
+        .only_of_type => return siblingIndex(env, element, true, false) == 1 and siblingIndex(env, element, true, true) == 1,
+        .nth_child => return payload.nth.matches(siblingIndex(env, element, false, false)),
+        .nth_last_child => return payload.nth.matches(siblingIndex(env, element, false, true)),
+        .nth_of_type => return payload.nth.matches(siblingIndex(env, element, true, false)),
+        .nth_last_of_type => return payload.nth.matches(siblingIndex(env, element, true, true)),
+        .lang => return matchLang(env, element, payload.lang_value, allocator),
         .link => {
             const type_info = env.getNodeProperty(.type, element);
             var type_iter = env.type_names.iterator(@intFromEnum(type_info.name));
@@ -236,7 +376,7 @@ fn matchPseudoClass(pseudo_class: PseudoClass, element: NodeId, env: *const Envi
             return env.nodeHasAttributeByName(element, "disabled");
         },
         .checked => return env.nodeHasAttributeByName(element, "checked"),
-        .empty => return element.firstChild(env) == null,
+        .empty => return isEmpty(env, element),
         .unrecognized => return false,
         .ignored => return true,
     }
@@ -365,7 +505,11 @@ fn matchCompoundSelector(
                     const selector_value = data[index].attribute_selector_value;
                     const node_value = env.nodeGetAttributeValue(element, attr_selector.name) orelse return false;
                     const case = switch (oc.case) {
-                        .default, .same_case => Utf8StringInterner.Case.sensitive,
+                        // Selectors 4 §6.4: attribute values are case-sensitive by
+                        // default, except the HTML attributes whose values the HTML
+                        // spec defines as ASCII case-insensitive (`type`, `lang`, …).
+                        .default => if (isCaseInsensitiveHtmlAttribute(env, attr_selector.name)) Utf8StringInterner.Case.insensitive else Utf8StringInterner.Case.sensitive,
+                        .same_case => Utf8StringInterner.Case.sensitive,
                         .ignore_case => Utf8StringInterner.Case.insensitive,
                     };
                     switch (oc.operator) {
@@ -451,13 +595,17 @@ fn matchCompoundSelector(
             .not_pseudo_class => {
                 index += 1;
                 const negated_pc = data[index].pseudo_class_selector;
+                const payload = if (pseudoClassPayload(negated_pc) > 0) data[index + 1] else data[index];
+                index += pseudoClassPayload(negated_pc);
                 // If the pseudo-class MATCHES, the :not() fails.
-                if (matchPseudoClass(negated_pc, element, env)) return false;
+                if (matchPseudoClass(negated_pc, payload, element, env, allocator)) return false;
             },
             .pseudo_class => {
                 index += 1;
                 const pseudo_class = data[index].pseudo_class_selector;
-                if (!matchPseudoClass(pseudo_class, element, env)) return false;
+                const payload = if (pseudoClassPayload(pseudo_class) > 0) data[index + 1] else data[index];
+                index += pseudoClassPayload(pseudo_class);
+                if (!matchPseudoClass(pseudo_class, payload, element, env, allocator)) return false;
             },
             .pseudo_element => {
                 index += 1;

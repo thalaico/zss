@@ -264,6 +264,7 @@ pub const Font = struct {
     white_space: types.WhiteSpace,
     overflow_wrap: types.OverflowWrap,
     list_style_type: types.ListStyleType,
+    cursor: types.Cursor,
     pub const initial_values = Font{
         .font = .default,
         .font_family = .sans_serif,
@@ -272,7 +273,7 @@ pub const Font = struct {
         .font_style = .normal,
         .text_transform = .none,
         .text_decoration = .none,
-        .text_align = .left,
+        .text_align = .start,
         .vertical_align = .baseline,
         .visibility = .visible,
         .border_spacing = 8, // 2px default (CSS border-collapse: separate)
@@ -280,6 +281,7 @@ pub const Font = struct {
         .white_space = .normal,
         .overflow_wrap = .normal,
         .list_style_type = .disc,
+        .cursor = .auto,
     };
 };
 
@@ -311,8 +313,8 @@ pub const BoxStyle = struct {
         .clear = .none,
         .overflow = .visible,
         .flex_direction = .row,
-        .justify_content = .flex_start,
-        .align_items = .stretch,
+        .justify_content = .normal,
+        .align_items = .normal,
         .align_self = .auto,
         .column_gap = 0,
         .row_gap = 0,

@@ -534,6 +534,9 @@ pub fn solveAllSizes(
     computed_sizes.insets = solve.insets(specified_sizes.insets);
     solveInsets(computed_sizes.insets, position, &sizes);
 
+    // solveWidthAndHorizontalMargins fills width/min/max only; the computed
+    // value of box-sizing is its specified value (it is not a length).
+    computed_sizes.content_width.box_sizing = specified_sizes.content_width.box_sizing;
     computer.setComputedValue(.box_gen, .content_width, computed_sizes.content_width);
     computer.setComputedValue(.box_gen, .horizontal_edges, computed_sizes.horizontal_edges);
     computer.setComputedValue(.box_gen, .content_height, computed_sizes.content_height);

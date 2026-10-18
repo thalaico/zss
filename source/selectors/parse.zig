@@ -436,6 +436,8 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
                     .{ "is", "is" },
                     .{ "where", "where" },
                 }) orelse {
+                    // :nth-*() / :lang() carry an argument Data of their own.
+                    if (try parseFunctionalPseudoClass(parser, data_list, after_colon_index, false)) return;
                     // Not :not/:is/:where — reset and fall through
                     parser.sequence.reset(after_colon_index);
                     const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
@@ -602,6 +604,12 @@ fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index:
         },
         // :not(:pseudo-class) — e.g., :not(:focus), :not(:hover)
         .token_colon => {
+            // :not(:nth-child(..)) / :not(:lang(..)): argument-carrying forms.
+            const inner_tag, const inner_index = parser.next() orelse return;
+            if (inner_tag == .function) {
+                if (try parseFunctionalPseudoClass(parser, data_list, inner_index, true)) return;
+            }
+            parser.sequence.reset(inner_index);
             const pseudo_class = parsePseudo(.class, parser) orelse return;
             try data_list.appendSlice(&.{
                 .{ .simple_selector_tag = .not_pseudo_class },
@@ -845,6 +853,8 @@ fn matchHyphenatedPseudoClass(parser: *Parser, index: Ast.Index) ?selectors.Pseu
         .{ "last-child", selectors.PseudoClass.last_child },
         .{ "only-child", selectors.PseudoClass.only_child },
         .{ "first-of-type", selectors.PseudoClass.first_of_type },
+        .{ "last-of-type", selectors.PseudoClass.last_of_type },
+        .{ "only-of-type", selectors.PseudoClass.only_of_type },
         .{ "focus-visible", selectors.PseudoClass.focus }, // treat focus-visible as focus (never matches in static)
         .{ "read-only", selectors.PseudoClass.ignored }, // :read-only - treat as always-matching
     };
@@ -852,6 +862,156 @@ fn matchHyphenatedPseudoClass(parser: *Parser, index: Ast.Index) ?selectors.Pseu
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
     }
     return null;
+}
+
+/// The argument-carrying pseudo-classes: :nth-child(), :nth-last-child(),
+/// :nth-of-type(), :nth-last-of-type() (Selectors 4 §14.4-14.5, An+B §3) and
+/// :lang() (§8). Returns false, with the sequence untouched, when
+/// `function_index` is some other function. A recognized pseudo-class with an
+/// invalid argument is emitted as `.unrecognized`, which never matches — the
+/// selector is invalid (Selectors 4 §3.9), not "matches everything".
+fn parseFunctionalPseudoClass(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, negate: bool) !bool {
+    const kind = parser.source_code.mapIdentifierValue(function_index.location(parser.ast), selectors.PseudoClass, &.{
+        .{ "nth-child", .nth_child },
+        .{ "nth-last-child", .nth_last_child },
+        .{ "nth-of-type", .nth_of_type },
+        .{ "nth-last-of-type", .nth_last_of_type },
+        .{ "lang", .lang },
+    }) orelse return false;
+    const tag: selectors.Data.SimpleSelectorTag = if (negate) .not_pseudo_class else .pseudo_class;
+
+    switch (kind) {
+        .lang => {
+            const saved_sequence = parser.sequence;
+            defer parser.sequence = saved_sequence;
+            parser.sequence = function_index.children(parser.ast);
+            _ = parser.skipSpaces();
+            const value: ?Environment.AttributeValue = blk: {
+                const value_tag, const value_index = parser.next() orelse break :blk null;
+                const v = switch (value_tag) {
+                    .token_ident => try parser.env.addAttributeValueFromIdentToken(value_index.location(parser.ast), parser.source_code),
+                    .token_string => try parser.env.addAttributeValueFromStringToken(value_index.location(parser.ast), parser.source_code),
+                    else => break :blk null,
+                };
+                _ = parser.skipSpaces();
+                if (parser.next() != null) break :blk null; // a single language range
+                break :blk v;
+            };
+            if (value) |v| {
+                try data_list.appendSlice(&.{
+                    .{ .simple_selector_tag = tag },
+                    .{ .pseudo_class_selector = .lang },
+                    .{ .lang_value = v },
+                });
+            } else {
+                try data_list.appendSlice(&.{
+                    .{ .simple_selector_tag = tag },
+                    .{ .pseudo_class_selector = .unrecognized },
+                });
+            }
+        },
+        else => {
+            const nth: ?selectors.Data.Nth = if (functionArgText(parser, function_index)) |text| parseAnPlusB(text) else null;
+            if (nth) |n| {
+                try data_list.appendSlice(&.{
+                    .{ .simple_selector_tag = tag },
+                    .{ .pseudo_class_selector = kind },
+                    .{ .nth = n },
+                });
+            } else {
+                try data_list.appendSlice(&.{
+                    .{ .simple_selector_tag = tag },
+                    .{ .pseudo_class_selector = .unrecognized },
+                });
+            }
+        },
+    }
+    parser.addSpecificity(.pseudo_class);
+    return true;
+}
+
+/// The source text between a function token's parentheses.
+fn functionArgText(parser: *Parser, function_index: Ast.Index) ?[]const u8 {
+    const text = parser.source_code.text;
+    const start: usize = @intFromEnum(function_index.location(parser.ast));
+    const open = std.mem.indexOfScalarPos(u8, text, start, '(') orelse return null;
+    const close = std.mem.indexOfScalarPos(u8, text, open + 1, ')') orelse return null;
+    return text[open + 1 .. close];
+}
+
+/// Selectors 4 §3 <an+b>: `odd`, `even`, `<integer>`, `[<integer>]n[±<integer>]`.
+/// Whitespace is insignificant between the terms.
+fn parseAnPlusB(raw: []const u8) ?selectors.Data.Nth {
+    var buf: [64]u8 = undefined;
+    var n: usize = 0;
+    for (raw) |ch| {
+        if (std.ascii.isWhitespace(ch)) continue;
+        if (n >= buf.len) return null;
+        buf[n] = std.ascii.toLower(ch);
+        n += 1;
+    }
+    const s = buf[0..n];
+    if (std.mem.eql(u8, s, "odd")) return .{ .a = 2, .b = 1 };
+    if (std.mem.eql(u8, s, "even")) return .{ .a = 2, .b = 0 };
+    if (s.len == 0) return null;
+
+    var i: usize = 0;
+    var sign: i32 = 1;
+    if (s[i] == '+' or s[i] == '-') {
+        if (s[i] == '-') sign = -1;
+        i += 1;
+    }
+    const digits_start = i;
+    while (i < s.len and std.ascii.isDigit(s[i])) i += 1;
+    const has_digits = i > digits_start;
+
+    if (i < s.len and s[i] == 'n') {
+        const a_mag: i32 = if (has_digits) (std.fmt.parseInt(i32, s[digits_start..i], 10) catch return null) else 1;
+        const a = sign * a_mag;
+        i += 1;
+        var b: i32 = 0;
+        if (i < s.len) {
+            var b_sign: i32 = 1;
+            switch (s[i]) {
+                '+' => {},
+                '-' => b_sign = -1,
+                else => return null,
+            }
+            i += 1;
+            const b_start = i;
+            while (i < s.len and std.ascii.isDigit(s[i])) i += 1;
+            if (b_start == i or i != s.len) return null;
+            b = b_sign * (std.fmt.parseInt(i32, s[b_start..i], 10) catch return null);
+        }
+        return .{
+            .a = std.math.cast(i16, a) orelse return null,
+            .b = std.math.cast(i16, b) orelse return null,
+        };
+    }
+
+    if (!has_digits or i != s.len) return null;
+    const b = sign * (std.fmt.parseInt(i32, s[digits_start..i], 10) catch return null);
+    return .{ .a = 0, .b = std.math.cast(i16, b) orelse return null };
+}
+
+test "An+B parsing" {
+    const ex = std.testing.expectEqual;
+    try ex(selectors.Data.Nth{ .a = 2, .b = 1 }, parseAnPlusB("odd").?);
+    try ex(selectors.Data.Nth{ .a = 2, .b = 0 }, parseAnPlusB(" EVEN ").?);
+    try ex(selectors.Data.Nth{ .a = 0, .b = 3 }, parseAnPlusB("3").?);
+    try ex(selectors.Data.Nth{ .a = 2, .b = 1 }, parseAnPlusB("2n+1").?);
+    try ex(selectors.Data.Nth{ .a = 2, .b = 1 }, parseAnPlusB("2n + 1").?);
+    try ex(selectors.Data.Nth{ .a = -1, .b = 3 }, parseAnPlusB("-n+3").?);
+    try ex(selectors.Data.Nth{ .a = 1, .b = -2 }, parseAnPlusB("n-2").?);
+    try ex(selectors.Data.Nth{ .a = 3, .b = 0 }, parseAnPlusB("3n").?);
+    try ex(@as(?selectors.Data.Nth, null), parseAnPlusB("foo"));
+    try ex(@as(?selectors.Data.Nth, null), parseAnPlusB("2n+"));
+    try ex(@as(?selectors.Data.Nth, null), parseAnPlusB(""));
+    try std.testing.expect(parseAnPlusB("2n+1").?.matches(3));
+    try std.testing.expect(!parseAnPlusB("2n+1").?.matches(2));
+    try std.testing.expect(parseAnPlusB("-n+3").?.matches(1));
+    try std.testing.expect(!parseAnPlusB("-n+3").?.matches(4));
+    try std.testing.expect(parseAnPlusB("3").?.matches(3));
 }
 
 /// Returns true if the sequence matches the grammar of <any-value>.

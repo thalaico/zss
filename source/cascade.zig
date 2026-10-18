@@ -271,8 +271,12 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
                 idx += 1; // skip attribute_selector
                 if (op_case != null) idx += 1; // skip attribute_selector_value
             },
-            .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class => {
+            .not_class, .not_id, .not_type => {
                 idx += 1;
+            },
+            .not_pseudo_class, .pseudo_class => {
+                idx += 1;
+                idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
             },
             .pseudo_element => {
                 idx += 1;
@@ -410,6 +414,134 @@ fn canMatchStatic(data: []const selectors.Data, complex_selector_index: selector
     return true;
 }
 
+/// True if the selector's verdict for its subject element can differ between
+/// siblings that share type, classes, attributes and parent: a structural
+/// pseudo-class or `:empty` in the rightmost compound, or a sibling
+/// combinator directly to its left. Position-dependence in ancestor compounds
+/// is shared by all siblings (they have the same ancestors) and so is fine.
+fn rightmostCompoundIsPositional(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const trailing = data[last_trailing_idx].trailing;
+    const start = trailing.compound_selector_start;
+    if (start > complex_selector_index + 1) {
+        switch (data[start - 1].trailing.combinator) {
+            .next_sibling, .subsequent_sibling => return true,
+            else => {},
+        }
+    }
+    return compoundIsPositional(data, start, last_trailing_idx);
+}
+
+/// True if the rightmost compound's verdict is the same for every element of
+/// the same type and classes: no attribute selectors, and no pseudo-class
+/// beyond the ones that are constant per type (`:root`, `:link`) or never
+/// match (`:hover` & co.). Such selectors may be shared through the L2 cache.
+fn rightmostCompoundIsSelfInvariant(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    if (rightmostCompoundIsPositional(data, complex_selector_index)) return false;
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const start = data[last_trailing_idx].trailing.compound_selector_start;
+    var idx = start;
+    while (idx < last_trailing_idx) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class, .not_pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                switch (pc) {
+                    .root, .link, .visited, .hover, .active, .focus, .unrecognized, .ignored => {},
+                    else => return false,
+                }
+                idx += selectors.pseudoClassPayload(pc);
+            },
+            .attribute => return false,
+            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            inline .is, .where => |_, tag| {
+                idx += 1;
+                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    if (!rightmostCompoundIsSelfInvariant(data, sel_idx)) return false;
+                    sel_idx = data[sel_idx].next_complex_selector;
+                }
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return true;
+}
+
+fn compoundIsPositional(data: []const selectors.Data, start: selectors.Data.ListIndex, end: selectors.Data.ListIndex) bool {
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class, .not_pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                switch (pc) {
+                    .first_child, .last_child, .only_child, .first_of_type, .last_of_type, .only_of_type, .nth_child, .nth_last_child, .nth_of_type, .nth_last_of_type, .empty => return true,
+                    else => {},
+                }
+                idx += selectors.pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where => |_, tag| {
+                idx += 1;
+                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    // The nested selector's subject is this same element.
+                    if (rightmostCompoundIsPositional(data, sel_idx)) return true;
+                    sel_idx = data[sel_idx].next_complex_selector;
+                }
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return false;
+}
+
+/// What the positional pseudo-classes can observe about an element: its
+/// index among its element siblings and among same-type siblings, from both
+/// ends, and whether it is `:empty`.
+fn positionalSignature(env: *const Environment, node: Environment.NodeId) u64 {
+    const my_type = env.getNodeProperty(.type, node);
+    var prev: u64 = 0;
+    var prev_same: u64 = 0;
+    var next: u64 = 0;
+    var next_same: u64 = 0;
+    var sib = node.previousSibling(env);
+    while (sib) |s| : (sib = s.previousSibling(env)) {
+        if (env.getNodeProperty(.category, s) != .element) continue;
+        prev += 1;
+        const t = env.getNodeProperty(.type, s);
+        if (t.namespace == my_type.namespace and t.name == my_type.name) prev_same += 1;
+    }
+    sib = node.nextSibling(env);
+    while (sib) |s| : (sib = s.nextSibling(env)) {
+        if (env.getNodeProperty(.category, s) != .element) continue;
+        next += 1;
+        const t = env.getNodeProperty(.type, s);
+        if (t.namespace == my_type.namespace and t.name == my_type.name) next_same += 1;
+    }
+    var non_empty: u64 = 0;
+    var child = node.firstChild(env);
+    while (child) |ch| : (child = ch.nextSibling(env)) {
+        switch (env.getNodeProperty(.category, ch)) {
+            .element => non_empty = 1,
+            .text => if (env.getText(env.getNodeProperty(.text, ch)).len > 0) {
+                non_empty = 1;
+            },
+        }
+        if (non_empty == 1) break;
+    }
+    var h: u64 = 0x9e3779b97f4a7c15;
+    inline for (.{ prev, prev_same, next, next_same, non_empty }) |v| h = (h ^ v) *% 0x100000001b3;
+    return h;
+}
+
 fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.ListIndex, end: selectors.Data.ListIndex) bool {
     var idx = start;
     while (idx < end) : (idx += 1) {
@@ -420,8 +552,13 @@ fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.Li
                     .hover, .active, .focus, .visited, .unrecognized => return false,
                     else => {},
                 }
+                idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
             },
-            .type, .id, .class, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_element => idx += 1,
+            .not_pseudo_class => {
+                idx += 1;
+                idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
+            },
+            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -550,7 +687,8 @@ fn collectAllHashes(data: []const selectors.Data, complex_selector_index: select
                     idx += 1;
                     if (op_case != null) idx += 1;
                 },
-                .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+                .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
                 .is => {
                     idx += 1;
                     const list = data[idx].is_selector_list;
@@ -632,8 +770,12 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                             idx += 1;
                             if (op_case != null) idx += 1;
                         },
-                        .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class => {
+                        .not_class, .not_id, .not_type => {
                             idx += 1;
+                        },
+                        .not_pseudo_class, .pseudo_class => {
+                            idx += 1;
+                            idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
                         },
                         .pseudo_element => idx += 1,
                         .is => {
@@ -705,7 +847,8 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
             },
-            .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+            .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -768,7 +911,8 @@ fn extractAltAncestorHashes(
                             for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                             idx = skip_idx - 1;
                         },
-                        .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+                        .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
                         .attribute => |op_case| {
                             idx += 1;
                             if (op_case != null) idx += 1;
@@ -841,7 +985,8 @@ fn extractAltAncestorHashesWrapped(
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
             },
-            .type, .class, .id, .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+            .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -916,7 +1061,8 @@ fn compoundCanMatchInDoc(data: []const selectors.Data, start: selectors.Data.Lis
                 idx += 1;
                 if (op_case != null) idx += 1;
             },
-            .not_class, .not_id, .not_type, .not_pseudo_class, .pseudo_class, .pseudo_element => idx += 1,
+            .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
         }
     }
     return true;
@@ -1207,6 +1353,10 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     var class_index = std.AutoArrayHashMapUnmanaged(Environment.ClassName, std.ArrayListUnmanaged(SelectorEntry)).empty;
     var type_index = std.AutoArrayHashMapUnmanaged(Environment.TypeName, std.ArrayListUnmanaged(SelectorEntry)).empty;
     var universal = std.ArrayListUnmanaged(SelectorEntry){};
+    // Whether any selector's verdict for an element depends on where the
+    // element sits among its siblings (see rightmostCompoundIsPositional).
+    // When it does, the L1 sibling-sharing key must carry the position.
+    var positional_selectors = false;
 
     for (importances) |importance| {
         const selector_list = switch (importance) {
@@ -1235,6 +1385,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 .ancestor_hashes = ah,
                 .alt_ancestor_hashes = if (ah == null) try extractAltAncestorHashes(data, selector, allocator) else null,
             };
+            if (!entry.fast_match and rightmostCompoundIsPositional(data, selector)) positional_selectors = true;
             switch (key) {
                 .id => |id| {
                     const gop = try id_index.getOrPut(allocator, id);
@@ -1288,12 +1439,22 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         pseudo_before_blocks: []const RunContext.BlockImportance,
         pseudo_after_blocks: []const RunContext.BlockImportance,
     };
+    // Blocks are applied first-wins in cascade-priority order (the selector
+    // lists arrive sorted winner-first), so an L2 hit must re-merge the shared
+    // fast entries with the re-evaluated dependents by that same order rather
+    // than appending fast blocks first — the entries, not just their blocks,
+    // are cached for that.
     const CrossCacheData = struct {
-        fast_element_blocks: []const RunContext.BlockImportance,
-        fast_pseudo_before: []const RunContext.BlockImportance,
-        fast_pseudo_after: []const RunContext.BlockImportance,
+        fast_entries: []const SelectorEntry,
         dependent_candidates: []const SelectorEntry,
     };
+    const entryLessThan = struct {
+        fn lessThan(_: void, a: SelectorEntry, b: SelectorEntry) bool {
+            if (a.importance != b.importance)
+                return @intFromEnum(a.importance) > @intFromEnum(b.importance);
+            return a.source_order < b.source_order;
+        }
+    }.lessThan;
     var full_cache = std.AutoArrayHashMapUnmanaged(u64, FullCacheResult).empty;
     var cross_cache = std.AutoArrayHashMapUnmanaged(u64, CrossCacheData).empty;
     var full_hit_count: u32 = 0;
@@ -1306,10 +1467,9 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     var element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
     var pseudo_before_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
     var pseudo_after_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
-    var fast_element_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
-    var fast_pseudo_before_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
-    var fast_pseudo_after_collect = std.ArrayListUnmanaged(RunContext.BlockImportance){};
+    var fast_entries_collect = std.ArrayListUnmanaged(SelectorEntry){};
     var dependent_collect = std.ArrayListUnmanaged(SelectorEntry){};
+    var hit_merged = std.ArrayListUnmanaged(SelectorEntry){};
 
     var merged = std.ArrayListUnmanaged(SelectorEntry){};
     var bloom = AncestorBloom{};
@@ -1351,6 +1511,17 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             full_key ^= @as(u64, @truncate(parent_bits)) *% 0x9e3779b97f4a7c15;
             full_key ^= @as(u64, @truncate(parent_bits >> 64)) *% 0x517cc1b727220a95;
         }
+        // L1 shares the *whole* verdict between siblings, including the
+        // dependent (non-fast) selectors — so two siblings may share only if
+        // everything those selectors can look at is equal: their attributes
+        // ([attr], :checked, :lang, …) and, when the sheet has sibling-
+        // sensitive selectors, their position among their siblings.
+        if (env.nodes_to_attributes.get(node)) |attrs| {
+            for (attrs) |attr| {
+                full_key = full_key *% 0x100000001b3 +% (@as(u64, @intFromEnum(attr.name)) << 32) +% @intFromEnum(attr.value);
+            }
+        }
+        if (positional_selectors) full_key ^= positionalSignature(env, node);
 
         if (!has_id) {
             // L1: same-parent full sharing (siblings skip all matching)
@@ -1368,24 +1539,10 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                 continue;
             }
 
-            // L2: cross-parent sharing (fast_match blocks shared, dep re-evaluated)
+            // L2: cross-parent sharing (fast entries shared, dependents re-evaluated)
             if (cross_cache.get(cross_key)) |cached| {
-                element_collect.clearRetainingCapacity();
-                pseudo_before_collect.clearRetainingCapacity();
-                pseudo_after_collect.clearRetainingCapacity();
-
-                for (cached.fast_element_blocks) |bi| {
-                    try ctx.appendDeclBlock(node, bi.block, bi.importance);
-                    try element_collect.append(allocator, bi);
-                }
-                for (cached.fast_pseudo_before) |bi| {
-                    try ctx.appendPseudoDeclBlock(node, .before, bi.block, bi.importance);
-                    try pseudo_before_collect.append(allocator, bi);
-                }
-                for (cached.fast_pseudo_after) |bi| {
-                    try ctx.appendPseudoDeclBlock(node, .after, bi.block, bi.importance);
-                    try pseudo_after_collect.append(allocator, bi);
-                }
+                hit_merged.clearRetainingCapacity();
+                try hit_merged.appendSlice(allocator, cached.fast_entries);
                 for (cached.dependent_candidates) |entry| {
                     dep_match_count += 1;
                     const matched = blk: {
@@ -1412,26 +1569,33 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                         dep_match_elem += 1;
                         break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
                     };
-                    if (matched) {
-                        const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
-                        switch (entry.pseudo) {
-                            .none => {
-                                try ctx.appendDeclBlock(node, entry.block, entry.importance);
-                                try element_collect.append(allocator, bi);
-                            },
-                            .before => {
-                                try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance);
-                                try pseudo_before_collect.append(allocator, bi);
-                            },
-                            .after => {
-                                try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
-                                try pseudo_after_collect.append(allocator, bi);
-                            },
-                            .unrecognized => {},
-                        }
+                    if (matched) try hit_merged.append(allocator, entry);
+                }
+                // Same first-wins order as the full-miss path.
+                std.mem.sortUnstable(SelectorEntry, hit_merged.items, {}, entryLessThan);
+
+                element_collect.clearRetainingCapacity();
+                pseudo_before_collect.clearRetainingCapacity();
+                pseudo_after_collect.clearRetainingCapacity();
+                for (hit_merged.items) |entry| {
+                    const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
+                    switch (entry.pseudo) {
+                        .none => {
+                            try ctx.appendDeclBlock(node, entry.block, entry.importance);
+                            try element_collect.append(allocator, bi);
+                        },
+                        .before => {
+                            try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance);
+                            try pseudo_before_collect.append(allocator, bi);
+                        },
+                        .after => {
+                            try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
+                            try pseudo_after_collect.append(allocator, bi);
+                        },
+                        .unrecognized => {},
                     }
                 }
-                // Populate L1 for this (tag, classes, parent) combo
+                // Populate L1 for this (tag, classes, attributes, position, parent) combo
                 const duped_elem = try allocator.dupe(RunContext.BlockImportance, element_collect.items);
                 const duped_before = try allocator.dupe(RunContext.BlockImportance, pseudo_before_collect.items);
                 const duped_after = try allocator.dupe(RunContext.BlockImportance, pseudo_after_collect.items);
@@ -1475,9 +1639,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         element_collect.clearRetainingCapacity();
         pseudo_before_collect.clearRetainingCapacity();
         pseudo_after_collect.clearRetainingCapacity();
-        fast_element_collect.clearRetainingCapacity();
-        fast_pseudo_before_collect.clearRetainingCapacity();
-        fast_pseudo_after_collect.clearRetainingCapacity();
+        fast_entries_collect.clearRetainingCapacity();
         dependent_collect.clearRetainingCapacity();
 
         for (merged.items) |entry| {
@@ -1499,16 +1661,11 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             // Classify for cross_cache:
             // - fast_match / element_only matched → shared blocks (no re-eval on L2 hit)
             // - ancestor-dependent → dependent_candidates (re-eval per L2 hit)
-            if (entry.fast_match or isElementOnly(data, entry.selector)) {
-                if (matched) {
-                    const bi = RunContext.BlockImportance{ .block = entry.block, .importance = entry.importance };
-                    switch (entry.pseudo) {
-                        .none => try fast_element_collect.append(allocator, bi),
-                        .before => try fast_pseudo_before_collect.append(allocator, bi),
-                        .after => try fast_pseudo_after_collect.append(allocator, bi),
-                        .unrecognized => {},
-                    }
-                }
+            // An element-only selector is shareable across the L2 key (tag +
+            // classes) only if nothing in it can tell two such elements apart
+            // — attributes and the structural/state pseudo-classes can.
+            if (entry.fast_match or (isElementOnly(data, entry.selector) and rightmostCompoundIsSelfInvariant(data, entry.selector))) {
+                if (matched) try fast_entries_collect.append(allocator, entry);
             } else {
                 try dependent_collect.append(allocator, entry);
             }
@@ -1544,14 +1701,10 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             });
             // Populate L2 (cross cache) if first encounter of this (tag, classes)
             if (!cross_cache.contains(cross_key)) {
-                const duped_fast_elem = try allocator.dupe(RunContext.BlockImportance, fast_element_collect.items);
-                const duped_fast_before = try allocator.dupe(RunContext.BlockImportance, fast_pseudo_before_collect.items);
-                const duped_fast_after = try allocator.dupe(RunContext.BlockImportance, fast_pseudo_after_collect.items);
+                const duped_fast = try allocator.dupe(SelectorEntry, fast_entries_collect.items);
                 const duped_dep = try allocator.dupe(SelectorEntry, dependent_collect.items);
                 try cross_cache.put(allocator, cross_key, .{
-                    .fast_element_blocks = duped_fast_elem,
-                    .fast_pseudo_before = duped_fast_before,
-                    .fast_pseudo_after = duped_fast_after,
+                    .fast_entries = duped_fast,
                     .dependent_candidates = duped_dep,
                 });
             }
@@ -1591,6 +1744,51 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }
     }
+}
+
+test "sibling-dependent selectors are not shared between look-alike siblings" {
+    const allocator = std.testing.allocator;
+
+    // Four identical <p> siblings — the style-sharing caches' favourite case.
+    const doc_source = try zss.syntax.SourceCode.init(
+        \\root {
+        \\  p {}
+        \\  p {}
+        \\  p {}
+        \\  p {}
+        \\}
+    );
+    var document = try zss.zml.parseAndCreateDocument(allocator, doc_source);
+    defer document.deinit(allocator);
+    const env = &document.env;
+
+    const css = try zss.syntax.SourceCode.init(
+        \\p { z-index: 0; }
+        \\p:last-child { z-index: 1; }
+        \\p:nth-child(odd) { z-index: 2; }
+    );
+    var stylesheet = try zss.Stylesheet.parseAndCreate(allocator, css, env);
+    defer stylesheet.deinit(allocator);
+
+    const cascade_list: List = .{ .author = &.{&.{ .leaf = &stylesheet.cascade_source }} };
+    try run(&cascade_list, env, allocator);
+
+    const expected = [_]i32{ 2, 0, 2, 1 };
+    var actual: [4]i32 = undefined;
+    var child = document.rootNode().?.firstChild(&document);
+    var i: usize = 0;
+    while (child) |node| : (child = node.nextSibling(&document)) {
+        const zss_node = node.toZssNode(&document);
+        const storage = env.cascade_db.getStorage(zss_node) orelse return error.TestFailure;
+        const z = storage.getPtr(.z_index) orelse return error.TestFailure;
+        actual[i] = z.z_index.declared.integer;
+        i += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), i);
+    // Before the fix the L1/L2 sharing caches handed every look-alike sibling
+    // the first one's verdict ([2, 2, 2, 2]), then applied the shared `p {}`
+    // block ahead of the re-evaluated dependents ([2, 0, 0, 0]).
+    try std.testing.expectEqualSlices(i32, &expected, &actual);
 }
 
 test "document-level pre-filter keeps selectors containing type selectors" {

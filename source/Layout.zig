@@ -101,6 +101,9 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         try layout.computer.ensureCapacity(.box_gen, allocator, layout.inputs.env.node_count);
         errdefer layout.computer.deinitStage(.box_gen, allocator);
         try layout.box_gen.run();
+        if (layout.inputs.env.root_node) |root| {
+            try layout.computer.completeTable(.box_gen, root.group);
+        }
     }
 
     // The per-element computed values are part of the result of layout: the
@@ -119,7 +122,7 @@ test "layout retains per-element computed styles" {
     // (never visited: no entry).
     const source_code = try zss.syntax.SourceCode.init(
         \\@name(root) * (display: block; font-size: 20px; color: rgb(255, 0, 0)) {
-        \\  @name(child) * (display: block; font-size: 2em) {
+        \\  @name(child) * (display: block; font-size: 2em; padding-left: 1em) {
         \\    @name(hidden) * (display: none; color: rgb(0, 0, 255)) {
         \\      @name(inner) * (display: block) {}
         \\    }
@@ -164,7 +167,17 @@ test "layout retains per-element computed styles" {
     try std.testing.expectEqual(40.0, hidden.font.?.font_size.px_val());
     try std.testing.expect(!std.meta.eql(root.color.?.color, hidden.color.?.color));
 
-    try std.testing.expectEqual(null, styles.get(node.get(&document, "inner")));
+    // Descendants of display:none are filled in after box generation: the
+    // inner element inherits the hidden element's color and the 40px font.
+    const inner = styles.get(node.get(&document, "inner")) orelse return error.TestFailure;
+    try std.testing.expectEqual(zss.values.types.Display.block, inner.box_style.?.display);
+    try std.testing.expectEqual(40.0, inner.font.?.font_size.px_val());
+    try std.testing.expectEqual(hidden.color.?.color, inner.color.?.color);
+
+    // Every committed element carries the layout-side groups too, with em
+    // resolved against its own font-size: child has padding-left: 1em = 40px.
+    try std.testing.expectEqual(40.0, child.horizontal_edges.?.padding_left.px);
+    try std.testing.expect(root.content_width.?.width == .auto);
 }
 
 pub fn currentNode(layout: Layout) ?NodeId {

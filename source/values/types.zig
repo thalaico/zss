@@ -129,6 +129,9 @@ pub const FlexDirection = enum {
 };
 
 pub const JustifyContent = enum {
+    /// The initial value (CSS-ALIGN-3 §5.1); behaves as `flex-start` in a
+    /// flex container (`stretch` → `flex-start` fallback, Flexbox §8).
+    normal,
     flex_start,
     flex_end,
     center,
@@ -137,6 +140,9 @@ pub const JustifyContent = enum {
 };
 
 pub const AlignItems = enum {
+    /// The initial value (CSS-ALIGN-3 §6.1); behaves as `stretch` in a flex
+    /// container.
+    normal,
     stretch,
     flex_start,
     flex_end,
@@ -529,7 +535,52 @@ pub const TextTransform = enum {
     capitalize,
 };
 
+/// CSS-UI-3 §8.1 `cursor` keywords (the `url()` form is not supported;
+/// a declaration using it fails to parse and is dropped).
+pub const Cursor = enum {
+    auto,
+    default,
+    none,
+    context_menu,
+    help,
+    pointer,
+    progress,
+    wait,
+    cell,
+    crosshair,
+    text,
+    vertical_text,
+    alias,
+    copy,
+    move,
+    no_drop,
+    not_allowed,
+    grab,
+    grabbing,
+    e_resize,
+    n_resize,
+    ne_resize,
+    nw_resize,
+    s_resize,
+    se_resize,
+    sw_resize,
+    w_resize,
+    ew_resize,
+    ns_resize,
+    nesw_resize,
+    nwse_resize,
+    col_resize,
+    row_resize,
+    all_scroll,
+    zoom_in,
+    zoom_out,
+};
+
 pub const TextAlign = enum {
+    /// The initial value (CSS-TEXT-3 §7.1): the line-start side — `left`
+    /// in the only direction zss lays out (ltr).
+    start,
+    end,
     left,
     right,
     center,

@@ -150,21 +150,27 @@ pub fn takeStage(sc: *StyleComputer, comptime stage: Stage) ComputedStyles {
     return .{ .nodes = nodes };
 }
 
-/// Stage the inherited/cosmetic groups of the current element (font with its
-/// font-size resolved to px, color, borders, background, opacity) without
-/// committing. Mirrors what the flow/inline paths stage before they commit a
-/// box, for elements that generate no box but still have computed values.
+/// Stage whichever of the inherited/cosmetic groups of the current element
+/// (font with its font-size resolved to px, color, borders, background,
+/// opacity) are not staged yet, without committing. Mirrors what the
+/// flow/inline paths stage before they commit a box, for elements that
+/// generate no box but still have computed values. Groups a layout path
+/// already staged are left alone — absolute leaf blocks, for instance, commit
+/// their cosmetic groups without ever committing `box_style`.
 pub fn stageCosmeticValues(sc: *StyleComputer, comptime stage: Stage) void {
-    var font = sc.getSpecifiedValue(stage, .font);
-    font.font_size = .{ .px = sc.resolvedFontSizePx(stage) };
-    sc.setComputedValue(stage, .font, font);
-    sc.setComputedValue(stage, .color, sc.getSpecifiedValue(stage, .color));
-    sc.setComputedValue(stage, .border_colors, sc.getSpecifiedValue(stage, .border_colors));
-    sc.setComputedValue(stage, .border_radii, sc.getSpecifiedValue(stage, .border_radii));
-    sc.setComputedValue(stage, .background_color, sc.getSpecifiedValue(stage, .background_color));
-    sc.setComputedValue(stage, .background_clip, sc.getSpecifiedValue(stage, .background_clip));
-    sc.setComputedValue(stage, .background, sc.getSpecifiedValue(stage, .background));
-    sc.setComputedValue(stage, .opacity, sc.getSpecifiedValue(stage, .opacity));
+    const cur = &sc.stagePtr(stage).current_computed;
+    if (cur.font == null) {
+        var font = sc.getSpecifiedValue(stage, .font);
+        font.font_size = .{ .px = sc.resolvedFontSizePx(stage) };
+        cur.font = font;
+    }
+    if (cur.color == null) cur.color = sc.getSpecifiedValue(stage, .color);
+    if (cur.border_colors == null) cur.border_colors = sc.getSpecifiedValue(stage, .border_colors);
+    if (cur.border_radii == null) cur.border_radii = sc.getSpecifiedValue(stage, .border_radii);
+    if (cur.background_color == null) cur.background_color = sc.getSpecifiedValue(stage, .background_color);
+    if (cur.background_clip == null) cur.background_clip = sc.getSpecifiedValue(stage, .background_clip);
+    if (cur.background == null) cur.background = sc.getSpecifiedValue(stage, .background);
+    if (cur.opacity == null) cur.opacity = sc.getSpecifiedValue(stage, .opacity);
 }
 
 pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !void {
@@ -201,6 +207,86 @@ pub fn setPseudoElement(sc: *StyleComputer, comptime stage: Stage, node: NodeId,
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
     const s = sc.stagePtr(stage);
     s.nodes[s.current_index] = s.current_computed;
+}
+
+/// Fill in the groups layout itself never stages (it reads their specified
+/// values on the fly), so the retained table holds the full computed value
+/// set for the current element. Computed values of lengths have `em`
+/// resolved against the element's own font-size (CSS-VALUES-4 §6.1.2);
+/// percentages and `auto` stay as declared (CSS-CASCADE-4 §4.4). Runs after
+/// box generation — layout stages some of these groups itself (inline boxes
+/// set `horizontal_edges` after their first commit), and `setComputedValue`
+/// requires each group to be set once.
+fn completeComputedValues(sc: *StyleComputer, comptime stage: Stage) void {
+    const cur = &sc.stagePtr(stage).current_computed;
+    const font_px = sc.resolvedFontSizePx(stage);
+
+    if (cur.content_width == null) {
+        var v = sc.getSpecifiedValue(stage, .content_width);
+        v.width = v.width.resolveEm(font_px);
+        v.min_width = v.min_width.resolveEm(font_px);
+        v.max_width = v.max_width.resolveEm(font_px);
+        cur.content_width = v;
+    }
+    if (cur.content_height == null) {
+        var v = sc.getSpecifiedValue(stage, .content_height);
+        v.height = v.height.resolveEm(font_px);
+        v.min_height = v.min_height.resolveEm(font_px);
+        v.max_height = v.max_height.resolveEm(font_px);
+        cur.content_height = v;
+    }
+    if (cur.horizontal_edges == null) {
+        var v = sc.getSpecifiedValue(stage, .horizontal_edges);
+        v.padding_left = v.padding_left.resolveEm(font_px);
+        v.padding_right = v.padding_right.resolveEm(font_px);
+        v.margin_left = v.margin_left.resolveEm(font_px);
+        v.margin_right = v.margin_right.resolveEm(font_px);
+        cur.horizontal_edges = v;
+    }
+    if (cur.vertical_edges == null) {
+        var v = sc.getSpecifiedValue(stage, .vertical_edges);
+        v.padding_top = v.padding_top.resolveEm(font_px);
+        v.padding_bottom = v.padding_bottom.resolveEm(font_px);
+        v.margin_top = v.margin_top.resolveEm(font_px);
+        v.margin_bottom = v.margin_bottom.resolveEm(font_px);
+        cur.vertical_edges = v;
+    }
+    if (cur.insets == null) {
+        var v = sc.getSpecifiedValue(stage, .insets);
+        v.left = v.left.resolveEm(font_px);
+        v.right = v.right.resolveEm(font_px);
+        v.top = v.top.resolveEm(font_px);
+        v.bottom = v.bottom.resolveEm(font_px);
+        cur.insets = v;
+    }
+    if (cur.z_index == null) cur.z_index = sc.getSpecifiedValue(stage, .z_index);
+    if (cur.border_styles == null) cur.border_styles = sc.getSpecifiedValue(stage, .border_styles);
+}
+
+/// Finish the per-element table after box generation (CSS-CASCADE-4 §4.4:
+/// every element has computed values for every property, whether or not it
+/// generates a box):
+/// - elements box generation never visited — the descendants of
+///   `display: none` elements — get their box style and cosmetic groups;
+/// - every element gets the groups layout reads on the fly without staging
+///   (sizes, edges, insets, z-index, border styles).
+/// Inheritance resolves through `InheritedValue`, which computes a missing
+/// parent on the fly, so node order does not matter.
+pub fn completeTable(sc: *StyleComputer, comptime stage: Stage, group: Environment.NodeGroup) !void {
+    const s = sc.stagePtr(stage);
+    for (0..s.nodes.len) |index| {
+        const node: NodeId = .{ .group = group, .value = index };
+        if (sc.env.getNodeProperty(.category, node) != .element) continue;
+        try sc.setCurrentNode(stage, node);
+        if (s.current_computed.box_style == null) {
+            const specified = sc.getSpecifiedValue(stage, .box_style);
+            const computed, _ = solve.boxStyle(specified, .not_root, false);
+            sc.setComputedValue(stage, .box_style, computed);
+            sc.stageCosmeticValues(stage);
+        }
+        sc.completeComputedValues(stage);
+        sc.commitNode(stage);
+    }
 }
 
 pub fn getText(sc: StyleComputer) []const u8 {

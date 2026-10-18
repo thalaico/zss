@@ -731,6 +731,7 @@ pub fn flexDirection(ctx: *Context) ?types.FlexDirection {
 
 pub fn justifyContent(ctx: *Context) ?types.JustifyContent {
     return keyword(ctx, types.JustifyContent, &.{
+        .{ "normal", .normal },
         .{ "flex-start", .flex_start },
         .{ "flex-end", .flex_end },
         .{ "center", .center },
@@ -741,6 +742,7 @@ pub fn justifyContent(ctx: *Context) ?types.JustifyContent {
 
 pub fn alignItems(ctx: *Context) ?types.AlignItems {
     return keyword(ctx, types.AlignItems, &.{
+        .{ "normal", .normal },
         .{ "stretch", .stretch },
         .{ "flex-start", .flex_start },
         .{ "flex-end", .flex_end },
@@ -1081,6 +1083,8 @@ pub fn textTransform(ctx: *Context) ?types.TextTransform {
 
 pub fn textAlign(ctx: *Context) ?types.TextAlign {
     return keyword(ctx, types.TextAlign, &.{
+        .{ "start", .start },
+        .{ "end", .end },
         .{ "left", .left },
         .{ "right", .right },
         .{ "center", .center },
@@ -1103,6 +1107,21 @@ pub fn visibility(ctx: *Context) ?types.Visibility {
         .{ "hidden", .hidden },
         .{ "collapse", .collapse },
     });
+}
+
+/// CSS-UI-3 §8.1 `cursor` keywords. Keyword table built from the enum so the
+/// two cannot drift: `context_menu` <-> `context-menu`.
+pub fn cursor(ctx: *Context) ?types.Cursor {
+    const fields = @typeInfo(types.Cursor).@"enum".fields;
+    comptime var table: [fields.len]struct { []const u8, types.Cursor } = undefined;
+    inline for (fields, 0..) |f, i| {
+        comptime var name: [f.name.len]u8 = undefined;
+        inline for (f.name, 0..) |ch, j| name[j] = if (ch == '_') '-' else ch;
+        const final = name;
+        table[i] = .{ &final, @enumFromInt(f.value) };
+    }
+    const final_table = table;
+    return keyword(ctx, types.Cursor, &final_table);
 }
 
 /// Parse border-spacing: <length>. Returns layout units (4 units = 1px).

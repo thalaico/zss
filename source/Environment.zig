@@ -54,6 +54,10 @@ urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 /// Set to 0 to disable media query filtering (all @media blocks included).
 viewport_width_px: u32 = 0,
 viewport_height_px: u32 = 0,
+/// True once the host has set the viewport (a 0×0 viewport is then real —
+/// an iframe sized to nothing — not "unknown"). While false, every @media
+/// block is included.
+viewport_configured: bool = false,
 /// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
 /// Used by the CSS font-family parser to recognize custom font names.
 custom_font_names: []const []const u8 = &.{},
@@ -700,6 +704,18 @@ pub fn nodeGetAttributeValue(env: *const Environment, node: NodeId, name: Attrib
 /// Return true if the node has an attribute with the given name (any value).
 pub fn nodeHasAttribute(env: *const Environment, node: NodeId, name: AttributeName) bool {
     return env.nodeGetAttributeValue(node, name) != null;
+}
+
+/// The value of the node's attribute whose interned name matches the given
+/// (lowercase) string, without interning the name — for matchers that run on
+/// a `const Environment` (`:lang()`).
+pub fn nodeAttributeValueByName(env: *const Environment, node: NodeId, name_str: []const u8) ?AttributeValue {
+    const attrs = env.nodes_to_attributes.get(node) orelse return null;
+    for (attrs) |attr| {
+        var it = env.attribute_names.iterator(@intFromEnum(attr.name));
+        if (it.eql(name_str)) return attr.value;
+    }
+    return null;
 }
 
 /// Return true if the node has an attribute whose interned name matches the given string.

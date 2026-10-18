@@ -396,7 +396,7 @@ pub const InlineFormattingContext = struct {
     /// When empty, the IFC-level font_weight applies to all glyphs.
     font_runs: ArrayListUnmanaged(FontRun) = .{},
     text_decoration: values.types.TextDecoration = .none,
-    text_align: values.types.TextAlign = .left,
+    text_align: values.types.TextAlign = .start,
     line_height: math.Unit = 0, // 0 = normal (1.2 * font-size)
     ascender: math.Unit = undefined,
     /// This is a positive value.

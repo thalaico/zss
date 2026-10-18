@@ -984,6 +984,13 @@ pub fn visibility(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.visi
     return .{ .font = .{ .visibility = .{ .declared = value } } };
 }
 
+pub fn cursor(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.cursor) {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.cursor(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .cursor = .{ .declared = value } } };
+}
+
 /// Parse `border: <width> <style> <color>` shorthand.
 /// Any of the three values may be omitted; order doesn't matter.
 pub fn border(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.border) {
