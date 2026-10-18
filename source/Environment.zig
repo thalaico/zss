@@ -34,6 +34,10 @@ decls: Declarations,
 cascade_db: cascade.Database,
 
 document_tree_vtable: *const DocumentTreeVtable,
+/// Opaque per-document state for `document_tree_vtable` (e.g. the host's
+/// NodeId <-> DOM-node map). Set by the host after the Environment has its
+/// final address; zss never reads it except to pass `env` to the vtable.
+document_tree_context: ?*anyopaque = null,
 next_node_group: ?std.meta.Tag(NodeGroup),
 root_node: ?NodeId,
 node_properties: NodeProperties,
