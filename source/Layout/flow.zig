@@ -342,11 +342,21 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
     if (content_text) |text| {
         // String content: create an IFC with shaped text inside the block.
         const font = computer.getSpecifiedValue(.box_gen, .font);
+        // addPseudoElementText shapes with a resolved px size (FontSize.px_val
+        // panics on em). Pseudo-element text inherits the element's computed
+        // font size, so resolve a relative size through the normal em→px chain.
+        // A relative font-size here crashed layout on real pages
+        // (the-internet.herokuapp.com checkboxes/login: ::before content with
+        // a relative font-size).
+        const font_size_px = switch (font.font_size) {
+            .px => |v| v,
+            .em => computer.resolvedFontSizePx(.box_gen),
+        };
         try box_gen.stacks.mode.push(layout.allocator, .@"inline");
         _ = try @"inline".addPseudoElementText(box_gen, text, .{
             .font = font.font,
             .font_family = font.font_family,
-            .font_size = font.font_size,
+            .font_size = .{ .px = font_size_px },
             .font_weight = font.font_weight,
             .font_style = font.font_style,
             .text_transform = font.text_transform,
