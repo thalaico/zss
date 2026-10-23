@@ -47,6 +47,15 @@ nodes_to_ids: std.AutoHashMapUnmanaged(NodeId, IdName) = .empty,
 nodes_to_classes: std.AutoHashMapUnmanaged(NodeId, []const ClassName) = .empty,
 nodes_to_attributes: std.AutoHashMapUnmanaged(NodeId, []const NodeAttribute) = .empty,
 node_count: u32 = 0,
+/// ::before / ::after pseudo-element nodes (CSS Pseudo 4 §2.6) that
+/// generate a box, created after the cascade by `createPseudoNodes`. They
+/// live in their own node group with node values after the document's, so
+/// per-node tables index them like any node; zss owns their tree relations.
+/// Only box generation visits them (`boxFirstChild` / `boxNextSibling`):
+/// selectors and the document do not see them.
+pseudo_group: ?NodeGroup = null,
+pseudo_nodes: std.AutoHashMapUnmanaged(cascade.Database.PseudoKey, NodeId) = .empty,
+pseudo_links: std.AutoHashMapUnmanaged(usize, PseudoLink) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
@@ -160,6 +169,8 @@ pub fn deinit(env: *Environment) void {
     env.cascade_db.deinit(env.allocator);
 
     env.node_properties.deinit(env.allocator);
+    env.pseudo_nodes.deinit(env.allocator);
+    env.pseudo_links.deinit(env.allocator);
     env.ids_to_nodes.deinit(env.allocator);
     env.nodes_to_ids.deinit(env.allocator);
     // Free the class name slices stored in nodes_to_classes, then the map itself.
@@ -614,6 +625,120 @@ fn isFirstLegendChild(env: *const Environment, fieldset: NodeId, legend: NodeId)
     return false;
 }
 
+pub const PseudoLink = struct {
+    /// The originating element (for a pseudo-element node), or the
+    /// pseudo-element (for its content text node).
+    parent: NodeId,
+    child: ?NodeId,
+    kind: enum { before, after, text },
+};
+
+pub fn pseudoLink(env: *const Environment, node: NodeId) ?PseudoLink {
+    const group = env.pseudo_group orelse return null;
+    if (node.group != group) return null;
+    return env.pseudo_links.get(node.value);
+}
+
+/// Whether `node` is a ::before / ::after pseudo-element node.
+pub fn isPseudoElement(env: *const Environment, node: NodeId) bool {
+    const link = env.pseudoLink(node) orelse return false;
+    return link.kind != .text;
+}
+
+/// The first child of `node` in the box tree's view of the document: its
+/// ::before, then its children, then its ::after (CSS Pseudo 4 §2.6).
+pub fn boxFirstChild(env: *const Environment, node: NodeId) ?NodeId {
+    if (env.pseudoLink(node)) |link| return link.child;
+    if (env.pseudo_nodes.get(.{ .node = node, .pseudo = .before })) |before| return before;
+    return node.firstChild(env) orelse env.pseudo_nodes.get(.{ .node = node, .pseudo = .after });
+}
+
+/// The next sibling of `node` in the box tree's view of the document.
+pub fn boxNextSibling(env: *const Environment, node: NodeId) ?NodeId {
+    if (env.pseudoLink(node)) |link| return switch (link.kind) {
+        .before => link.parent.firstChild(env) orelse env.pseudo_nodes.get(.{ .node = link.parent, .pseudo = .after }),
+        .after, .text => null,
+    };
+    if (node.nextSibling(env)) |next| return next;
+    if (env.pseudo_nodes.count() == 0) return null;
+    const parent_node = node.parent(env) orelse return null;
+    return env.pseudo_nodes.get(.{ .node = parent_node, .pseudo = .after });
+}
+
+/// Create a node for each ::before / ::after whose cascaded `content`
+/// generates a box (not `normal` or `none`), with a text child holding
+/// the content string, and move its cascaded values to the node. Run after
+/// the cascade; idempotent across cascade runs.
+pub fn createPseudoNodes(env: *Environment) !void {
+    const allocator = env.allocator;
+    var keys: std.ArrayListUnmanaged(cascade.Database.PseudoKey) = .empty;
+    defer keys.deinit(allocator);
+    var texts: std.ArrayListUnmanaged(TextId) = .empty;
+    defer texts.deinit(allocator);
+    {
+        var it = env.cascade_db.pseudo_map.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.pseudo == .unrecognized) continue;
+            const declared = entry.value_ptr.getPtr(.generated_content) orelse continue;
+            const text: TextId = switch (declared.content) {
+                .declared => |content| switch (content) {
+                    .normal, .none => continue,
+                    .empty_string => .empty_string,
+                    .string => |id| id,
+                },
+                else => continue,
+            };
+            try keys.append(allocator, entry.key_ptr.*);
+            try texts.append(allocator, text);
+        }
+    }
+    if (keys.items.len == 0) return;
+    const group = env.pseudo_group orelse blk: {
+        const g = try env.addNodeGroup();
+        env.pseudo_group = g;
+        break :blk g;
+    };
+
+    var new_count: u32 = 0;
+    for (keys.items) |key| {
+        if (!env.pseudo_nodes.contains(key)) new_count += 2;
+    }
+    const total = env.node_count + new_count;
+    if (env.node_properties.nodes.len < total) {
+        const old = env.node_properties.nodes.len;
+        env.node_properties.nodes = try allocator.realloc(env.node_properties.nodes, total);
+        @memset(env.node_properties.nodes[old..], .{});
+    }
+    if (env.cascade_db.node_storage.len < total) {
+        const old = env.cascade_db.node_storage.len;
+        env.cascade_db.node_storage = try allocator.realloc(env.cascade_db.node_storage, total);
+        @memset(env.cascade_db.node_storage[old..], .{});
+    }
+
+    for (keys.items, texts.items) |key, text| {
+        const element: NodeId = env.pseudo_nodes.get(key) orelse blk: {
+            const element: NodeId = .{ .group = group, .value = env.node_count };
+            const text_node: NodeId = .{ .group = group, .value = env.node_count + 1 };
+            env.node_count += 2;
+            try env.pseudo_nodes.put(allocator, key, element);
+            try env.pseudo_links.put(allocator, element.value, .{
+                .parent = key.node,
+                .child = text_node,
+                .kind = if (key.pseudo == .before) .before else .after,
+            });
+            try env.pseudo_links.put(allocator, text_node.value, .{ .parent = element, .child = null, .kind = .text });
+            env.node_properties.nodes[@intCast(element.value)] = .{ .category = .element };
+            break :blk element;
+        };
+        const text_node = env.pseudo_links.get(element.value).?.child.?;
+        env.node_properties.nodes[@intCast(text_node.value)] = .{ .category = .text, .text = text };
+        const removed = env.cascade_db.pseudo_map.fetchRemove(key).?;
+        const slot = &env.cascade_db.node_storage[@intCast(element.value)];
+        slot.custom_properties.deinit(allocator);
+        slot.* = removed.value;
+    }
+}
+
 // TODO: Make this a normal struct
 pub const NodeId = packed struct {
     group: NodeGroup,
@@ -621,22 +746,27 @@ pub const NodeId = packed struct {
     // TODO: generational nodes?
 
     pub fn parent(node: NodeId, env: *const Environment) ?NodeId {
+        if (env.pseudoLink(node)) |link| return link.parent;
         return env.document_tree_vtable.nodeRelative(env, node, .parent);
     }
 
     pub fn previousSibling(node: NodeId, env: *const Environment) ?NodeId {
+        if (env.pseudoLink(node) != null) return null;
         return env.document_tree_vtable.nodeRelative(env, node, .previous_sibling);
     }
 
     pub fn nextSibling(node: NodeId, env: *const Environment) ?NodeId {
+        if (env.pseudoLink(node) != null) return null;
         return env.document_tree_vtable.nodeRelative(env, node, .next_sibling);
     }
 
     pub fn firstChild(node: NodeId, env: *const Environment) ?NodeId {
+        if (env.pseudoLink(node)) |link| return link.child;
         return env.document_tree_vtable.nodeRelative(env, node, .first_child);
     }
 
     pub fn lastChild(node: NodeId, env: *const Environment) ?NodeId {
+        if (env.pseudoLink(node)) |link| return link.child;
         return env.document_tree_vtable.nodeRelative(env, node, .last_child);
     }
 };

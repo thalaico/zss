@@ -234,10 +234,13 @@ pub fn currentNode(layout: Layout) ?NodeId {
     return layout.node_stack.top.?;
 }
 
+/// Box generation walks the document with ::before / ::after as the first
+/// and last children of their element (`Environment.boxFirstChild`).
 pub fn pushNode(layout: *Layout) !void {
+    const env = layout.inputs.env;
     const node = &layout.node_stack.top.?;
-    const child = node.*.?.firstChild(layout.inputs.env);
-    node.* = node.*.?.nextSibling(layout.inputs.env);
+    const child = env.boxFirstChild(node.*.?);
+    node.* = env.boxNextSibling(node.*.?);
     try layout.node_stack.push(layout.allocator, child);
 }
 
@@ -247,5 +250,5 @@ pub fn popNode(layout: *Layout) void {
 
 pub fn advanceNode(layout: *Layout) void {
     const node = &layout.node_stack.top.?;
-    node.* = node.*.?.nextSibling(layout.inputs.env);
+    node.* = layout.inputs.env.boxNextSibling(node.*.?);
 }

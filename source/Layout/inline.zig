@@ -66,54 +66,6 @@ pub const Result = struct {
     min_width: Unit,
 };
 
-/// Create an IFC with shaped text for a pseudo-element's content property.
-/// Handles the full lifecycle: beginMode -> shape text -> endMode.
-/// Caller must push .@"inline" onto box_gen.stacks.mode before calling,
-/// and pop it after this returns.
-pub fn addPseudoElementText(box_gen: *BoxGen, text: []const u8, font_props: FontProps) !Result {
-    const layout = box_gen.getLayout();
-    // Create IFC with root inline box
-    try beginMode(box_gen, .normal, box_gen.containingBlockSize());
-
-    const ifc = box_gen.inline_context.ifc.top.?.ptr;
-
-    // Configure font for the IFC from the pseudo-element's inherited font cascade
-    const handle: Fonts.Handle = switch (font_props.font) {
-        .default => layout.inputs.fonts.queryFamily(font_props.font_family),
-        .none => .invalid,
-    };
-    box_gen.inline_context.setFont(handle);
-    ifc.font_family = font_props.font_family;
-    ifc.font_size = font_props.font_size.px_val();
-
-    // Shape text with HarfBuzz, with the family's face for the run's weight/style
-    layout.inputs.fonts.setFontSizeVariant(handle, font_props.font_weight, font_props.font_style, font_props.font_size.px_val());
-    if (layout.inputs.fonts.getVariant(handle, font_props.font_weight, font_props.font_style)) |hb_font| {
-        const glyph_start: u32 = @intCast(ifc.glyphs.len);
-        const transformed = switch (font_props.text_transform) {
-            .none => text,
-            .uppercase => try transformCase(layout.allocator, text, .upper),
-            .lowercase => try transformCase(layout.allocator, text, .lower),
-            .capitalize => try transformCase(layout.allocator, text, .capitalize),
-        };
-        try ifcAddText(layout.box_tree, ifc, transformed, hb_font);
-        const glyph_end: u32 = @intCast(ifc.glyphs.len);
-        if (glyph_end > glyph_start) {
-            try ifc.font_runs.append(layout.allocator, .{
-                .glyph_start = glyph_start,
-                .glyph_end = glyph_end,
-                .font_weight = font_props.font_weight,
-                .font_style = font_props.font_style,
-                .text_transform = font_props.text_transform,
-                .font_size = font_props.font_size.px_val(),
-            });
-        }
-    }
-
-    // Solve metrics, split into line boxes, finalize IFC
-    return try endMode(box_gen);
-}
-
 pub const FontProps = struct {
     font: zss.values.types.Font,
     font_family: zss.values.types.FontFamily,
@@ -161,14 +113,6 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
                 _, const used_color = solve.colorProperty(color_specified);
                 ifc.font_color = used_color;
             }
-        }
-    }
-
-    // Inject deferred inline ::before from parent block into this IFC.
-    if (box_gen.stacks.block_info.top) |*block_info| {
-        if (block_info.inline_before_state == .deferred) {
-            try insertInlinePseudoElement(box_gen, block_info.node, .before);
-            block_info.inline_before_state = .consumed;
         }
     }
 }
@@ -455,7 +399,6 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     ctx.ifc.top.?.has_visible_content = true;
                 }
             }
-            try insertInlinePseudoElement(box_gen, node, .before);
             try layout.pushNode();
         },
         .block => |block_inner| switch (block_inner) {
@@ -556,22 +499,7 @@ pub fn blockElement(box_gen: *BoxGen) !Result {
 pub fn nullNode(box_gen: *BoxGen) !?Result {
     const ctx = &box_gen.inline_context;
     const ifc = ctx.ifc.top.?;
-    if (ifc.depth == 1) {
-        // Inject deferred inline ::after from parent block into this IFC
-        // before it closes. This is the last IFC for this block.
-        if (box_gen.stacks.block_info.top) |*block_info| {
-            if (block_info.inline_after_state == .deferred) {
-                try insertInlinePseudoElement(box_gen, block_info.node, .after);
-                block_info.inline_after_state = .consumed;
-            }
-        }
-        return try endMode(box_gen);
-    }
-    // Emit ::after before closing this inline box.
-    const inline_box_index = ctx.inline_box.top.?.index;
-    if (ifc.ptr.slice().items(.node)[inline_box_index]) |node| {
-        try insertInlinePseudoElement(box_gen, node, .after);
-    }
+    if (ifc.depth == 1) return try endMode(box_gen);
     const skip = try popInlineBox(box_gen);
     box_gen.getLayout().popNode();
     ctx.accumulateSkip(skip);
@@ -622,66 +550,6 @@ fn popInlineBox(box_gen: *BoxGen) !Ifc.Size {
     ifc.ptr.slice().items(.skip)[inline_box.index] = inline_box.skip;
     try ifcAddBoxEnd(box_gen.getLayout().box_tree, ifc.ptr, inline_box.index);
     return inline_box.skip;
-}
-
-/// Inject a pseudo-element's string content as glyphs directly into the current IFC.
-/// Used for ::before/::after on inline elements (as opposed to block elements,
-/// which use insertPseudoElement in flow.zig to create a new block+IFC pair).
-fn insertInlinePseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoElement) !void {
-    const layout = box_gen.getLayout();
-    const computer = &layout.computer;
-    const saved_current = computer.current;
-    defer computer.current = saved_current;
-
-    // Capture parent font and resolved font-size using the explicit element node.
-    // sc.current.node may be a text node (e.g. ::after called from nullNode), so we
-    // must NOT use getSpecifiedValue() which reads sc.current.node and asserts element.
-    const parent_font = computer.getSpecifiedValueForNode(.box_gen, .font, node);
-    const font_size_px = computer.resolvedFontSizePxForNode(.box_gen, node);
-
-    if (!computer.setPseudoElement(.box_gen, node, pseudo)) {
-        return;
-    }
-
-    const gen_content = computer.getSpecifiedValue(.box_gen, .generated_content);
-    if (gen_content.content == .normal or gen_content.content == .none) {
-        return;
-    }
-
-    const text: []const u8 = switch (gen_content.content) {
-        .string => |text_id| blk: {
-            const t = layout.inputs.env.getText(text_id);
-            if (t.len == 0) return;
-            break :blk t;
-        },
-        else => return,
-    };
-
-    const ctx = &box_gen.inline_context;
-    const ifc = ctx.ifc.top.?.ptr;
-
-    const handle: Fonts.Handle = switch (parent_font.font) {
-        .default => layout.inputs.fonts.queryFamily(parent_font.font_family),
-        .none => .invalid,
-    };
-
-    layout.inputs.fonts.setFontSizeVariant(handle, parent_font.font_weight, parent_font.font_style, font_size_px);
-    if (layout.inputs.fonts.getVariant(handle, parent_font.font_weight, parent_font.font_style)) |hb_font| {
-        const glyph_start: u32 = @intCast(ifc.glyphs.len);
-        try ifcAddText(layout.box_tree, ifc, text, hb_font);
-        const glyph_end: u32 = @intCast(ifc.glyphs.len);
-        if (glyph_end > glyph_start) {
-            try ifc.font_runs.append(layout.allocator, .{
-                .glyph_start = glyph_start,
-                .glyph_end = glyph_end,
-                .font_weight = parent_font.font_weight,
-                .font_style = parent_font.font_style,
-                .text_transform = parent_font.text_transform,
-                .font_size = font_size_px,
-            });
-            ctx.ifc.top.?.has_visible_content = true;
-        }
-    }
 }
 
 fn ifcAddBoxStart(box_tree: BoxTreeManaged, ifc: *Ifc, inline_box_index: Ifc.Size) !void {

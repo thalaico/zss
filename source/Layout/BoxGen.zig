@@ -337,7 +337,13 @@ fn analyzeNode(layout: *Layout, comptime is_root: IsRoot, parent_blockifies: boo
             return .{ node, .text };
         },
         .element => {
-            const specified_box_style = layout.computer.getSpecifiedValue(.box_gen, .box_style);
+            var specified_box_style = layout.computer.getSpecifiedValue(.box_gen, .box_style);
+            // CSS Pseudo 4 §2.6: a ::before / ::after whose content computes
+            // to none generates no box.
+            if (layout.inputs.env.isPseudoElement(node)) switch (layout.computer.getSpecifiedValue(.box_gen, .generated_content).content) {
+                .normal, .none => specified_box_style.display = .none,
+                else => {},
+            };
             const computed_box_style, const used_box_style = solve.boxStyle(specified_box_style, is_root, parent_blockifies);
             layout.computer.setComputedValue(.box_gen, .box_style, computed_box_style);
             return .{ node, used_box_style };
@@ -660,10 +666,7 @@ pub const BlockInfo = struct {
     /// A float was generated in this BFC root's formatting context:
     /// `bfc.zig` lays the context out when the root is finished.
     bfc_has_floats: bool = false,
-    inline_before_state: InlinePseudoState = .not_deferred,
-    inline_after_state: InlinePseudoState = .not_deferred,
 
-    pub const InlinePseudoState = enum(u2) { not_deferred, deferred, consumed };
     pub const FlexJustify = enum { flex_start, center, flex_end, space_between };
     pub const FlexAlign = enum { stretch, center, flex_start, flex_end };
 };

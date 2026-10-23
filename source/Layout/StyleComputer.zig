@@ -196,21 +196,6 @@ pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !
     s.current_computed = s.nodes[index];
 }
 
-/// Set up the style computer to read cascaded values for a pseudo-element
-/// (::before or ::after) attached to the given node. Returns true if the
-/// pseudo-element has cascaded styles; false means no CSS rules matched.
-/// Unlike setCurrentNode, this does not allocate or cache computed values.
-pub fn setPseudoElement(sc: *StyleComputer, comptime stage: Stage, node: NodeId, pseudo: selectors.PseudoElement) bool {
-    const cascaded_values = sc.env.cascade_db.getPseudoStorage(node, pseudo) orelse return false;
-    sc.current = .{
-        .node = node,
-        .cascaded_values = cascaded_values,
-    };
-    // Fresh computed values for the pseudo-element (not stored in the per-node map).
-    sc.stagePtr(stage).current_computed = .{};
-    return true;
-}
-
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
     const s = sc.stagePtr(stage);
     s.nodes[s.current_index] = s.current_computed;
