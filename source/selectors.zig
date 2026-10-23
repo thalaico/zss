@@ -183,6 +183,82 @@ pub const PseudoClass = enum {
     ignored,
 };
 
+/// Bits naming the user-action pseudo-classes (Selectors 4 §13.2) a selector
+/// list depends on. A host that owns pointer/focus state uses this to skip
+/// restyling when the state changes but no rule can observe it.
+pub const UserActionMask = packed struct(u8) {
+    hover: bool = false,
+    active: bool = false,
+    focus: bool = false,
+    focus_within: bool = false,
+    focus_visible: bool = false,
+    _pad: u3 = 0,
+
+    pub const none: UserActionMask = .{};
+
+    pub fn merge(a: UserActionMask, b: UserActionMask) UserActionMask {
+        return @bitCast(@as(u8, @bitCast(a)) | @as(u8, @bitCast(b)));
+    }
+
+    pub fn any(m: UserActionMask) bool {
+        return @as(u8, @bitCast(m)) != 0;
+    }
+};
+
+/// The user-action pseudo-classes appearing anywhere in the complex selector
+/// at `complex_selector_index` — every compound, including :is()/:where()
+/// arguments and :not() negations (a `:hover > span` rule changes the span).
+pub fn complexSelectorUserActionMask(data: []const Data, complex_selector_index: Data.ListIndex) UserActionMask {
+    const first_compound: Data.ListIndex = complex_selector_index + 1;
+    var trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    var mask: UserActionMask = .none;
+    while (true) {
+        const start = data[trailing_idx].trailing.compound_selector_start;
+        mask = mask.merge(compoundUserActionMask(data, start, trailing_idx));
+        if (start <= first_compound) break;
+        trailing_idx = start - 1;
+    }
+    return mask;
+}
+
+fn compoundUserActionMask(data: []const Data, start: Data.ListIndex, end: Data.ListIndex) UserActionMask {
+    var mask: UserActionMask = .none;
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class, .not_pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                switch (pc) {
+                    .hover => mask.hover = true,
+                    .active => mask.active = true,
+                    .focus => mask.focus = true,
+                    .focus_within => mask.focus_within = true,
+                    .focus_visible => mask.focus_visible = true,
+                    else => {},
+                }
+                idx += pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where => |_, tag| {
+                idx += 1;
+                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    mask = mask.merge(complexSelectorUserActionMask(data, sel_idx));
+                    sel_idx = data[sel_idx].next_complex_selector;
+                }
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return mask;
+}
+
 /// Number of extra Data entries that follow a `pseudo_class_selector` of
 /// this kind (its argument).
 pub fn pseudoClassPayload(pseudo_class: PseudoClass) Data.ListIndex {

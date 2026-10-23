@@ -61,6 +61,19 @@ pub const Source = struct {
         block: Block,
     };
 
+    /// The user-action pseudo-classes any selector of this source observes
+    /// (see `selectors.UserActionMask`).
+    pub fn userActionMask(source: *const Source) selectors.UserActionMask {
+        var mask: selectors.UserActionMask = .none;
+        for (source.selectors_normal.items(.selector)) |sel| {
+            mask = mask.merge(selectors.complexSelectorUserActionMask(source.selector_data.items, sel));
+        }
+        for (source.selectors_important.items(.selector)) |sel| {
+            mask = mask.merge(selectors.complexSelectorUserActionMask(source.selector_data.items, sel));
+        }
+        return mask;
+    }
+
     pub fn deinit(source: *Source, allocator: Allocator) void {
         source.style_attrs_important.deinit(allocator);
         source.style_attrs_normal.deinit(allocator);
@@ -1865,6 +1878,31 @@ test "sibling-dependent selectors are not shared between look-alike siblings" {
     // the first one's verdict ([2, 2, 2, 2]), then applied the shared `p {}`
     // block ahead of the re-evaluated dependents ([2, 0, 0, 0]).
     try std.testing.expectEqualSlices(i32, &expected, &actual);
+}
+
+test "Source.userActionMask names the user-action pseudo-classes a sheet observes" {
+    const allocator = std.testing.allocator;
+    const doc_source = try zss.syntax.SourceCode.init("body { div {} }");
+    var document = try zss.zml.parseAndCreateDocument(allocator, doc_source);
+    defer document.deinit(allocator);
+    const env = &document.env;
+
+    const Case = struct { css: []const u8, mask: selectors.UserActionMask };
+    const cases = [_]Case{
+        .{ .css = "div { color: red; } a.x > span { color: blue; }", .mask = .none },
+        .{ .css = "a:hover { color: red; }", .mask = .{ .hover = true } },
+        // The pseudo-class on a non-rightmost compound still observes the state.
+        .{ .css = "li:hover > a { color: red; }", .mask = .{ .hover = true } },
+        .{ .css = "input:focus { color: red; } :is(.a, .b:active) span { color: blue; }", .mask = .{ .focus = true, .active = true } },
+        .{ .css = "div:not(:focus-within) { color: red; } p:focus-visible::before { content: 'x'; }", .mask = .{ .focus_within = true, .focus_visible = true } },
+        .{ .css = ":checked, :disabled { color: red; }", .mask = .none },
+    };
+    for (cases) |case| {
+        const css = try zss.syntax.SourceCode.init(case.css);
+        var stylesheet = try zss.Stylesheet.parseAndCreate(allocator, css, env);
+        defer stylesheet.deinit(allocator);
+        try std.testing.expectEqual(case.mask, stylesheet.cascade_source.userActionMask());
+    }
 }
 
 test "descendant and sibling combinators backtrack over candidates" {
