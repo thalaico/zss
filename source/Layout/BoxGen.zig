@@ -69,6 +69,9 @@ pub const GridContainerInfo = struct {
     areas: zss.values.types.GridAreas,
     child_area_hashes: [128]u32,
     child_count: u8,
+    /// `align-items` (CSS Box Alignment 3 §6.1; `normal` behaves as
+    /// `stretch` for non-replaced grid items).
+    align_items: BlockInfo.FlexAlign = .stretch,
 };
 
 pub const FlexContainerKey = struct {
@@ -927,6 +930,7 @@ pub fn popFlowBlock(
             .areas = block_info.grid_areas,
             .child_area_hashes = block_info.grid_child_area_hashes,
             .child_count = block_info.grid_child_count,
+            .align_items = block_info.flex_align,
         }) catch {};
         break :blk grid.layoutGridChildren(layout, subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
     } else if (block_info.table_role == .table)

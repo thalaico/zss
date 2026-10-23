@@ -18,6 +18,8 @@ const BlockInfo = BoxGen.BlockInfo;
 const solve = @import("./solve.zig");
 const @"inline" = @import("./inline.zig");
 const form_controls = @import("./form_controls.zig");
+const relayout = @import("./relayout.zig");
+const intrinsic = @import("./intrinsic.zig");
 
 const groups = zss.values.groups;
 const SpecifiedValues = groups.Tag.SpecifiedValues;
@@ -120,6 +122,12 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             if (inner_block == .grid) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_grid_container = true;
+                info.flex_align = switch (box_style_specified.align_items) {
+                    .center => .center,
+                    .flex_start => .flex_start,
+                    .flex_end => .flex_end,
+                    else => .stretch,
+                };
                 info.grid_column_gap = box_style_specified.column_gap;
                 info.grid_row_gap = box_style_specified.row_gap;
                 // Read grid template properties from cascade
@@ -1593,6 +1601,43 @@ pub fn offsetChildBlocksFlex(
         }
     }
 
+    // --- Phase 1b (§9.2 step 2, §9.4 step 11): cross sizes of column items ---
+    // A column item's height (its main size) depends on its width, so the
+    // width is settled first. An item that stretches (`align-self: stretch`
+    // with an auto width) fills the container's inner width minus its
+    // margins; any other auto-width item is sized fit-content (§9.2 step 3:
+    // min(max-content, available)); a definite width is kept. The content is
+    // laid out at that width before its main size is measured.
+    if (flex_is_column) {
+        for (0..child_count) |ci| {
+            const child_idx = children[ci];
+            if (block_types[child_idx] != .block) continue;
+            const stretch = switch (subtree.items(.align_self)[child_idx]) {
+                .auto => align_items == .stretch,
+                .stretch => true,
+                else => false,
+            };
+            // Flex item margins are used as specified (auto margins are
+            // resolved by alignment, §8.1), never over-constrained.
+            const flags = subtree.items(.intrinsic)[child_idx];
+            const margins = subtree.items(.specified_margins)[child_idx];
+            const bo = subtree.items(.box_offsets)[child_idx];
+            const available = @max(0, container_width - margins[0] - margins[1]);
+            const border_w = switch (flags.width) {
+                .auto => if (stretch and !flags.margin_start_auto and !flags.margin_end_auto)
+                    available
+                else
+                    @min(available, intrinsic.blockBorderBoxSizes(layout, subtree, subtree_id, child_idx).max),
+                .fixed => bo.border_size.w,
+                .percentage => relayout.usedInlineSize(subtree, child_idx, container_width).content_w + (bo.border_size.w - bo.content_size.w),
+            };
+            subtree.items(.margins)[child_idx].left = margins[0];
+            subtree.items(.margins)[child_idx].right = margins[1];
+            subtree.items(.box_offsets)[child_idx].border_pos.x = margins[0];
+            relayout.resizeItem(layout, subtree, subtree_id, child_idx, border_w);
+        }
+    }
+
     // --- Phase 2 (§9.2): Determine flex base size and hypothetical main size ---
     const flex_basis_values = subtree.items(.flex_basis_px);
     const flex_grows = subtree.items(.flex_grow);
@@ -1672,69 +1717,12 @@ pub fn offsetChildBlocksFlex(
     }
 
     // --- Phase 4: Apply resolved sizes to box tree ---
-    // Resize items to their resolved main size and re-layout IFC text content.
+    // Each item takes its resolved main size and its content is laid out
+    // again at that size (§9.4 step 7: the hypothetical cross size comes
+    // from laying the item out with its used main size).
     if (!flex_is_column) {
         for (0..child_count) |ci| {
-            const child_idx = children[ci];
-            const resolved_w = used_main_sizes[ci];
-            const bo = &subtree.items(.box_offsets)[child_idx];
-            const left_edge = bo.content_pos.x;
-
-            if (resolved_w != bo.border_size.w) {
-                const old_content_w = bo.content_size.w;
-                bo.border_size.w = resolved_w;
-                bo.content_size.w = @max(0, resolved_w - left_edge * 2);
-
-                // Re-layout IFC (text) containers at the new width
-                relayoutIfcAtWidth(layout, subtree, subtree_id, child_idx, bo.content_size.w, old_content_w);
-            }
-        }
-    }
-
-    // --- Phase 4b: Shrink items to content cross-size when not stretching ---
-    // Children in a flex column are initially laid out at container width
-    // (like ordinary block children), so their border_size.w equals the
-    // container cross-size. The cross-axis algorithm (§9.4) assumes items
-    // already have their final cross size so center/flex-start/flex-end
-    // offsets can be computed; with a stretched cross size there's nothing
-    // to center. When align-items != stretch, shrink each flex-column item
-    // to its max-content cross size so the later centering math produces
-    // a real offset. Measurement uses the same walk as §9.2's main-size
-    // auto measurement (`measureContentMainSize`) but along the cross axis
-    // — for flex-column, that's the HORIZONTAL content extent, i.e. the
-    // measurement you'd get by asking the item for its main-size with
-    // flex_is_column=false.
-    //
-    // Pages that authored `flex-direction: column; align-items: center`
-    // for hero sections (React.dev, most Tailwind landing pages) rely on
-    // this shrink-to-content to center their title + subtitle + CTA row.
-    // Without it, each item is 100% wide with left-aligned text — visually
-    // identical to no flex alignment at all.
-    if (flex_is_column) {
-        for (0..child_count) |ci| {
-            const child_idx = children[ci];
-            // Per §9.4, an item's cross size is its hypothetical (content)
-            // cross size unless `align-items: stretch` (or effective stretch
-            // via auto + container stretch) applies. align-self: auto
-            // inherits from align-items; any other value wins.
-            const self = subtree.items(.align_self)[child_idx];
-            const stretch_effective = switch (self) {
-                .auto => align_items == .stretch,
-                .stretch => true,
-                else => false,
-            };
-            if (stretch_effective) continue;
-            const bo = &subtree.items(.box_offsets)[child_idx];
-            const content_w_new = measureContentMainSize(layout, subtree, subtree_id, child_idx, false);
-            const left_edge = bo.content_pos.x;
-            const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
-            const border_w_new = @min(bo.border_size.w, content_w_new);
-            if (border_w_new != bo.border_size.w) {
-                const old_content_w = bo.content_size.w;
-                bo.border_size.w = border_w_new;
-                bo.content_size.w = @max(0, border_w_new - left_edge - right_edge);
-                relayoutIfcAtWidth(layout, subtree, subtree_id, child_idx, bo.content_size.w, old_content_w);
-            }
+            relayout.resizeItem(layout, subtree, subtree_id, children[ci], used_main_sizes[ci]);
         }
     }
 
@@ -1845,6 +1833,15 @@ pub fn offsetChildBlocksFlex(
                 .center => .center,
                 .baseline => .flex_start, // baseline unsupported; fall back
             };
+            // §9.4 step 11: a stretched item with an auto cross size and
+            // no auto cross margins takes the line's cross size minus its
+            // margins. (Column items were stretched in Phase 1b.)
+            if (!flex_is_column and effective_align == .stretch and block_types[child_idx] == .block and
+                subtree.items(.intrinsic)[child_idx].height_auto)
+            {
+                const edges = box_offsets.border_size.h - box_offsets.content_size.h;
+                relayout.setContentHeight(subtree, child_idx, @max(0, line_cross - cm[0] - cm[1] - edges));
+            }
             const cross_offset: Unit = cross_cursor + switch (effective_align) {
                 .flex_start => 0,
                 .flex_end => @max(0, line_cross - outer_cross_sz),
@@ -1883,89 +1880,18 @@ pub fn offsetChildBlocksFlex(
     return if (reverse_cross) total_cross else cross_cursor;
 }
 
-/// Measure an item's content main size by examining its children's extents.
-/// For IFC containers (text), measures actual glyph advance widths.
-/// For block containers, measures the maximum right edge of in-flow grandchildren.
-/// CSS Flexbox §9.2: Measure the max-content main size of a flex item.
-///
-/// For row-direction flex, this returns the intrinsic width — the minimum
-/// width needed to display all content with only forced line breaks.
-///
-/// Block children with auto width have border_size.w == container width
-/// (they expand to fill during flow layout), so we cannot use that value.
-/// Instead we recurse through the subtree, accumulating border+padding
-/// edges at each level, until we reach IFC leaf nodes whose glyph-advance
-/// sums give the true content width.
+/// CSS Flexbox §9.2 step 3: the main size of a flex item whose flex basis is
+/// `auto` (its `width` when definite, else its max-content size). Column
+/// items were already laid out at their cross size (Phase 1b), so their
+/// main size is their laid-out height.
 fn measureContentMainSize(layout: *zss.Layout, subtree: Subtree.View, subtree_id: Subtree.Id, child_idx: Subtree.Size, flex_is_column: bool) Unit {
+    if (flex_is_column) return subtree.items(.box_offsets)[child_idx].border_size.h;
     const box_tree = layout.box_tree.ptr;
-    if (flex_is_column) {
-        return subtree.items(.box_offsets)[child_idx].border_size.h;
-    }
-
-    const types_slice = subtree.items(.type);
-    const child_skip = subtree.items(.skip)[child_idx];
-    const child_end = child_idx + child_skip;
-
-    // IFC container: measure the widest line from glyph advances.
-    switch (types_slice[child_idx]) {
-        .ifc_container => |ifc_id| {
-            return measureIfcContentWidth(box_tree, ifc_id, subtree, child_idx);
-        },
-        else => {},
-    }
-
-    // Max-content width depends on this node's own layout direction:
-    //   - flex-row container: SUM of children's widths (CSS Flexbox §9.9.1).
-    //   - flex-column container or block flow: MAX of children's widths
-    //     (children stack vertically; the widest one determines the parent).
-    // The child's direction must come from its OWN flex info, not the
-    // enclosing flex container's — a column flex nested in a row flex still
-    // sizes its width as the MAX of its (vertically stacked) items.
-    var is_flex_row = false;
-    if (subtree.items(.inner_block)[child_idx] == .flex) {
-        const key = BoxGen.FlexContainerKey{ .subtree_id = subtree_id, .block_idx = child_idx };
-        const child_is_column = if (layout.box_gen.flex_containers.get(key)) |info| info.flex_is_column else false;
-        is_flex_row = !child_is_column;
-    }
-
-    var child_intrinsic: Unit = 0;
-    var has_children = false;
-    var child_count: usize = 0;
-    var gc = child_idx + 1;
-    while (gc < child_end) {
-        if (!subtree.items(.out_of_flow)[gc]) {
-            has_children = true;
-            const w = measureContentMainSize(layout, subtree, subtree_id, gc, false);
-            if (is_flex_row) {
-                child_intrinsic += w;
-                child_count += 1;
-            } else {
-                child_intrinsic = @max(child_intrinsic, w);
-            }
-        }
-        gc += subtree.items(.skip)[gc];
-    }
-
-    if (!has_children) {
-        return subtree.items(.box_offsets)[child_idx].border_size.w;
-    }
-
-    const bo = subtree.items(.box_offsets)[child_idx];
-    const left_edge = bo.content_pos.x;
-    const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
-    return left_edge + child_intrinsic + right_edge;
-}
-
-/// Measure IFC content width from glyph advances.
-fn measureIfcContentWidth(box_tree: *BoxTree, ifc_id: anytype, subtree: Subtree.View, child_idx: Subtree.Size) Unit {
-    const ifc = box_tree.getIfc(ifc_id);
-    if (ifc.glyphs.len == 0) return 0;
-
-    const inline_layout = @import("./inline.zig");
-    const max_content = inline_layout.computeMaxContentWidth(ifc, subtree);
-
-    const left_edge = subtree.items(.box_offsets)[child_idx].content_pos.x;
-    return max_content + left_edge * 2;
+    return switch (subtree.items(.type)[child_idx]) {
+        .block => intrinsic.blockBorderBoxSizes(layout, subtree, subtree_id, child_idx).max,
+        .ifc_container => |ifc_id| intrinsic.ifcSizes(layout, box_tree.getIfc(ifc_id), subtree, subtree_id).max,
+        .subtree_proxy => |id| intrinsic.blockBorderBoxSizes(layout, box_tree.getSubtree(id).view(), id, 0).max,
+    };
 }
 
 /// CSS Flexbox §9.7: Resolve Flexible Lengths.
@@ -2093,242 +2019,6 @@ fn resolveFlexibleLengths(
     }
 }
 
-/// Re-layout the flow-subtree rooted at a flex item at the new resolved flex
-/// width. Re-splits IFC containers and recurses into flow block children so
-/// their inner IFCs are also re-split; subsequent siblings are shifted down
-/// by the accumulated height delta from preceding siblings.
-///
-/// Gated on the item's own `inner_block` type:
-///   - `.flow`: do the full recursive walk — the item is a normal block and
-///     its children stack in flow order, so growing one shifts the rest.
-///   - `.flex` / `.grid`: DON'T descend into children. Those layout models
-///     have their own independent positioning that must not be disturbed by
-///     a flow-style walk. The item still gets its own IFC children (rare
-///     for grid/flex containers but possible with anonymous blocks) handled,
-///     but block children are left alone. This protects the 2026-04-14
-///     Wikipedia header regression where `.vector-header-container` is a
-///     flex container whose item `.mw-header` is a grid container — walking
-///     into the grid items as if they were flow blocks previously corrupted
-///     the header height (+109px on I-exact-wiki-rules).
-///
-/// The item's own height is grown by the accumulated delta (never shrunk)
-/// so cross-size Phase 5 can see the new extent, matching CSS
-/// "auto cross size = max-content of children" for the grow case while
-/// preserving any pre-existing height for the no-growth case.
-fn relayoutIfcAtWidth(
-    layout: *@import("../zss.zig").Layout,
-    subtree: Subtree.View,
-    subtree_id: Subtree.Id,
-    item_idx: Subtree.Size,
-    new_content_w: Unit,
-    /// Parent's content_size.w BEFORE the caller overwrote it with
-    /// `new_content_w`. Used to decide which descendants were filling and
-    /// to compute the shift delta for float:right children.
-    old_content_w: Unit,
-) void {
-    const inline_layout = @import("./inline.zig");
-    const types_slice = subtree.items(.type);
-    const inner_blocks = subtree.items(.inner_block);
-    const item_skip = subtree.items(.skip)[item_idx];
-    const item_end = item_idx + item_skip;
-
-    // Update this item's own width first. Keep border edges consistent with
-    // the new content width.
-    {
-        const item_bo = &subtree.items(.box_offsets)[item_idx];
-        const left_edge = item_bo.content_pos.x;
-        const right_edge = item_bo.border_size.w - item_bo.content_pos.x - item_bo.content_size.w;
-        item_bo.border_size.w = left_edge + new_content_w + right_edge;
-        item_bo.content_size.w = new_content_w;
-    }
-
-    // If this item is itself a grid or flex container, its children were
-    // positioned by those layout algorithms. We must NOT recurse into block
-    // children, and we must NOT shift their y positions. We still re-split
-    // any direct IFC containers at the new width (handles anonymous inline
-    // boxes that can appear under a grid container for whitespace), but
-    // we do not grow the item's height from the IFC delta either (the grid
-    // algorithm owns that).
-    const item_inner = inner_blocks[item_idx];
-    const is_flow = (item_inner == .flow);
-
-    if (!is_flow) {
-        // Legacy direct-children IFC walk for pure-IFC flex items, preserving
-        // the prior behavior that made A/B/C/D/F/G/H/I header-isolation tests
-        // pass. Only update IFC heights; don't touch anything else.
-        var total_ifc_height: Unit = 0;
-        var has_non_ifc_child = false;
-        var g = item_idx + 1;
-        while (g < item_end) {
-            if (!subtree.items(.out_of_flow)[g]) {
-                switch (types_slice[g]) {
-                    .ifc_container => |ifc_id| {
-                        const ifc = layout.box_tree.ptr.getIfc(ifc_id);
-                        ifc.line_boxes.clearRetainingCapacity();
-                        const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, null) catch {
-                            break;
-                        };
-                        const bo = &subtree.items(.box_offsets)[g];
-                        bo.border_size.w = new_content_w;
-                        bo.content_size.w = new_content_w;
-                        // CSS 2.1 §9.2.2.1: whitespace-only IFCs between block
-                        // siblings contribute zero. The same rule applied at
-                        // initial layout (inline.endMode) must apply here so
-                        // flex re-layout doesn't resurrect line-box height.
-                        const eff_h: Unit = if (ifc.has_visible_content) result.height else 0;
-                        bo.border_size.h = eff_h;
-                        bo.content_size.h = eff_h;
-                        total_ifc_height += eff_h;
-                    },
-                    else => has_non_ifc_child = true,
-                }
-            }
-            g += subtree.items(.skip)[g];
-        }
-        // Pure-IFC fallback (no block children): update item height.
-        if (total_ifc_height > 0 and !has_non_ifc_child) {
-            const item_bo = &subtree.items(.box_offsets)[item_idx];
-            const pad_top = item_bo.content_pos.y;
-            const pad_bot = item_bo.border_size.h - item_bo.content_pos.y - item_bo.content_size.h;
-            item_bo.content_size.h = total_ifc_height;
-            item_bo.border_size.h = pad_top + total_ifc_height + pad_bot;
-        }
-
-        // If this item is itself a flex container, re-run its flex layout at
-        // the new width so that IFC offset.x (justify-content centering) is
-        // computed at the shrunk width rather than the pre-shrink width.
-        // Without this, centered text inside an inline-flex child of a column
-        // flex container ends up far to the right of the container boundary.
-        if (item_inner == .flex) {
-            const flex_key = BoxGen.FlexContainerKey{ .subtree_id = subtree_id, .block_idx = item_idx };
-            if (layout.box_gen.flex_containers.getPtr(flex_key)) |info| {
-                const container_h = subtree.items(.box_offsets)[item_idx].content_size.h;
-                _ = offsetChildBlocksFlex(layout, subtree, subtree_id, item_idx, item_skip,
-                    new_content_w, container_h, info.justify, info.align_items,
-                    info.flex_gap, info.flex_is_column, info.flex_wrap);
-            }
-        }
-
-        return;
-    }
-
-    // is_flow == true: walk direct in-flow children, shift their y by any
-    // accumulated growth, re-split IFCs at the new width, recurse into
-    // nested flow blocks.
-    //
-    // Shift float:right direct children left by the parent's content-width
-    // delta. A float:right was placed at `(old_content_w - border_w - prior)`
-    // by offsetChildBlocks; after the parent shrinks by Δ = old - new, the
-    // correct position is `offset.x - Δ`. Float:left children don't move
-    // (positioned from x=0). Without this shift, float:right children sit
-    // outside the parent's new content area and render off-screen — most
-    // visibly Wikipedia's Rumen Radev portrait inside the In the news
-    // flex column. Only run when the parent actually shrank.
-    if (new_content_w < old_content_w) {
-        const delta = old_content_w - new_content_w;
-        const float_sides_slice = subtree.items(.float_side);
-        var fc = item_idx + 1;
-        while (fc < item_end) {
-            if (subtree.items(.out_of_flow)[fc]) {
-                fc += subtree.items(.skip)[fc];
-                continue;
-            }
-            if (float_sides_slice[fc] == .right) {
-                subtree.items(.offset)[fc].x -= delta;
-                if (subtree.items(.offset)[fc].x < 0) {
-                    subtree.items(.offset)[fc].x = 0;
-                }
-            }
-            fc += subtree.items(.skip)[fc];
-        }
-    }
-
-    var accumulated_y_delta: Unit = 0;
-    var gc = item_idx + 1;
-    while (gc < item_end) {
-        if (subtree.items(.out_of_flow)[gc]) {
-            gc += subtree.items(.skip)[gc];
-            continue;
-        }
-        if (accumulated_y_delta != 0) {
-            subtree.items(.box_offsets)[gc].border_pos.y += accumulated_y_delta;
-        }
-        switch (types_slice[gc]) {
-            .ifc_container => |ifc_id| {
-                const old_h = subtree.items(.box_offsets)[gc].border_size.h;
-                const ifc = layout.box_tree.ptr.getIfc(ifc_id);
-                ifc.line_boxes.clearRetainingCapacity();
-                const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, new_content_w, ifc.persisted_parent_float_ctx) catch {
-                    break;
-                };
-                const bo = &subtree.items(.box_offsets)[gc];
-                bo.border_size.w = new_content_w;
-                bo.content_size.w = new_content_w;
-                const eff_h: Unit = if (ifc.has_visible_content) result.height else 0;
-                bo.border_size.h = eff_h;
-                bo.content_size.h = eff_h;
-                accumulated_y_delta += (eff_h - old_h);
-            },
-            .block => {
-                // Recurse into nested flow blocks ONLY if the child was
-                // filling its parent's content area (width:auto or 100%).
-                // Children with an explicit narrower width (width:100px,
-                // width:7.5rem, etc.) keep that width regardless of the
-                // flex item's resolved width — descending into them would
-                // stretch them to fill, which is exactly the bug this
-                // gates against (Wikipedia #mp-left/#mp-right children,
-                // .mp-thumb images, any author-sized child of a flex
-                // item).
-                //
-                // Detection — we want to distinguish:
-                //   width:auto, margin:0           → filling
-                //   width:100px, margin:0          → NOT filling
-                //   width:auto, margin: <left>     → filling (left margin
-                //     is part of layout, but outer still fills)
-                //
-                // Comparing `border_w + margin.left + margin.right` to
-                // `old_content_w` is fooled by CSS 2.1 §10.3.3
-                // overconstrained-margin-right adjustment: a width:100px
-                // block with default margin:0 ends up with margin-right
-                // back-filled to (parent_content - width), making the
-                // outer-plus-margins always equal old_content_w.
-                //
-                // `border_w + margin.left` instead — the pre-adjustment
-                // left margin plus the actually-rendered border width —
-                // only equals old_content_w for true fillers (width:auto
-                // / width:100% / etc.) and stays smaller for explicit
-                // narrower widths.
-                const old_h = subtree.items(.box_offsets)[gc].border_size.h;
-                const child_bo = subtree.items(.box_offsets)[gc];
-                const child_left = child_bo.content_pos.x;
-                const child_right = child_bo.border_size.w - child_bo.content_pos.x - child_bo.content_size.w;
-                const child_margins = subtree.items(.margins)[gc];
-                const fill_signal = child_bo.border_size.w + child_margins.left;
-                // Tolerance of 4 ZSS units (= 1 CSS px) absorbs rounding.
-                const was_filling = fill_signal >= old_content_w - 4;
-                const child_old_content_w = child_bo.content_size.w;
-                const child_new_w = new_content_w - child_left - child_right;
-                if (was_filling and child_new_w > 0) {
-                    relayoutIfcAtWidth(layout, subtree, subtree_id, gc, child_new_w, child_old_content_w);
-                }
-                const new_h = subtree.items(.box_offsets)[gc].border_size.h;
-                accumulated_y_delta += (new_h - old_h);
-            },
-            .subtree_proxy => {
-                // Subtree proxies are handled by grid's relayoutSubtree path.
-                // No delta contribution.
-            },
-        }
-        gc += subtree.items(.skip)[gc];
-    }
-
-    // Grow this item's own height by the accumulated delta. Never shrink.
-    if (accumulated_y_delta > 0) {
-        const item_bo = &subtree.items(.box_offsets)[item_idx];
-        item_bo.content_size.h += accumulated_y_delta;
-        item_bo.border_size.h += accumulated_y_delta;
-    }
-}
 fn childMainSize(subtree: Subtree.View, child: Subtree.Size, flex_is_column: bool) Unit {
     const bo = subtree.items(.box_offsets)[child];
     return if (flex_is_column) bo.border_size.h else bo.border_size.w;

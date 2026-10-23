@@ -19,6 +19,11 @@
 //!   its own padding and border. Floats are in-flow for this purpose (their
 //!   contributions add to the line in max-content; CSS 2.1 leaves the exact
 //!   rule to the UA and Chromium takes the max, which is done here).
+//! - Row flex container (CSS Flexbox 1 §9.9.1): max-content is the sum of
+//!   its items' max-content contributions plus gaps; min-content is their
+//!   sum for `nowrap` and the largest one when lines may wrap. A column flex
+//!   container behaves as a block container. A grid container also does for
+//!   now (CSS Grid 1 §12 track-based intrinsic sizes are not implemented).
 //! - A box whose `width` is a fixed length contributes that border-box width
 //!   (already clamped by min/max-width at layout); `auto` and percentage
 //!   widths contribute their content size (CSS Sizing 3 §5.2.1: a cyclic
@@ -86,24 +91,38 @@ pub fn contentBorderBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id:
 }
 
 /// Min/max-content size of the content box of block `index`: the widest
-/// in-flow child contribution.
+/// in-flow child contribution, or for a row flex container the sum of its
+/// items' contributions (CSS Flexbox 1 §9.9.1).
 fn contentSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) Sizes {
     const box_tree = layout.box_tree.ptr;
     var result: Sizes = .{};
     const skips = subtree.items(.skip);
     const types = subtree.items(.type);
     const end = index + skips[index];
+    const flex_row = if (layout.box_gen.flex_containers.get(.{ .subtree_id = subtree_id, .block_idx = index })) |info| (if (info.flex_is_column) null else info) else null;
+    var items: Unit = 0;
     var child = index + 1;
     while (child < end) : (child += skips[child]) {
         if (subtree.items(.out_of_flow)[child]) continue;
-        switch (types[child]) {
-            .ifc_container => |ifc_id| result.include(ifcSizes(layout, box_tree.getIfc(ifc_id), subtree, subtree_id)),
-            .subtree_proxy => |child_id| {
-                const child_subtree = box_tree.getSubtree(child_id).view();
-                result.include(blockContribution(layout, child_subtree, child_id, 0));
+        const sizes = switch (types[child]) {
+            .ifc_container => |ifc_id| blk: {
+                const ifc = box_tree.getIfc(ifc_id);
+                // Inter-element white space is not a flex item (§4).
+                if (flex_row != null and !ifc.has_visible_content) continue;
+                break :blk ifcSizes(layout, ifc, subtree, subtree_id);
             },
-            else => result.include(blockContribution(layout, subtree, subtree_id, child)),
-        }
+            .subtree_proxy => |child_id| blockContribution(layout, box_tree.getSubtree(child_id).view(), child_id, 0),
+            else => blockContribution(layout, subtree, subtree_id, child),
+        };
+        if (flex_row) |info| {
+            // §9.9.1: max-content is the sum of the items' max-content
+            // contributions; min-content is their sum on a single line and
+            // the largest one when lines may wrap. Gaps add between items.
+            const gap: Unit = if (items > 0) info.flex_gap else 0;
+            result.max += sizes.max + gap;
+            result.min = if (info.flex_wrap == .nowrap) result.min + sizes.min + gap else @max(result.min, sizes.min);
+            items += 1;
+        } else result.include(sizes);
     }
     return result;
 }
