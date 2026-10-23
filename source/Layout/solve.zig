@@ -109,6 +109,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         .flex_basis = specified.flex_basis,
         .flex_wrap = specified.flex_wrap,
         .grid_area = specified.grid_area,
+        .vertical_align = specified.vertical_align,
     };
 
     if (specified.display == .none) {

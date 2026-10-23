@@ -974,7 +974,7 @@ pub fn @"vertical-align"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTyp
     ctx.initDecl(declaration_index);
     const value = values.parse.verticalAlign(ctx) orelse return null;
     if (!ctx.empty()) return null;
-    return .{ .font = .{ .vertical_align = .{ .declared = value } } };
+    return .{ .box_style = .{ .vertical_align = .{ .declared = value } } };
 }
 
 pub fn visibility(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.visibility) {

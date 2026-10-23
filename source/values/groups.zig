@@ -256,7 +256,6 @@ pub const Font = struct {
     font_style: types.FontStyle,
     text_decoration: types.TextDecoration,
     text_align: types.TextAlign,
-    vertical_align: types.VerticalAlign,
     visibility: types.Visibility,
     border_spacing: types.BorderSpacing,
     border_collapse: types.BorderCollapse,
@@ -275,7 +274,6 @@ pub const Font = struct {
         .text_transform = .none,
         .text_decoration = .none,
         .text_align = .start,
-        .vertical_align = .baseline,
         .visibility = .visible,
         .border_spacing = .{ .h = 0, .v = 0 }, // CSS initial value; the UA sheet sets 2px on tables
         .border_collapse = .separate,
@@ -307,6 +305,9 @@ pub const BoxStyle = struct {
     flex_basis: types.FlexBasis,
     flex_wrap: types.FlexWrap,
     grid_area: types.GridAreaPlacement,
+    /// Not inherited (CSS 2.1 §10.8.1) — it lived in the inherited font
+    /// group until s106, so a cell's `middle` leaked into its content.
+    vertical_align: types.VerticalAlign,
 
     pub const initial_values = BoxStyle{
         .display = .@"inline",
@@ -325,6 +326,7 @@ pub const BoxStyle = struct {
         .flex_basis = .auto,
         .flex_wrap = .nowrap,
         .grid_area = 0,
+        .vertical_align = .baseline,
     };
 };
 

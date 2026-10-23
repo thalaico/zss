@@ -639,7 +639,6 @@ pub const BlockInfo = struct {
     /// Prevents parent-child margin escape through this block.
     is_bfc: bool = false,
     /// Vertical alignment for table cell content (CSS vertical-align on td/th)
-    vertical_align: zss.values.types.VerticalAlign = .baseline,
     /// flex-grow factor for this block (used when parent is a flex container)
     flex_grow: f32 = 0.0,
     /// flex-shrink factor for this block (used when parent is a flex container)
@@ -988,21 +987,6 @@ pub fn popFlowBlock(
         }
         break :blk base;
     };
-    // Table cell vertical-align: shift content origin down to center/bottom.
-    // Adjusts padding so content_pos.y moves down without changing border_size.
-    // This affects both inline text (line boxes) and block children uniformly.
-    if (block_info.vertical_align != .baseline and height > auto_height) {
-        const shift: math.Unit = switch (block_info.vertical_align) {
-            .middle => @divFloor(height - auto_height, 2),
-            .bottom => height - auto_height,
-            else => 0,
-        };
-        if (shift > 0) {
-            block_info.sizes.padding_block_start += shift;
-            // Keep border_size unchanged: compensate by reducing bottom padding.
-            block_info.sizes.padding_block_end = @max(0, block_info.sizes.padding_block_end - shift);
-        }
-    }
     const inner_block: BoxTree.BoxStyle.InnerBlock =
         if (block_info.is_flex_container) .flex else if (block_info.is_grid_container) .grid else .flow;
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);

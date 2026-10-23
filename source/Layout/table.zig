@@ -192,6 +192,7 @@ pub fn dispatch(box_gen: *BoxGen, node: NodeId, box_style: BoxStyle) !bool {
     const allocator = layout.allocator;
     // Values that must be read while the element is the current node.
     const font = layout.computer.getSpecifiedValue(.box_gen, .font);
+    const vertical_align = layout.computer.getSpecifiedValue(.box_gen, .box_style).vertical_align;
     const content_width = layout.computer.getSpecifiedValue(.box_gen, .content_width);
 
     try flow.blockElement(box_gen, node, .flow, box_style.position);
@@ -253,7 +254,7 @@ pub fn dispatch(box_gen: *BoxGen, node: NodeId, box_style: BoxStyle) !bool {
                 .node = node,
                 .colspan = env.getNodeProperty(.colspan, node),
                 .rowspan = env.getNodeProperty(.rowspan, node),
-                .vertical_align = font.vertical_align,
+                .vertical_align = vertical_align,
                 .height = specified_height,
             });
             try t.rows.items[t.rows.items.len - 1].cells.append(allocator, @intCast(t.cells.items.len - 1));
