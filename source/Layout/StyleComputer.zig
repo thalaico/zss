@@ -121,9 +121,13 @@ fn stagePtr(sc: *StyleComputer, comptime stage: Stage) *StageData(stage) {
     };
 }
 
-fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
+/// Read-only view of a stage's data. A pointer, not a copy: StageData
+/// carries `current_computed` (every computed-value group, ~1 KB), and the
+/// by-value version was copied on every inherited-value lookup — 10% of a
+/// 3000-row table's layout time.
+fn stageConst(sc: *const StyleComputer, comptime stage: Stage) *const StageData(stage) {
     return switch (stage) {
-        .box_gen => sc.box_gen_stage,
+        .box_gen => &sc.box_gen_stage,
     };
 }
 
@@ -131,7 +135,12 @@ fn stageVal(sc: StyleComputer, comptime stage: Stage) StageData(stage) {
 /// that will own the table once `takeStage` hands it to the `BoxTree`.
 pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, allocator: Allocator, count: u32) !void {
     const s = sc.stagePtr(stage);
-    s.nodes = try allocator.alloc(stage.ComputedValues(), count);
+    // Raw allocation: `Allocator.alloc` fills new memory with 0xAA in safe
+    // builds, and the table (~880 B per node, 13 MB for a 15k-node page)
+    // is overwritten with `.{}` on the next line anyway.
+    const T = stage.ComputedValues();
+    const bytes = allocator.rawAlloc(@sizeOf(T) * count, .of(T), @returnAddress()) orelse return error.OutOfMemory;
+    s.nodes = @as([*]T, @ptrCast(@alignCast(bytes)))[0..count];
     @memset(s.nodes, .{});
 }
 
@@ -289,14 +298,14 @@ pub fn completeTable(sc: *StyleComputer, comptime stage: Stage, group: Environme
     }
 }
 
-pub fn getText(sc: StyleComputer) []const u8 {
+pub fn getText(sc: *const StyleComputer) []const u8 {
     const node = sc.current.node;
     assert(sc.env.getNodeProperty(.category, node) == .text);
     const id = sc.env.getNodeProperty(.text, node);
     return sc.env.getText(id);
 }
 
-pub fn getTextFont(sc: StyleComputer, comptime stage: Stage) ComputedValues(.font) {
+pub fn getTextFont(sc: *const StyleComputer, comptime stage: Stage) ComputedValues(.font) {
     const node = sc.current.node;
     assert(sc.env.getNodeProperty(.category, node) == .text);
     var inherited_value = InheritedValue(.font){ .node = node };
@@ -305,7 +314,7 @@ pub fn getTextFont(sc: StyleComputer, comptime stage: Stage) ComputedValues(.fon
 
 /// Get the current element's resolved font-size in px.
 /// Resolves em values against the parent's computed font-size.
-pub fn resolvedFontSizePx(sc: StyleComputer, comptime stage: Stage) f32 {
+pub fn resolvedFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
     const font = sc.getSpecifiedValue(stage, .font);
     return switch (font.font_size) {
         .px => |v| v,
@@ -329,14 +338,14 @@ pub fn setComputedValue(sc: *StyleComputer, comptime stage: Stage, comptime grou
     field.* = value;
 }
 
-pub fn getSpecifiedValue(sc: StyleComputer, comptime stage: Stage, comptime group: groups.Tag) SpecifiedValues(group) {
+pub fn getSpecifiedValue(sc: *const StyleComputer, comptime stage: Stage, comptime group: groups.Tag) SpecifiedValues(group) {
     return sc.getSpecifiedValueForElement(stage, group, sc.current.node, sc.current.cascaded_values);
 }
 
 /// Like getSpecifiedValue but reads from a specific node instead of sc.current.node.
 /// Use when sc.current.node may not be the element you need (e.g. ::after from nullNode).
 pub fn getSpecifiedValueForNode(
-    sc: StyleComputer,
+    sc: *const StyleComputer,
     comptime stage: Stage,
     comptime group: groups.Tag,
     node: NodeId,
@@ -346,7 +355,7 @@ pub fn getSpecifiedValueForNode(
 }
 
 /// Like resolvedFontSizePx but for a specific node instead of sc.current.node.
-pub fn resolvedFontSizePxForNode(sc: StyleComputer, comptime stage: Stage, node: NodeId) f32 {
+pub fn resolvedFontSizePxForNode(sc: *const StyleComputer, comptime stage: Stage, node: NodeId) f32 {
     const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
     const font = sc.getSpecifiedValueForElement(stage, .font, node, cascaded_values);
     return switch (font.font_size) {
@@ -365,7 +374,7 @@ pub fn resolvedFontSizePxForNode(sc: StyleComputer, comptime stage: Stage, node:
 }
 
 fn getSpecifiedValueForElement(
-    self: StyleComputer,
+    self: *const StyleComputer,
     comptime stage: Stage,
     comptime group: groups.Tag,
     node: NodeId,
@@ -431,10 +440,10 @@ fn InheritedValue(comptime group: groups.Tag) type {
         value: ?ComputedValues(group) = null,
         node: NodeId,
 
-        fn get(self: *@This(), sc: StyleComputer, comptime stage: Stage) ComputedValues(group) {
+        fn get(self: *@This(), sc: *const StyleComputer, comptime stage: Stage) ComputedValues(group) {
             if (self.value) |value| return value;
 
-            const s = sc.stageVal(stage);
+            const s = sc.stageConst(stage);
             self.value = if (self.node.parent(sc.env)) |parent| blk: {
                 const parent_index: u32 = @intCast(parent.value);
                 if (parent_index < s.nodes.len) {
@@ -455,7 +464,7 @@ fn InheritedValue(comptime group: groups.Tag) type {
 }
 
 /// Given a specified value, returns a computed value.
-fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specified: SpecifiedValues(group), sc: StyleComputer, node: NodeId) ComputedValues(group) {
+fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specified: SpecifiedValues(group), sc: *const StyleComputer, node: NodeId) ComputedValues(group) {
     switch (group) {
         .box_style => {
             const parent = node.parent(sc.env);

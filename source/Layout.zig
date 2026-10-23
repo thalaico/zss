@@ -32,6 +32,47 @@ pub const Inputs = struct {
     fonts: *const Fonts,
 };
 
+/// Coarse per-run profile counters (nanoseconds / calls), reset by `run`
+/// and read by the host after layout. Two clock reads per shaped run is
+/// ~1 ms per 25k runs — cheap enough to leave on.
+pub const Profile = struct {
+    shape_ns: u64 = 0,
+    shape_calls: u64 = 0,
+    glyph_ns: u64 = 0,
+    line_split_ns: u64 = 0,
+    line_split_calls: u64 = 0,
+    analyze_ns: u64 = 0,
+    abs_ns: u64 = 0,
+    inline_modes: u64 = 0,
+    stf_modes: u64 = 0,
+    analyze_node_ns: u64 = 0,
+    dispatch_ns: [3]u64 = .{ 0, 0, 0 },
+    null_ns: u64 = 0,
+    pop_flow_ns: u64 = 0,
+    pop_flow_calls: u64 = 0,
+};
+pub var profile: Profile = .{};
+
+/// Profile clock: the CPU timestamp counter on x86_64 (a few ns; the
+/// libc-less `std.time.nanoTimestamp` is a real syscall here and 100k of
+/// them tripled layout time). Ticks are converted to ns by `run` against
+/// one wall-clock pair per layout.
+pub inline fn now() u64 {
+    if (@import("builtin").cpu.arch == .x86_64) {
+        var lo: u32 = undefined;
+        var hi: u32 = undefined;
+        asm volatile ("rdtsc"
+            : [lo] "={eax}" (lo),
+              [hi] "={edx}" (hi),
+        );
+        return (@as(u64, hi) << 32) | lo;
+    }
+    return @intCast(std.time.nanoTimestamp());
+}
+
+/// Wall ns per `now()` tick, measured over the last `run`.
+pub var ns_per_tick: f64 = 1.0;
+
 pub const Error = error{
     OutOfMemory,
     SizeLimitExceeded,
@@ -91,6 +132,15 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         .h = height_units,
     };
 
+    profile = .{};
+    const wall_start = std.time.nanoTimestamp();
+    const tick_start = now();
+    defer {
+        const ticks = now() - tick_start;
+        const wall: f64 = @floatFromInt(std.time.nanoTimestamp() - wall_start);
+        if (ticks > 0) ns_per_tick = wall / @as(f64, @floatFromInt(ticks));
+    }
+    @import("Layout/inline.zig").resetShapeCache();
     var box_tree = BoxTree{ .allocator = allocator };
     errdefer box_tree.deinit();
     layout.box_tree = .{ .ptr = &box_tree };

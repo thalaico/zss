@@ -124,6 +124,7 @@ pub const FontProps = struct {
 };
 
 pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: ContainingBlockSize) !void {
+    Layout.profile.inline_modes += 1;
     assert(containing_block_size.width >= 0);
     if (containing_block_size.height) |h| assert(h >= 0);
 
@@ -239,7 +240,10 @@ fn endMode(box_gen: *BoxGen) !Result {
     // the same per-line exclusions. Without this, those callers pass `null`
     // and overwrite correctly-wrapped lines with full-width lines.
     ifc.ptr.persisted_parent_float_ctx = ifc.parent_float_ctx;
+    const t_split = Layout.now();
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width, ifc.parent_float_ctx);
+    Layout.profile.line_split_ns += Layout.now() - t_split;
+    Layout.profile.line_split_calls += 1;
 
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
     // whitespace-only text content does not generate boxes. Detect whitespace-
@@ -754,10 +758,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
                 try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
                 // Emit a single collapsed space. This space glyph is the
                 // soft-wrap break opportunity for splitIntoLineBoxes.
-                hb.hb_buffer_add_latin1(buffer, " ", 1, 0, 1);
-                if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
-                try ifcAddTextRun(box_tree, ifc, buffer, font, true);
-                assert(hb.hb_buffer_set_length(buffer, 0) != 0);
+                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", true);
                 in_whitespace = true;
             }
             // Skip this whitespace char (already collapsed).
@@ -772,27 +773,94 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
 
 fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, run_begin: usize, run_end: usize) !void {
     if (run_end > run_begin) {
-        hb.hb_buffer_add_utf8(buffer, text.ptr, @intCast(text.len), @intCast(run_begin), @intCast(run_end - run_begin));
-        if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
-        try ifcAddTextRun(box_tree, ifc, buffer, font, false);
-        assert(hb.hb_buffer_set_length(buffer, 0) != 0);
+        try ifcAddTextRun(box_tree, ifc, buffer, font, text[run_begin..run_end], false);
     }
 }
 
-fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, is_break_opportunity: bool) !void {
+/// One shaped glyph as the shaping cache stores it.
+const ShapedGlyph = struct { index: GlyphIndex, advance: Unit };
+
+/// Per-layout word shaping cache (Blink's CachingWordShaper idea): text is
+/// shaped one collapsed-whitespace-delimited run at a time, and on real
+/// pages the same words and the single space recur thousands of times — a
+/// 3000-row table shapes 18k runs of which ~1k are distinct. Keyed by the
+/// HarfBuzz font, its current scale and the run's bytes; the result is the
+/// same glyphs and advances `hb_shape` returns for that run (runs are shaped
+/// without surrounding context, as before: the buffer is LTR/Latin). The
+/// scale is part of the key because `Fonts.setFontSizeVariant` resizes one
+/// `hb_font_t` in place for every size of a face — keyed on the pointer
+/// alone, text shaped at 32px was reused at 16px ("R e a c t"). Reset at the
+/// start of every layout, so a freed and reused font pointer can never hit.
+const FontKey = struct { ptr: usize, x_scale: i32, y_scale: i32 };
+fn fontKey(font: *hb.hb_font_t) FontKey {
+    var x: c_int = 0;
+    var y: c_int = 0;
+    hb.hb_font_get_scale(font, &x, &y);
+    return .{ .ptr = @intFromPtr(font), .x_scale = x, .y_scale = y };
+}
+const ShapeKey = struct { font: FontKey, text: []const u8 };
+const ShapeKeyContext = struct {
+    pub fn hash(_: ShapeKeyContext, key: ShapeKey) u64 {
+        const seed = std.hash.Wyhash.hash(0, std.mem.asBytes(&key.font));
+        return std.hash.Wyhash.hash(seed, key.text);
+    }
+    pub fn eql(_: ShapeKeyContext, a: ShapeKey, b: ShapeKey) bool {
+        return std.meta.eql(a.font, b.font) and std.mem.eql(u8, a.text, b.text);
+    }
+};
+threadlocal var shape_arena: std.heap.ArenaAllocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+threadlocal var shape_cache: std.HashMapUnmanaged(ShapeKey, []const ShapedGlyph, ShapeKeyContext, 80) = .{};
+
+const ExtentsKey = struct { font: FontKey, glyph: GlyphIndex };
+threadlocal var extents_cache: std.AutoHashMapUnmanaged(ExtentsKey, struct { Unit, Unit }) = .{};
+
+/// Forget every cached shaping result and glyph extent (called by
+/// `Layout.run`).
+pub fn resetShapeCache() void {
+    shape_cache = .{};
+    extents_cache = .{};
+    _ = shape_arena.reset(.retain_capacity);
+}
+
+fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]const ShapedGlyph {
+    const key: ShapeKey = .{ .font = fontKey(font), .text = text };
+    if (shape_cache.get(key)) |hit| return hit;
+
+    const arena = shape_arena.allocator();
+    const t_shape = Layout.now();
+    assert(hb.hb_buffer_set_length(buffer, 0) != 0);
+    hb.hb_buffer_add_utf8(buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
+    if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
     hb.hb_shape(font, buffer, null, 0);
+    Layout.profile.shape_ns += Layout.now() - t_shape;
+    Layout.profile.shape_calls += 1;
+
     var glyph_count: c_uint = 0;
     const glyph_infos = hb.hb_buffer_get_glyph_infos(buffer, &glyph_count);
     var pos_count: c_uint = 0;
     const glyph_positions = hb.hb_buffer_get_glyph_positions(buffer, &pos_count);
     assert(glyph_count == pos_count);
+    const glyphs = try arena.alloc(ShapedGlyph, glyph_count);
+    for (glyphs, 0..) |*g, i| {
+        // HarfBuzz 26.6 fixed point → internal units; keeps kerning/GPOS.
+        g.* = .{
+            .index = glyph_infos[i].codepoint,
+            .advance = @divFloor(glyph_positions[i].x_advance * units_per_pixel, 64),
+        };
+    }
+    try shape_cache.put(arena, .{ .font = key.font, .text = try arena.dupe(u8, text) }, glyphs);
+    return glyphs;
+}
 
-    var i: c_uint = 0;
-    while (i < glyph_count) : (i += 1) {
-        const glyph_index: GlyphIndex = glyph_infos[i].codepoint;
-        // Convert shaped advance from HarfBuzz 26.6 fixed-point to internal units.
-        // This preserves kerning and GPOS positioning from hb_shape.
-        const shaped_advance: Unit = @divFloor(glyph_positions[i].x_advance * units_per_pixel, 64);
+fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8, is_break_opportunity: bool) !void {
+    const shaped = try shapeRun(buffer, font, text);
+    const t_glyphs = Layout.now();
+    defer Layout.profile.glyph_ns += Layout.now() - t_glyphs;
+    const glyph_count = shaped.len;
+
+    for (shaped) |sg| {
+        const glyph_index: GlyphIndex = sg.index;
+        const shaped_advance: Unit = sg.advance;
         if (glyph_index == 0) {
             const special: Ifc.Special = .{
                 .kind = .ZeroGlyphIndex,
@@ -1518,14 +1586,26 @@ fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font_opt: ?*hb.hb_font_t, glyph
         metrics.width = 0;
         return;
     };
+    const key: ExtentsKey = .{ .font = fontKey(font), .glyph = glyph_index };
+    const entry = extents_cache.getOrPut(shape_arena.allocator(), key) catch {
+        metrics.offset, metrics.width = glyphExtents(font, glyph_index);
+        return;
+    };
+    if (!entry.found_existing) entry.value_ptr.* = glyphExtents(font, glyph_index);
+    metrics.offset, metrics.width = entry.value_ptr.*;
+}
+
+/// Ink offset and width of one glyph in layout units. `hb_font_get_glyph_
+/// extents` loads the glyph outline through FreeType; a 3000-row table asks
+/// for the same few dozen glyphs ~60k times per layout, so results are kept
+/// in `extents_cache` (per layout, reset with the shaping cache).
+fn glyphExtents(font: *hb.hb_font_t, glyph_index: GlyphIndex) struct { Unit, Unit } {
     var extents: hb.hb_glyph_extents_t = undefined;
-    const extents_result = hb.hb_font_get_glyph_extents(font, glyph_index, &extents);
-    if (extents_result == 0) {
-        extents.width = 0;
-        extents.x_bearing = 0;
-    }
-    metrics.offset = @divFloor(extents.x_bearing * units_per_pixel, 64);
-    metrics.width = @divFloor(extents.width * units_per_pixel, 64);
+    if (hb.hb_font_get_glyph_extents(font, glyph_index, &extents) == 0) return .{ 0, 0 };
+    return .{
+        @divFloor(extents.x_bearing * units_per_pixel, 64),
+        @divFloor(extents.width * units_per_pixel, 64),
+    };
 }
 
 fn setMetricsBoxStart(metrics: *Ifc.Metrics, ifc_slice: Ifc.Slice, inline_box_index: Ifc.Size) void {

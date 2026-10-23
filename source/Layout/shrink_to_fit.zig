@@ -243,6 +243,7 @@ pub const Result = struct {
 };
 
 pub fn beginMode(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, used_sizes: BlockUsedSizes) !void {
+    Layout.profile.stf_modes += 1;
     const ctx = &box_gen.stf_context;
     switch (inner_block) {
         .flow, .flex, .grid => {

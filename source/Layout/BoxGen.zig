@@ -126,14 +126,18 @@ pub fn deinit(box_gen: *BoxGen) void {
 pub fn run(box_gen: *BoxGen) !void {
     const allocator = box_gen.getLayout().allocator;
     box_gen.table_context = table.Context.init(allocator);
+    const t_analyze = Layout.now();
     try analyzeAllNodes(box_gen);
+    Layout.profile.analyze_ns += Layout.now() - t_analyze;
     // Absolutely-positioned elements with children are laid out inline as
     // out-of-flow blocks in analyzeAllNodes (see dispatch .absolute branch).
     // Leaf absolute elements (no children — e.g. <img>) still go through
     // layoutAbsoluteBlocks, which creates an empty leaf box. That preserves
     // the pre-existing behavior for replaced elements whose intrinsic size
     // ZSS can't resolve at layout time.
+    const t_abs = Layout.now();
     try layoutAbsoluteBlocks(box_gen);
+    Layout.profile.abs_ns += Layout.now() - t_abs;
     box_gen.sct_builder.endFrame();
 }
 
@@ -152,11 +156,17 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
             parent_info.is_flex_container or parent_info.is_grid_container
         else
             false;
-        const node, const box_style = (try analyzeNode(box_gen.getLayout(), .not_root, parent_blockifies)) orelse {
+        const t0 = Layout.now();
+        const analyzed = try analyzeNode(box_gen.getLayout(), .not_root, parent_blockifies);
+        const t1 = Layout.now();
+        Layout.profile.analyze_node_ns += t1 - t0;
+        const node, const box_style = analyzed orelse {
             try box_gen.dispatchNullNode(.not_root, mode);
+            Layout.profile.null_ns += Layout.now() - t1;
             continue;
         };
         try box_gen.dispatch(.not_root, mode, node, box_style);
+        Layout.profile.dispatch_ns[@intFromEnum(mode)] += Layout.now() - t1;
     }
 
     try box_gen.dispatchNullNode(.root, {});
