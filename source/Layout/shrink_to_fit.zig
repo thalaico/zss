@@ -323,11 +323,7 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
     const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
 
-    var font_specified = computer.getSpecifiedValue(.box_gen, .font);
-    font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
-    if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
-        font_specified.font_size = .{ .px = 13.0 };
-    }
+    const font_specified = computer.computedFont(.box_gen);
     computer.setComputedValue(.box_gen, .font, font_specified);
     computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
     computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));

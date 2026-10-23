@@ -157,6 +157,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
                 computed.display = switch (specified.display) {
                     .@"inline", .inline_block => .block,
                     .inline_flex => .flex,
+                    .inline_grid => .grid,
                     else => specified.display,
                 };
             } else {
@@ -192,6 +193,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             .flex => .{ .block = .flex },
             .inline_flex => .{ .@"inline" = .{ .block = .flex } },
             .grid => .{ .block = .grid },
+            .inline_grid => .{ .@"inline" = .{ .block = .grid } },
             .none => unreachable,
         },
         .position = position,
@@ -211,7 +213,7 @@ fn blockify(display: types.Display) types.Display {
         .table_row, .table_cell, .table_caption, .table_column, .table_column_group => .block,
             .table_row_group, .table_header_group, .table_footer_group => .block,
         .flex, .inline_flex => .flex,
-        .grid => .grid,
+        .grid, .inline_grid => .grid,
         .none => unreachable,
     };
 }
@@ -223,7 +225,7 @@ fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
         .table_row => .flow,
         .table_cell, .table_caption, .table_column, .table_column_group => .flow,
         .flex, .inline_flex => .flex,
-        .grid => .grid,
+        .grid, .inline_grid => .grid,
         .@"inline", .inline_block, .none => unreachable,
             .table_row_group, .table_header_group, .table_footer_group => .flow,
     };

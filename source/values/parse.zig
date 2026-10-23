@@ -686,7 +686,7 @@ pub fn display(ctx: *Context) ?types.Display {
         .{ "flex", .flex },
         .{ "inline-flex", .inline_flex },
         .{ "grid", .grid },
-        .{ "inline-grid", .grid },
+        .{ "inline-grid", .inline_grid },
     });
 }
 
@@ -864,9 +864,28 @@ pub fn boxSizing(ctx: *Context) ?types.BoxSizing {
     });
 }
 
+/// CSS Fonts 4 §2.5: <absolute-size> | <relative-size> | <length-percentage>.
 pub fn fontSize(ctx: *Context) ?types.FontSize {
+    if (keyword(ctx, types.FontSize, &.{
+        .{ "xx-small", .{ .keyword = 0 } },
+        .{ "x-small", .{ .keyword = 1 } },
+        .{ "small", .{ .keyword = 2 } },
+        .{ "medium", .{ .keyword = 3 } },
+        .{ "large", .{ .keyword = 4 } },
+        .{ "x-large", .{ .keyword = 5 } },
+        .{ "xx-large", .{ .keyword = 6 } },
+        .{ "xxx-large", .{ .keyword = 7 } },
+        .{ "larger", .larger },
+        .{ "smaller", .smaller },
+    })) |value| return value;
     const item = ctx.next() orelse return null;
     return switch (item.tag) {
+        .token_percentage => blk: {
+            const pct = item.index.extra(ctx.ast).number orelse break :blk null;
+            if (pct < 0) break :blk null;
+            // Percentage tokens hold the fraction (50% = 0.5).
+            break :blk .{ .em = pct };
+        },
         .token_dimension => blk: {
             const index = item.index;
             var children = index.children(ctx.ast);
@@ -876,7 +895,7 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
             break :blk switch (unit) {
                 .px => .{ .px = number },
                 .em => .{ .em = number },
-                .rem => .{ .px = number * 16.0 },
+                .rem => .{ .rem = number },
                 .pt => .{ .px = number * (96.0 / 72.0) },
                 .vw => .{ .px = number * ctx.viewport_width_px / 100.0 },
                 .vh => .{ .px = number * ctx.viewport_height_px / 100.0 },
@@ -894,6 +913,26 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
         },
         else => null,
     };
+}
+
+/// The declared derivation facts of a font-size value; relative sizes get
+/// theirs when the size is computed (StyleComputer.computeFont).
+pub fn fontSizeInfo(size: types.FontSize) types.FontSizeInfo {
+    return switch (size) {
+        .px => .{ .keyword = 0, .absolute = true },
+        .keyword => |k| .{ .keyword = @as(u4, k) + 1, .absolute = false },
+        else => .{ .keyword = 0, .absolute = false },
+    };
+}
+
+/// Whether the font-family list at the cursor is exactly the generic
+/// family `monospace` (Blink's FontFamily::IsMonospace). Does not consume.
+pub fn familyIsGenericMonospace(ctx: *Context) bool {
+    const save = ctx.savePoint();
+    defer ctx.resetPoint(save);
+    const ident = identifier(ctx) orelse return false;
+    if (!ctx.source_code.identifierEqlIgnoreCase(ident, "monospace")) return false;
+    return ctx.next() == null;
 }
 
 /// CSS font-family: comma-separated list of family names / generic keywords.

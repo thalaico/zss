@@ -169,9 +169,7 @@ pub fn takeStage(sc: *StyleComputer, comptime stage: Stage) ComputedStyles {
 pub fn stageCosmeticValues(sc: *StyleComputer, comptime stage: Stage) void {
     const cur = &sc.stagePtr(stage).current_computed;
     if (cur.font == null) {
-        var font = sc.getSpecifiedValue(stage, .font);
-        font.font_size = .{ .px = sc.resolvedFontSizePx(stage) };
-        cur.font = font;
+        cur.font = sc.computedFont(stage);
     }
     if (cur.color == null) cur.color = sc.getSpecifiedValue(stage, .color);
     if (cur.border_colors == null) cur.border_colors = sc.getSpecifiedValue(stage, .border_colors);
@@ -314,22 +312,15 @@ pub fn getTextFont(sc: *const StyleComputer, comptime stage: Stage) ComputedValu
 
 /// Get the current element's resolved font-size in px.
 /// Resolves em values against the parent's computed font-size.
+/// The current element's computed font size in px.
 pub fn resolvedFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
-    const font = sc.getSpecifiedValue(stage, .font);
-    return switch (font.font_size) {
-        .px => |v| v,
-        .em => |em_val| blk: {
-            const parent = sc.current.node.parent(sc.env) orelse break :blk em_val * 16.0;
-            const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(parent) orelse &.{};
-            const parent_font = sc.getSpecifiedValueForElement(stage, .font, parent, cascaded_values);
-            const parent_fs: f32 = switch (parent_font.font_size) {
-                .px => |v| v,
-                // Recursive case: parent also uses em. In practice, nesting >1 level is rare.
-                .em => |pem| pem * 16.0,
-            };
-            break :blk em_val * parent_fs;
-        },
-    };
+    return sc.computedFont(stage).font_size.px_val();
+}
+
+/// The current element's computed `font` group: its specified value with
+/// the font size computed (`computeFont`).
+pub fn computedFont(sc: *const StyleComputer, comptime stage: Stage) ComputedValues(.font) {
+    return computeFont(stage, sc.getSpecifiedValue(stage, .font), sc, sc.current.node);
 }
 
 /// The committed computed value of `group` for an element already visited
@@ -373,19 +364,7 @@ pub fn getSpecifiedValueForNode(
 pub fn resolvedFontSizePxForNode(sc: *const StyleComputer, comptime stage: Stage, node: NodeId) f32 {
     const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
     const font = sc.getSpecifiedValueForElement(stage, .font, node, cascaded_values);
-    return switch (font.font_size) {
-        .px => |v| v,
-        .em => |em_val| blk: {
-            const parent = node.parent(sc.env) orelse break :blk em_val * 16.0;
-            const parent_cascaded: *const CascadeStorage = sc.env.cascade_db.getStorage(parent) orelse &.{};
-            const parent_font = sc.getSpecifiedValueForElement(stage, .font, parent, parent_cascaded);
-            const parent_fs: f32 = switch (parent_font.font_size) {
-                .px => |v| v,
-                .em => |pem| pem * 16.0,
-            };
-            break :blk em_val * parent_fs;
-        },
-    };
+    return computeFont(stage, font, sc, node).font_size.px_val();
 }
 
 fn getSpecifiedValueForElement(
@@ -478,6 +457,78 @@ fn InheritedValue(comptime group: groups.Tag) type {
     };
 }
 
+/// CSS Fonts 4 §2.5 computed font-size, plus Blink's generic family rule:
+/// a size not derived from an absolute length is recomputed when the
+/// element's family switches to or from the lone generic `monospace`
+/// (FontBuilder::CheckForGenericFamilyChange): keyword sizes come from the
+/// fixed-pitch keyword table, other sizes scale by 13/16 (Chrome's default
+/// fixed and standard font sizes).
+fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *const StyleComputer, node: NodeId) ComputedValues(.font) {
+    // InheritedValue(.font){ .node = node } is the parent's computed value.
+    const parent: ComputedValues(.font) = if (node.parent(sc.env) != null) blk: {
+        var inherited = InheritedValue(.font){ .node = node };
+        break :blk inherited.get(sc, stage);
+    } else root_parent_font;
+    const parent_px = parent.font_size.px_val();
+    const mono = specified.generic_monospace;
+    var info = specified.font_size_info;
+    var size: f32 = switch (specified.font_size) {
+        // Declared absolute, or inherited with the parent's facts.
+        .px => |v| v,
+        .keyword => |k| keywordFontSize(k, mono),
+        .em => |v| v * parent_px,
+        .rem => |v| v * rootFontSizePx(stage, sc, node),
+        // CSS Fonts 4 §2.5: Chrome scales by 1.2.
+        .larger => parent_px * 1.2,
+        .smaller => parent_px / 1.2,
+    };
+    switch (specified.font_size) {
+        .px, .keyword => {},
+        else => info = .{ .keyword = 0, .absolute = parent.font_size_info.absolute },
+    }
+    if (!info.absolute and mono != parent.generic_monospace) {
+        size = if (info.keyword != 0)
+            keywordFontSize(@intCast(info.keyword - 1), mono)
+        else if (parent.generic_monospace)
+            size * 16.0 / 13.0
+        else
+            size * 13.0 / 16.0;
+    }
+    var result = specified;
+    result.font_size = .{ .px = size };
+    result.font_size_info = info;
+    return result;
+}
+
+/// The parent facts of the root element: the initial `medium`.
+const root_parent_font: ComputedValues(.font) = blk: {
+    var font = groups.Tag.font.initialValues();
+    font.font_size = .{ .px = 16.0 };
+    break :blk font;
+};
+
+/// Chrome's <absolute-size> tables (Blink FontSizeFunctions, for a 16px
+/// standard and a 13px fixed-pitch default size).
+fn keywordFontSize(k: u3, monospace: bool) f32 {
+    const standard = [8]f32{ 9, 10, 13, 16, 18, 24, 32, 48 };
+    const fixed = [8]f32{ 9, 10, 12, 13, 16, 20, 26, 39 };
+    return if (monospace) fixed[k] else standard[k];
+}
+
+/// The root element's computed font size, for `rem`.
+fn rootFontSizePx(comptime stage: Stage, sc: *const StyleComputer, node: NodeId) f32 {
+    var root = node;
+    while (root.parent(sc.env)) |p| root = p;
+    // The root's own `rem` refers to the initial font size.
+    if (root.value == node.value) return 16.0;
+    const s = sc.stageConst(stage);
+    const index: usize = @intCast(root.value);
+    if (index < s.nodes.len) if (s.nodes[index].font) |font| return font.font_size.px_val();
+    const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(root) orelse &.{};
+    const specified = sc.getSpecifiedValueForElement(stage, .font, root, cascaded_values);
+    return computeFont(stage, specified, sc, root).font_size.px_val();
+}
+
 /// Given a specified value, returns a computed value.
 fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specified: SpecifiedValues(group), sc: *const StyleComputer, node: NodeId) ComputedValues(group) {
     switch (group) {
@@ -492,21 +543,7 @@ fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specif
                 solve.boxStyle(specified, .not_root, false);
             return computed_value;
         },
-        .font => {
-            // Resolve font-size em against parent's computed font-size.
-            var result = specified;
-            result.font_size = switch (specified.font_size) {
-                .px => specified.font_size,
-                .em => |em_val| blk: {
-                    const parent_font_size = if (node.parent(sc.env)) |parent| pfz: {
-                        var inherited = InheritedValue(.font){ .node = parent };
-                        break :pfz inherited.get(sc, stage).font_size.px_val();
-                    } else 16.0; // root: initial font-size
-                    break :blk .{ .px = em_val * parent_font_size };
-                },
-            };
-            return result;
-        },
+        .font => return computeFont(stage, specified, sc, node),
         .color => {
             return .{
                 .color = specified.color,

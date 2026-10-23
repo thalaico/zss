@@ -80,11 +80,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 if (box_gen.stacks.block_info.top) |parent| alignToParentTextAlign(&sizes, containing_block_size.width, parent.text_align);
             }
             const stacking_context = solveStackingContext(computer, position);
-            var font_specified = computer.getSpecifiedValue(.box_gen, .font);
-            font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
-            if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
-                font_specified.font_size = .{ .px = 13.0 };
-            }
+            const font_specified = computer.computedFont(.box_gen);
             computer.setComputedValue(.box_gen, .font, font_specified);
 
             computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
@@ -98,44 +94,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
 
             try pushBlock(box_gen, node, sizes, stacking_context, position);
             box_gen.stacks.block_info.top.?.text_align = font_specified.text_align;
-            if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
-                const info = &box_gen.stacks.block_info.top.?;
-                info.is_flex_container = true;
-                info.flex_is_column = (box_style_specified.flex_direction == .column);
-                info.flex_justify = switch (box_style_specified.justify_content) {
-                    .flex_start => .flex_start,
-                    .center => .center,
-                    .flex_end => .flex_end,
-                    .space_between => .space_between,
-                    else => .flex_start,
-                };
-                info.flex_align = switch (box_style_specified.align_items) {
-                    .center => .center,
-                    .flex_start => .flex_start,
-                    .flex_end => .flex_end,
-                    .stretch => .stretch,
-                    else => .stretch,
-                };
-                info.flex_gap = box_style_specified.column_gap;
-                info.flex_wrap = box_style_specified.flex_wrap;
-            }
-            if (inner_block == .grid) {
-                const info = &box_gen.stacks.block_info.top.?;
-                info.is_grid_container = true;
-                info.flex_align = switch (box_style_specified.align_items) {
-                    .center => .center,
-                    .flex_start => .flex_start,
-                    .flex_end => .flex_end,
-                    else => .stretch,
-                };
-                info.grid_column_gap = box_style_specified.column_gap;
-                info.grid_row_gap = box_style_specified.row_gap;
-                // Read grid template properties from cascade
-                const grid_tmpl = computer.getSpecifiedValue(.box_gen, .grid_template);
-                info.grid_columns = grid_tmpl.columns;
-                info.grid_rows = grid_tmpl.rows;
-                info.grid_areas = grid_tmpl.areas;
-            }
+            setupContainer(box_gen, inner_block, box_style_specified);
             // Store per-block flex item properties and float/clear/BFC state
             {
                 const info = &box_gen.stacks.block_info.top.?;
@@ -188,6 +147,51 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
     if (box_gen.stacks.block_info.top) |*info| {
         try insertPseudoElement(box_gen, info.node, .before, false);
         try checkDeferInlineAfter(box_gen, info);
+    }
+}
+
+/// Record the flex or grid container facts of the block just pushed
+/// (block_info.top) from its specified box style: block-level containers
+/// here, inline-level ones from `inline.inlineElement`.
+pub fn setupContainer(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, box_style_specified: anytype) void {
+    const computer = &box_gen.getLayout().computer;
+    if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
+        const info = &box_gen.stacks.block_info.top.?;
+        info.is_flex_container = true;
+        info.flex_is_column = (box_style_specified.flex_direction == .column);
+        info.flex_justify = switch (box_style_specified.justify_content) {
+            .flex_start => .flex_start,
+            .center => .center,
+            .flex_end => .flex_end,
+            .space_between => .space_between,
+            else => .flex_start,
+        };
+        info.flex_align = switch (box_style_specified.align_items) {
+            .center => .center,
+            .flex_start => .flex_start,
+            .flex_end => .flex_end,
+            .stretch => .stretch,
+            else => .stretch,
+        };
+        info.flex_gap = box_style_specified.column_gap;
+        info.flex_wrap = box_style_specified.flex_wrap;
+    }
+    if (inner_block == .grid) {
+        const info = &box_gen.stacks.block_info.top.?;
+        info.is_grid_container = true;
+        info.flex_align = switch (box_style_specified.align_items) {
+            .center => .center,
+            .flex_start => .flex_start,
+            .flex_end => .flex_end,
+            else => .stretch,
+        };
+        info.grid_column_gap = box_style_specified.column_gap;
+        info.grid_row_gap = box_style_specified.row_gap;
+        // Read grid template properties from cascade
+        const grid_tmpl = computer.getSpecifiedValue(.box_gen, .grid_template);
+        info.grid_columns = grid_tmpl.columns;
+        info.grid_rows = grid_tmpl.rows;
+        info.grid_areas = grid_tmpl.areas;
     }
 }
 
@@ -355,17 +359,8 @@ fn insertPseudoElement(box_gen: *BoxGen, node: NodeId, pseudo: selectors.PseudoE
 
     if (content_text) |text| {
         // String content: create an IFC with shaped text inside the block.
-        const font = computer.getSpecifiedValue(.box_gen, .font);
-        // addPseudoElementText shapes with a resolved px size (FontSize.px_val
-        // panics on em). Pseudo-element text inherits the element's computed
-        // font size, so resolve a relative size through the normal em→px chain.
-        // A relative font-size here crashed layout on real pages
-        // (the-internet.herokuapp.com checkboxes/login: ::before content with
-        // a relative font-size).
-        const font_size_px = switch (font.font_size) {
-            .px => |v| v,
-            .em => computer.resolvedFontSizePx(.box_gen),
-        };
+        const font = computer.computedFont(.box_gen);
+        const font_size_px = font.font_size.px_val();
         try box_gen.stacks.mode.push(layout.allocator, .@"inline");
         _ = try @"inline".addPseudoElementText(box_gen, text, .{
             .font = font.font,

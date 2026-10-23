@@ -909,11 +909,14 @@ pub fn font(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.font) {
     }
 
     // Required font-family list.
+    const generic_monospace = values.parse.familyIsGenericMonospace(ctx);
     const family = values.parse.fontFamily(ctx) orelse return null;
 
     return .{ .font = .{
         .font_family = .{ .declared = family },
+        .generic_monospace = .{ .declared = generic_monospace },
         .font_size = .{ .declared = size },
+        .font_size_info = .{ .declared = values.parse.fontSizeInfo(size) },
         .font_weight = .{ .declared = font_weight },
         .font_style = .{ .declared = font_style },
         .line_height = .{ .declared = lh },
@@ -924,15 +927,16 @@ pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     ctx.initDecl(declaration_index);
     // font-family consumes the entire comma-separated list internally;
     // don't check ctx.empty() since trailing unrecognized entries are skipped.
+    const generic_monospace = values.parse.familyIsGenericMonospace(ctx);
     const value = values.parse.fontFamily(ctx) orelse return null;
-    return .{ .font = .{ .font_family = .{ .declared = value } } };
+    return .{ .font = .{ .font_family = .{ .declared = value }, .generic_monospace = .{ .declared = generic_monospace } } };
 }
 
 pub fn @"font-size"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-size") {
     ctx.initDecl(declaration_index);
     const value = values.parse.fontSize(ctx) orelse return null;
     if (!ctx.empty()) return null;
-    return .{ .font = .{ .font_size = .{ .declared = value } } };
+    return .{ .font = .{ .font_size = .{ .declared = value }, .font_size_info = .{ .declared = values.parse.fontSizeInfo(value) } } };
 }
 
 pub fn @"font-weight"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-weight") {

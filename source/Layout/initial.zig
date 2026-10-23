@@ -26,11 +26,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyl
     const stacking_context = rootBlockSolveStackingContext(&layout.computer);
     layout.computer.commitNode(.box_gen);
 
-    var font_specified = layout.computer.getSpecifiedValue(.box_gen, .font);
-    font_specified.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
-    if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
-        font_specified.font_size = .{ .px = 13.0 };
-    }
+    const font_specified = layout.computer.computedFont(.box_gen);
     layout.computer.setComputedValue(.box_gen, .font, font_specified);
     layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
     layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));

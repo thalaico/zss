@@ -22,6 +22,7 @@ pub const Display = enum {
     table_caption,
     flex,
     inline_flex,
+    inline_grid,
     grid,
     list_item,
     none,
@@ -472,25 +473,38 @@ pub const Opacity = f32;
 
 
 /// Font-size value: px (absolute) or em (relative to parent's font-size).
+/// CSS Fonts 4 §2.5 font-size. The computed value is always `.px`.
 pub const FontSize = union(enum) {
+    /// An absolute length (px, pt, vw, ...), already in px.
     px: f32,
+    /// A multiple of the parent's font size (`em`, and `%` / 100).
     em: f32,
+    /// A multiple of the root element's font size.
+    rem: f32,
+    /// <absolute-size>: 0 = xx-small ... 3 = medium ... 7 = xxx-large.
+    keyword: u3,
+    larger,
+    smaller,
 
-    /// Resolve em against parent's computed font-size. Returns px.
-    pub fn resolve(self: FontSize, parent_font_size_px: f32) f32 {
-        return switch (self) {
-            .px => |v| v,
-            .em => |v| v * parent_font_size_px,
-        };
-    }
-
-    /// Extract px value. Panics if still em (must be resolved first).
+    /// Extract the px value of a computed font size.
     pub fn px_val(self: FontSize) f32 {
         return switch (self) {
             .px => |v| v,
-            .em => unreachable,
+            else => unreachable,
         };
     }
+};
+
+/// What a computed font size was derived from, needed to recompute it when
+/// the generic family switches to or from `monospace` (Blink's
+/// FontBuilder::CheckForGenericFamilyChange; Chrome's default fixed-pitch
+/// font size is 13px against 16px).
+pub const FontSizeInfo = struct {
+    /// 1 + the <absolute-size> keyword it came from, 0 for none.
+    keyword: u4 = 4,
+    /// Derived from an absolute length (directly or through `em`/`%` of
+    /// an absolute size); such sizes never change with the family.
+    absolute: bool = false,
 };
 
 /// CSS font-weight. Authors use numeric weights (300 for light, 500 for

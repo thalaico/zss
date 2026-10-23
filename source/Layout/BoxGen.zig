@@ -18,6 +18,7 @@ const IsRoot = Layout.IsRoot;
 
 const flow = @import("flow.zig");
 const grid = @import("grid.zig");
+const intrinsic = @import("intrinsic.zig");
 const initial = @import("initial.zig");
 const @"inline" = @import("inline.zig");
 const solve = @import("solve.zig");
@@ -219,8 +220,7 @@ fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
         // solveAllSizes above already staged `.insets`; this commit flushes them
         // together with color/border/background/opacity.
         const computer = &layout.computer;
-        var font_specified = computer.getSpecifiedValue(.box_gen, .font);
-        font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
+        const font_specified = computer.computedFont(.box_gen);
         computer.setComputedValue(.box_gen, .font, font_specified);
         computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
         computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
@@ -606,6 +606,11 @@ pub const BlockInfo = struct {
     /// block-level children (`flow.alignToParentTextAlign`).
     text_align: zss.values.types.TextAlign = .start,
     is_flex_container: bool = false,
+    /// An inline-level flex or grid container with an auto width: the
+    /// available inline size it was generated against. popFlowBlock gives
+    /// it its shrink-to-fit width (CSS 2.1 §10.3.9) before running the
+    /// flex or grid algorithm.
+    fit_content_available: ?math.Unit = null,
     /// justify-content for flex containers (default: flex_start)
     flex_justify: FlexJustify = .flex_start,
     /// align-items for flex containers (default: stretch)
@@ -859,6 +864,14 @@ pub fn registerFloatLeaf(box_gen: *BoxGen) void {
     }
 }
 
+/// CSS 2.1 §10.3.9 shrink-to-fit inline size of an inline-level container
+/// generated with an auto width: min(max(min-content, available),
+/// max-content), clamped by min/max-width.
+fn fitContentWidth(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, skip: Subtree.Size, sizes: *BlockUsedSizes, available: math.Unit) void {
+    const content = intrinsic.contentBoxSizes(layout, subtree, subtree_id, index, skip);
+    sizes.setValue(.inline_size, @min(@max(content.min, available), content.max));
+}
+
 pub fn popFlowBlock(
     box_gen: *BoxGen,
     auto_width: union(SizeMode) {
@@ -895,9 +908,6 @@ pub fn popFlowBlock(
 
     const subtree = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
     const auto_height = if (block_info.is_flex_container) blk: {
-        const container_width = block_info.sizes.get(.inline_size).?;
-        const container_height = block_info.sizes.get(.block_size);
-        const height = flow.offsetChildBlocksFlex(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
         const key = FlexContainerKey{
             .subtree_id = box_gen.currentSubtree(),
             .block_idx = block.index,
@@ -909,12 +919,15 @@ pub fn popFlowBlock(
             .flex_is_column = block_info.flex_is_column,
             .flex_wrap = block_info.flex_wrap,
         }) catch {};
-        break :blk height;
-    } else if (block_info.is_grid_container) blk: {
+        if (block_info.fit_content_available) |available| fitContentWidth(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, &block_info.sizes, available);
         const container_width = block_info.sizes.get(.inline_size).?;
         const container_height = block_info.sizes.get(.block_size);
+        const height = flow.offsetChildBlocksFlex(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, container_width, container_height, block_info.flex_justify, block_info.flex_align, block_info.flex_gap, block_info.flex_is_column, block_info.flex_wrap);
+        break :blk height;
+    } else if (block_info.is_grid_container) blk: {
+        const container_height = block_info.sizes.get(.block_size);
         // Persist grid template + children info so that if a parent grid later
-        // resizes this block's containing cell, relayoutSubtree can re-run
+        // resizes this block's containing cell, relayout.zig can re-run
         // grid layout instead of just resizing this block's box. Without this
         // step nested grids inside narrower outer cells overflow (Wikipedia
         // .vector-column-end clipping case).
@@ -932,7 +945,9 @@ pub fn popFlowBlock(
             .child_count = block_info.grid_child_count,
             .align_items = block_info.flex_align,
         }) catch {};
-        break :blk grid.layoutGridChildren(layout, subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
+        if (block_info.fit_content_available) |available| fitContentWidth(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, &block_info.sizes, available);
+        const grid_width = block_info.sizes.get(.inline_size).?;
+        break :blk grid.layoutGridChildren(layout, subtree, block.index, block.skip, grid_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
     } else if (block_info.table_role == .table)
         // CSS 2.1 §17.5 / CSS Tables 3: columns, the table's used width,
         // cell relayout, rows and positions. Sets the used inline size.

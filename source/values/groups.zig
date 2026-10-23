@@ -252,6 +252,10 @@ pub const Font = struct {
     font: types.Font,
     font_family: types.FontFamily,
     font_size: types.FontSize,
+    font_size_info: types.FontSizeInfo,
+    /// The family list is exactly the one generic family `monospace`
+    /// (`monospace, monospace` is not, as in Chrome).
+    generic_monospace: bool,
     font_weight: types.FontWeight,
     font_style: types.FontStyle,
     text_decoration: types.TextDecoration,
@@ -268,7 +272,9 @@ pub const Font = struct {
     pub const initial_values = Font{
         .font = .default,
         .font_family = .serif, // the UA "standard font" (Chrome: Times New Roman)
-        .font_size = .{ .px = 16.0 }, // 16px default
+        .font_size = .{ .keyword = 3 }, // medium
+        .font_size_info = .{},
+        .generic_monospace = false,
         .font_weight = .normal,
         .font_style = .normal,
         .text_transform = .none,

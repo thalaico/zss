@@ -90,15 +90,39 @@ pub fn contentBorderBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id:
     return content;
 }
 
+/// Min/max-content size of the content box of block `index`, whose subtree
+/// size is `skip` (passed in: box generation writes it to the subtree only
+/// when the block is finished).
+pub fn contentBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, skip: Subtree.Size) Sizes {
+    return contentSizesTo(layout, subtree, subtree_id, index, index + skip);
+}
+
 /// Min/max-content size of the content box of block `index`: the widest
 /// in-flow child contribution, or for a row flex container the sum of its
 /// items' contributions (CSS Flexbox 1 §9.9.1).
 fn contentSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) Sizes {
+    return contentSizesTo(layout, subtree, subtree_id, index, index + subtree.items(.skip)[index]);
+}
+
+fn contentSizesTo(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, end: Subtree.Size) Sizes {
     const box_tree = layout.box_tree.ptr;
     var result: Sizes = .{};
     const skips = subtree.items(.skip);
     const types = subtree.items(.type);
-    const end = index + skips[index];
+    if (layout.box_gen.grid_containers.get(.{ .subtree_id = subtree_id, .block_idx = index })) |info| {
+        // CSS Grid 1 §12: with only fixed column tracks, both intrinsic
+        // sizes are the tracks plus gaps.
+        const columns = info.columns;
+        if (columns.count > 0) fixed: {
+            var sum: Unit = 0;
+            for (columns.tracks[0..columns.count]) |track| {
+                if (track.kind != .fixed) break :fixed;
+                sum += track.value;
+            }
+            sum += info.column_gap * @as(Unit, columns.count - 1);
+            return .{ .min = sum, .max = sum };
+        }
+    }
     const flex_row = if (layout.box_gen.flex_containers.get(.{ .subtree_id = subtree_id, .block_idx = index })) |info| (if (info.flex_is_column) null else info) else null;
     var items: Unit = 0;
     var child = index + 1;

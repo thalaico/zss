@@ -471,11 +471,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 layout.computer.setComputedValue(.box_gen, .content_height, data.content_height);
                 layout.computer.setComputedValue(.box_gen, .z_index, data.z_index);
 
-                var font_specified = layout.computer.getSpecifiedValue(.box_gen, .font);
-                font_specified.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
-                if (font_specified.font_family == .monospace and font_specified.font_size.px_val() == 16.0) {
-                    font_specified.font_size = .{ .px = 13.0 };
-                }
+                const font_specified = layout.computer.computedFont(.box_gen);
                 layout.computer.setComputedValue(.box_gen, .font, font_specified);
 
                 layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
@@ -524,11 +520,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 form_controls.applyIntrinsicSizes(layout, node, &sizes);
                 const stacking_context = inlineBlockSolveStackingContext(&layout.computer, position);
 
-                var ib_font = layout.computer.getSpecifiedValue(.box_gen, .font);
-                ib_font.font_size = .{ .px = layout.computer.resolvedFontSizePx(.box_gen) };
-                if (ib_font.font_family == .monospace and ib_font.font_size.px_val() == 16.0) {
-                    ib_font.font_size = .{ .px = 13.0 };
-                }
+                const box_style_specified = layout.computer.getSpecifiedValue(.box_gen, .box_style);
+                const ib_font = layout.computer.computedFont(.box_gen);
                 layout.computer.setComputedValue(.box_gen, .font, ib_font);
                 layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
                 layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
@@ -538,6 +531,29 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
                 layout.computer.setComputedValue(.box_gen, .opacity, layout.computer.getSpecifiedValue(.box_gen, .opacity));
                 layout.computer.commitNode(.box_gen);
+
+                if (block_inner != .flow) {
+                    // An inline-level flex or grid container (CSS Display 3
+                    // §2.1): generated like a block in flow so its children
+                    // are flex or grid items. An auto width is provisional
+                    // (the available width) until popFlowBlock shrinks it to
+                    // fit, before the container's algorithm runs.
+                    const auto_width = sizes.get(.inline_size) == null;
+                    const available = solve.clampSize(ifc.containing_block_size.width -
+                        (sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged +
+                            sizes.border_inline_start + sizes.border_inline_end +
+                            sizes.padding_inline_start + sizes.padding_inline_end), sizes.min_inline_size, sizes.max_inline_size);
+                    if (auto_width) sizes.setValue(.inline_size, available);
+                    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
+                    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+                    if (auto_width) box_gen.stacks.block_info.top.?.fit_content_available = available;
+                    flow.setupContainer(box_gen, block_inner, box_style_specified);
+                    try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
+                    ctx.ifc.top.?.has_visible_content = true;
+                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
+                    try layout.pushNode();
+                    return box_gen.beginFlowMode(.not_root);
+                }
 
                 if (sizes.get(.inline_size)) |_| {
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
@@ -1654,6 +1670,9 @@ const IFCLineSplitState = struct {
     top_height: Unit,
     max_top_height: Unit,
     bottom_height: Unit,
+    /// The current line's extent below its baseline: the strut's, or more
+    /// when an inline-block hangs below the baseline.
+    max_bottom_height: Unit,
     longest_line_box_length: Unit,
     inline_box_stack: std.ArrayListUnmanaged(Ifc.Size) = .{},
     current_inline_box: Ifc.Size = undefined,
@@ -1661,6 +1680,7 @@ const IFCLineSplitState = struct {
     const InlineBlockInfo = struct {
         offset: *zss.math.Vector,
         cursor: Unit,
+        /// Margin-box extent above the baseline.
         height: Unit,
     };
 
@@ -1672,6 +1692,7 @@ const IFCLineSplitState = struct {
             .top_height = top_height,
             .max_top_height = top_height,
             .bottom_height = bottom_height,
+            .max_bottom_height = bottom_height,
             .longest_line_box_length = 0,
         };
     }
@@ -1696,11 +1717,12 @@ const IFCLineSplitState = struct {
     fn newLineBox(self: *IFCLineSplitState, skipped_glyphs: usize) void {
         self.cursor = 0;
         self.line_box = .{
-            .baseline = self.line_box.baseline + self.bottom_height,
+            .baseline = self.line_box.baseline + self.max_bottom_height,
             .elements = [2]usize{ self.line_box.elements[1] + skipped_glyphs, self.line_box.elements[1] + skipped_glyphs },
             .inline_box = self.current_inline_box,
         };
         self.max_top_height = self.top_height;
+        self.max_bottom_height = self.bottom_height;
         self.inline_blocks_in_this_line_box.clearRetainingCapacity();
     }
 
@@ -2015,14 +2037,18 @@ pub fn splitIntoLineBoxes(
                     const box_offsets = subtree.items(.box_offsets)[block_box_index];
                     const margins = subtree.items(.margins)[block_box_index];
                     const margin_box_height = box_offsets.border_size.h + margins.top + margins.bottom;
-                    s.max_top_height = @max(s.max_top_height, margin_box_height);
+                    // CSS 2.1 §10.8.1 (vertical-align: baseline): the
+                    // inline-block's baseline sits on the line's baseline;
+                    // without one its bottom margin edge does.
+                    const ascent: Unit = if (inlineBlockBaseline(layout, subtree, block_box_index)) |b| margins.top + b else margin_box_height;
+                    s.max_top_height = @max(s.max_top_height, ascent);
+                    s.max_bottom_height = @max(s.max_bottom_height, margin_box_height - ascent);
                     try s.inline_blocks_in_this_line_box.append(
                         layout.allocator,
                         .{
                             .offset = offset,
                             .cursor = s.cursor,
-                            // Remove margins.top subtraction - border_pos.y already accounts for it during rendering
-                            .height = margin_box_height,
+                            .height = ascent,
                         },
                     );
                 },
@@ -2060,10 +2086,73 @@ pub fn splitIntoLineBoxes(
 
     return IFCLineSplitResult{
         .height = if (ifc.line_boxes.items.len > 0)
-            ifc.line_boxes.items[ifc.line_boxes.items.len - 1].baseline + s.bottom_height
+            ifc.line_boxes.items[ifc.line_boxes.items.len - 1].baseline + s.max_bottom_height
         else
             0, // TODO: This is never reached because the root inline box always creates at least 1 line box.
         .longest_line_box_length = s.longest_line_box_length,
+    };
+}
+
+/// The baseline of inline-block `index`, as a distance from its border-box
+/// top, or null when it has none (it then aligns by its bottom margin
+/// edge). CSS 2.1 §10.8.1: the baseline of its last line box in normal
+/// flow, unless it has no in-flow line boxes or its overflow is not
+/// visible. A flex or grid container's baseline comes from its first item
+/// (CSS Flexbox 1 §8.5, CSS Grid 1 §9.3; its last baseline from its last
+/// item), synthesized from the item's bottom border edge when the item has
+/// none.
+fn inlineBlockBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size) ?Unit {
+    return switch (subtree.items(.inner_block)[index]) {
+        .flex, .grid => boxBaseline(layout, subtree, index, .first),
+        .flow => if (subtree.items(.overflow)[index] != .visible) null else boxBaseline(layout, subtree, index, .last),
+    };
+}
+
+const BaselineSet = enum { first, last };
+
+/// The first or last baseline of block `index` (CSS Box Alignment 3 §9.1),
+/// from its border-box top: from its in-flow children (the first or last
+/// one that has a baseline; for a flex or grid container the first or last
+/// item, synthesized from the item's bottom border edge if it has none).
+fn boxBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, comptime set: BaselineSet) ?Unit {
+    const skips = subtree.items(.skip);
+    const end = index + skips[index];
+    const content_top = subtree.items(.box_offsets)[index].content_pos.y;
+    const is_container = subtree.items(.inner_block)[index] != .flow;
+    var result: ?Unit = null;
+    var child = index + 1;
+    while (child < end) : (child += skips[child]) {
+        if (subtree.items(.out_of_flow)[child]) continue;
+        if (!is_container and subtree.items(.type)[child] == .block and subtree.items(.float_side)[child] != .none) continue;
+        const own = entryBaseline(layout, subtree, child, set) orelse
+            (if (is_container and subtree.items(.type)[child] == .block) subtree.items(.box_offsets)[child].border_pos.y + subtree.items(.box_offsets)[child].border_size.h else null);
+        if (own) |b| {
+            const baseline = content_top + subtree.items(.offset)[child].y + b;
+            if (set == .first) return baseline;
+            result = baseline;
+        }
+    }
+    return result;
+}
+
+/// The baseline of subtree entry `index` (a block, an IFC or a subtree
+/// proxy), from the entry's offset origin.
+fn entryBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, comptime set: BaselineSet) ?Unit {
+    const box_tree = layout.box_tree.ptr;
+    const bo = subtree.items(.box_offsets)[index];
+    return switch (subtree.items(.type)[index]) {
+        .ifc_container => |ifc_id| blk: {
+            const ifc = box_tree.getIfc(ifc_id);
+            if (!ifc.has_visible_content or ifc.line_boxes.items.len == 0) break :blk null;
+            const line = if (set == .first) ifc.line_boxes.items[0] else ifc.line_boxes.items[ifc.line_boxes.items.len - 1];
+            break :blk bo.border_pos.y + line.baseline;
+        },
+        .block => if (boxBaseline(layout, subtree, index, set)) |b| bo.border_pos.y + b else null,
+        .subtree_proxy => |child_id| blk: {
+            const child_subtree = box_tree.getSubtree(child_id).view();
+            const own = entryBaseline(layout, child_subtree, 0, set) orelse break :blk null;
+            break :blk child_subtree.items(.offset)[0].y + own;
+        },
     };
 }
 
