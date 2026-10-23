@@ -665,8 +665,10 @@ pub const NodeProperty = struct {
     category: NodeCategory = .text,
     type: ElementType = .{ .namespace = .none, .name = .anonymous },
     text: TextId = .empty_string,
-    colspan: u8 = 1,
-    explicit_width_px: u16 = 0, // HTML width attr in px, 0 = auto
+    /// HTML `colspan` (1..1000) and `rowspan` (0..65534; 0 = to the end of
+    /// the row group), parsed by the host with the HTML rules.
+    colspan: u16 = 1,
+    rowspan: u16 = 1,
     aspect_ratio_w: u16 = 0,
     aspect_ratio_h: u16 = 0,
 };

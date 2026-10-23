@@ -17,6 +17,9 @@ pub const Display = enum {
     table_row_group,
     table_header_group,
     table_footer_group,
+    table_column_group,
+    table_column,
+    table_caption,
     flex,
     inline_flex,
     grid,
@@ -585,6 +588,12 @@ pub const TextAlign = enum {
     right,
     center,
     justify,
+    /// Legacy values (HTML `align`, `<center>`): align inline content like
+    /// left/right/center and also align block-level children whose inline
+    /// margins are not auto (Blink LayoutBox::ComputeInlineDirectionMargins).
+    @"-webkit-left",
+    @"-webkit-right",
+    @"-webkit-center",
 };
 
 pub const VerticalAlign = enum {
@@ -601,7 +610,15 @@ pub const Visibility = enum {
 };
 
 /// CSS border-spacing: stored as layout units (4 units = 1px).
-pub const BorderSpacing = @import("../zss.zig").math.Unit;
+/// CSS 2.1 §17.6 `border-collapse` (inherited).
+pub const BorderCollapse = enum { separate, collapse };
+
+/// CSS 2.1 §17.6.1 `border-spacing: <length> <length>?` — horizontal, then
+/// vertical (one value sets both). Layout units.
+pub const BorderSpacing = struct {
+    h: @import("../zss.zig").math.Unit,
+    v: @import("../zss.zig").math.Unit,
+};
 
 /// CSS line-height: stored as layout units (4 units = 1px). 0 = normal.
 pub const LineHeight = @import("../zss.zig").math.Unit;

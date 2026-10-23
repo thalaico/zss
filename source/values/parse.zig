@@ -474,6 +474,15 @@ pub fn hash(ctx: *Context) ?Location {
     return null;
 }
 
+/// The RRGGBBAA value of a CSS named color (ASCII case-insensitive), for
+/// hosts implementing HTML's "rules for parsing a legacy colour value".
+pub fn namedColorRgba(name: []const u8) ?u32 {
+    for (namedColorKVs) |kv| {
+        if (std.ascii.eqlIgnoreCase(kv[0], name)) return kv[1];
+    }
+    return null;
+}
+
 /// Spec: CSS Color Level 4
 /// Syntax: <color> = <color-base> | currentColor | <system-color>
 ///         <color-base> = <hex-color> | <color-function> | <named-color> | transparent
@@ -669,10 +678,10 @@ pub fn display(ctx: *Context) ?types.Display {
         .{ "table-header-group", .table_header_group },
         .{ "table-footer-group", .table_footer_group },
         .{ "table-row", .table_row },
-        // .{ "table-column-group", .table_column_group },
-        // .{ "table-column", .table_column },
+        .{ "table-column-group", .table_column_group },
+        .{ "table-column", .table_column },
         .{ "table-cell", .table_cell },
-        // .{ "table-caption", .table_caption },
+        .{ "table-caption", .table_caption },
         .{ "none", .none },
         .{ "flex", .flex },
         .{ "inline-flex", .inline_flex },
@@ -1089,6 +1098,16 @@ pub fn textAlign(ctx: *Context) ?types.TextAlign {
         .{ "right", .right },
         .{ "center", .center },
         .{ "justify", .justify },
+        .{ "-webkit-left", .@"-webkit-left" },
+        .{ "-webkit-right", .@"-webkit-right" },
+        .{ "-webkit-center", .@"-webkit-center" },
+    });
+}
+
+pub fn borderCollapse(ctx: *Context) ?types.BorderCollapse {
+    return keyword(ctx, types.BorderCollapse, &.{
+        .{ "separate", .separate },
+        .{ "collapse", .collapse },
     });
 }
 
@@ -1126,7 +1145,12 @@ pub fn cursor(ctx: *Context) ?types.Cursor {
 
 /// Parse border-spacing: <length>. Returns layout units (4 units = 1px).
 pub fn borderSpacing(ctx: *Context) ?types.BorderSpacing {
-    return parseLengthToUnits(ctx);
+    const h = parseLengthToUnits(ctx) orelse return null;
+    if (h < 0) return null;
+    if (ctx.empty()) return .{ .h = h, .v = h };
+    const v = parseLengthToUnits(ctx) orelse return null;
+    if (v < 0) return null;
+    return .{ .h = h, .v = v };
 }
 
 /// Parse gap: <length>. Returns layout units (4 units = 1px).

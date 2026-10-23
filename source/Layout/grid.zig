@@ -55,7 +55,7 @@ pub fn layoutGridChildren(
 
 /// Internal entry that takes the explicit subtree id (so it can be invoked
 /// from relayoutSubtree when crossing subtree boundaries via subtree_proxy).
-fn layoutGridChildrenInSubtree(
+pub fn layoutGridChildrenInSubtree(
     layout: *@import("../zss.zig").Layout,
     subtree: Subtree.View,
     subtree_id: Subtree.Id,

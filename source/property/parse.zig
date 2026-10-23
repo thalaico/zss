@@ -1137,6 +1137,13 @@ pub fn @"border-spacing"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTyp
     return .{ .font = .{ .border_spacing = .{ .declared = value } } };
 }
 
+pub fn @"border-collapse"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-collapse") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.borderCollapse(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .border_collapse = .{ .declared = value } } };
+}
+
 pub fn @"line-height"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"line-height") {
     ctx.initDecl(declaration_index);
     const value = values.parse.lineHeight(ctx) orelse return null;

@@ -259,6 +259,7 @@ pub const Font = struct {
     vertical_align: types.VerticalAlign,
     visibility: types.Visibility,
     border_spacing: types.BorderSpacing,
+    border_collapse: types.BorderCollapse,
     line_height: types.LineHeight,
     text_transform: types.TextTransform,
     white_space: types.WhiteSpace,
@@ -276,7 +277,8 @@ pub const Font = struct {
         .text_align = .start,
         .vertical_align = .baseline,
         .visibility = .visible,
-        .border_spacing = 8, // 2px default (CSS border-collapse: separate)
+        .border_spacing = .{ .h = 0, .v = 0 }, // CSS initial value; the UA sheet sets 2px on tables
+        .border_collapse = .separate,
         .line_height = 0, // 0 = normal (1.2 * font-size)
         .white_space = .normal,
         .overflow_wrap = .normal,

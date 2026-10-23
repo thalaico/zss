@@ -31,6 +31,9 @@ pub fn newSubtree(box_tree: BoxTreeManaged) !*Subtree {
 pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size {
     const new_len = std.math.add(Subtree.Size, @intCast(subtree.blocks.len), 1) catch return error.SizeLimitExceeded;
     try subtree.blocks.resize(box_tree.ptr.allocator, new_len);
+    subtree.blocks.items(.intrinsic)[new_len - 1] = .{};
+    subtree.blocks.items(.percent_width)[new_len - 1] = 0;
+    subtree.blocks.items(.specified_margins)[new_len - 1] = .{ 0, 0 };
     return new_len - 1;
 }
 

@@ -841,12 +841,18 @@ fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]c
     const glyph_positions = hb.hb_buffer_get_glyph_positions(buffer, &pos_count);
     assert(glyph_count == pos_count);
     const glyphs = try arena.alloc(ShapedGlyph, glyph_count);
+    // HarfBuzz 26.6 fixed point → layout units (¼ px), keeping kerning/GPOS.
+    // Rounded cumulatively: each glyph's advance is the step between the
+    // rounded running totals, so a run's width is exact to ¼ px instead of
+    // accumulating a per-glyph rounding error (flooring lost ~⅛ px per glyph
+    // against Chromium's fractional advances).
+    var total_26_6: i64 = 0;
+    var placed_units: Unit = 0;
     for (glyphs, 0..) |*g, i| {
-        // HarfBuzz 26.6 fixed point → internal units; keeps kerning/GPOS.
-        g.* = .{
-            .index = glyph_infos[i].codepoint,
-            .advance = @divFloor(glyph_positions[i].x_advance * units_per_pixel, 64),
-        };
+        total_26_6 += glyph_positions[i].x_advance;
+        const end_units: Unit = @intCast(@divFloor(total_26_6 * units_per_pixel + 32, 64));
+        g.* = .{ .index = glyph_infos[i].codepoint, .advance = end_units - placed_units };
+        placed_units = end_units;
     }
     try shape_cache.put(arena, .{ .font = key.font, .text = try arena.dupe(u8, text) }, glyphs);
     return glyphs;
@@ -1132,6 +1138,10 @@ fn inlineBlockSolveSizes(
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     var computed: BlockComputedSizes = undefined;
     var used: BlockUsedSizes = undefined;
+    used.was_auto_inline_size = false;
+    used.intrinsic = flow.intrinsicFlags(specified);
+    used.percent_width = flow.percentWidth(specified);
+    used.specified_margins = flow.specifiedMargins(specified);
 
     // TODO: Also use the logical properties ('padding-inline-start', 'border-block-end', etc.).
 

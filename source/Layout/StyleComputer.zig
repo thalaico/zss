@@ -332,6 +332,21 @@ pub fn resolvedFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
     };
 }
 
+/// The committed computed value of `group` for an element already visited
+/// in this stage (null if it was not committed).
+pub fn committedValue(sc: *const StyleComputer, comptime stage: Stage, comptime group: groups.Tag, node: NodeId) ?ComputedValues(group) {
+    const s = sc.stageConst(stage);
+    const index: usize = @intCast(node.value);
+    if (index >= s.nodes.len) return null;
+    return @field(s.nodes[index], @tagName(group));
+}
+
+/// The current element's computed value for `group`, if it has been set
+/// (box_style is set by BoxGen.analyzeNode before dispatch).
+pub fn getComputedValue(sc: *const StyleComputer, comptime stage: Stage, comptime group: groups.Tag) ?ComputedValues(group) {
+    return @field(sc.stageConst(stage).current_computed, @tagName(group));
+}
+
 pub fn setComputedValue(sc: *StyleComputer, comptime stage: Stage, comptime group: groups.Tag, value: ComputedValues(group)) void {
     const field = &@field(sc.stagePtr(stage).current_computed, @tagName(group));
     assert(field.* == null);

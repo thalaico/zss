@@ -1,702 +1,995 @@
+//! Tables: CSS 2.1 §17 with the automatic table layout algorithm
+//! (§17.5.2.2) and the column width distribution of CSS Tables 3 (§3.9-3.10,
+//! the algorithm Chromium's AutoTableLayout implements).
+//!
+//! Table parts are identified by their computed `display` (§17.2), never by
+//! tag name. Each part is generated as an ordinary flow block
+//! (`flow.blockElement`: styles, pseudo-elements and stacking contexts as
+//! for any block) and tagged with its `Role`; the table records its structure
+//! while its descendants are generated. When the table element closes
+//! (`layoutTable`, called from `BoxGen.popFlowBlock`):
+//!
+//! 1. rows are ordered (header groups, then body rows, then footer groups)
+//!    and cells get grid slots, honouring colspan and rowspan;
+//! 2. every cell's min-content and max-content border-box width is measured
+//!    from its generated boxes (`intrinsic.zig`);
+//! 3. column measures follow from single-column cells, then spanning cells
+//!    in order of increasing span distribute their excess;
+//! 4. the table's used width is its specified width (at least the minimum)
+//!    or, for `width: auto`, the maximum width clamped to the available
+//!    space (never below the minimum);
+//! 5. that width is distributed to columns by interpolating between the
+//!    min-content, min-percentage, min-specified and max-content guesses,
+//!    and excess beyond the max-content guess goes to auto columns in
+//!    proportion to their max-content widths;
+//! 6. each cell is relaid out at its column width (`relayout.zig`), rows
+//!    take the height of their tallest cell (§17.5.3), rowspans extend
+//!    their last row, and rows, groups and cells are positioned with
+//!    `border-spacing` (separated borders model, §17.6.1).
+//!
+//! The collapsing border model (§17.6.2) resolves every grid edge between
+//! the cells' and the table's borders (§17.6.2.1: hidden wins, then the
+//! wider border, then the style order double > solid > dashed > dotted >
+//! ridge > outset > groove > inset, then cell over table); each cell's box
+//! takes half of each resolved edge and the table's box the outer halves,
+//! as Chromium lays them out. Row and row-group borders do not take part
+//! yet.
+//!
+//! Not supported yet (documented, not approximated): anonymous table
+//! objects (§17.2.1: a row outside a table, or text directly in a row, is
+//! laid out as a plain block), row/row-group borders in the collapsing
+//! model, painting collapsed borders other than solid, column and
+//! column-group widths and backgrounds, `table-layout: fixed`,
+//! `inline-table`, caption-side bottom, vertical-align: baseline (treated as
+//! top), and distributing a specified table height to rows.
 const std = @import("std");
-const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 const zss = @import("../zss.zig");
-const Fonts = zss.Fonts;
-const Environment = zss.Environment;
-const NodeId = Environment.NodeId;
-const StyleComputer = zss.Layout.StyleComputer;
+const NodeId = zss.Environment.NodeId;
 const Unit = zss.math.Unit;
-const units_per_pixel = zss.math.units_per_pixel;
-
-const hb = @import("harfbuzz").c;
-
-const BoxGen = zss.Layout.BoxGen;
-const BlockComputedSizes = BoxGen.BlockComputedSizes;
-const BlockUsedSizes = BoxGen.BlockUsedSizes;
-const SctBuilder = BoxGen.StackingContextTreeBuilder;
-const SizeMode = BoxGen.SizeMode;
-
+const math = zss.math;
+const types = zss.values.types;
 const solve = @import("./solve.zig");
-const flow = @import("./flow.zig");
-
+const Layout = zss.Layout;
 const BoxTree = zss.BoxTree;
 const BoxStyle = BoxTree.BoxStyle;
+const Subtree = BoxTree.Subtree;
+const BoxGen = Layout.BoxGen;
+const BlockUsedSizes = BoxGen.BlockUsedSizes;
 
-/// Maximum columns supported for auto-layout pre-scan.
-/// Tables with more columns fall back to equal distribution.
-const MAX_COLUMNS: usize = 32;
+const flow = @import("./flow.zig");
+const intrinsic = @import("./intrinsic.zig");
+const relayout = @import("./relayout.zig");
 
-/// Average character width in layout units (4 units = 1px).
-/// DejaVuSans at 16px averages ~8px per character.
-const AVG_CHAR_WIDTH: Unit = 32;
+/// A block's part in a table.
+pub const Role = enum(u3) { none, table, row_group, row, cell, caption };
 
-/// Minimum cell width in layout units (12px = 48 units).
-/// Applied to cells with no text content (e.g. vote arrow divs).
-const MIN_CELL_WIDTH: Unit = 48;
+const GroupKind = enum(u2) { header, body, footer };
 
-/// Get average character width from the default (sans-serif) font.
-/// Falls back to AVG_CHAR_WIDTH if no font is available.
-fn getRealCharWidth(fonts: *const Fonts) Unit {
-    const handle = fonts.queryFamily(.sans_serif);
-    const hb_font = fonts.get(handle) orelse return AVG_CHAR_WIDTH;
-    // Get glyph ID for 'x' (U+0078) — representative of average width
-    var glyph: u32 = 0;
-    if (hb.hb_font_get_glyph(hb_font, 'x', 0, &glyph) == 0) return AVG_CHAR_WIDTH;
-    const advance = hb.hb_font_get_glyph_h_advance(hb_font, glyph);
-    // Convert from HarfBuzz 26.6 fixed-point to layout units
-    const width: Unit = @divFloor(advance * units_per_pixel, 64);
-    return if (width > 0) width else AVG_CHAR_WIDTH;
-}
+const Group = struct {
+    /// The row-group block; null for the anonymous group of rows that are
+    /// direct children of the table.
+    block: ?Subtree.Size,
+    kind: GroupKind,
+    rows: std.ArrayListUnmanaged(u32) = .{},
+};
 
-/// Table layout context
+const Row = struct {
+    block: Subtree.Size,
+    cells: std.ArrayListUnmanaged(u32) = .{},
+    /// Specified `height` (content-box), if any.
+    height: ?Unit,
+};
+
+const Cell = struct {
+    block: Subtree.Size,
+    node: NodeId,
+    /// The cell's own border widths (left, right, top, bottom) before the
+    /// collapsing model replaced them with half edges.
+    own_borders: ?[4]Unit = null,
+    colspan: u32,
+    /// 0 = to the end of the row group (HTML).
+    rowspan: u32,
+    vertical_align: zss.values.types.VerticalAlign,
+    /// Specified `height` (content-box), if any.
+    height: ?Unit,
+    // Filled by layout:
+    row: u32 = 0,
+    col: u32 = 0,
+    span_rows: u32 = 1,
+};
+
+const Column = struct {
+    min: Unit = 0,
+    max: Unit = 0,
+    /// A cell in this column has a fixed `width`.
+    constrained: bool = false,
+    /// Largest percentage `width` of a cell in this column (0..1), 0 = none.
+    percent: f32 = 0,
+    width: Unit = 0,
+};
+
+/// The recorded structure of one table, kept after layout so a relayout of
+/// an enclosing box can rerun the table algorithm at a new width.
+pub const Table = struct {
+    block: Subtree.Size,
+    subtree_id: Subtree.Id,
+    spacing_h: Unit,
+    spacing_v: Unit,
+    groups: std.ArrayListUnmanaged(Group) = .{},
+    rows: std.ArrayListUnmanaged(Row) = .{},
+    cells: std.ArrayListUnmanaged(Cell) = .{},
+    captions: std.ArrayListUnmanaged(Subtree.Size) = .{},
+    /// The width of `width: auto`/fixed resolution: true when the table's
+    /// specified width is not auto.
+    specified_width: bool,
+    node: NodeId,
+    collapse: bool,
+    /// Collapsing model: the table's own border widths (left, right, top,
+    /// bottom) as specified, and the outer half edges its box takes.
+    own_borders: [4]Unit = .{ 0, 0, 0, 0 },
+    outer: [4]Unit = .{ 0, 0, 0, 0 },
+    outer_colors: [4]math.Color = .{ .transparent, .transparent, .transparent, .transparent },
+
+    fn deinit(t: *Table, allocator: Allocator) void {
+        for (t.groups.items) |*g| g.rows.deinit(allocator);
+        for (t.rows.items) |*r| r.cells.deinit(allocator);
+        t.groups.deinit(allocator);
+        t.rows.deinit(allocator);
+        t.cells.deinit(allocator);
+        t.captions.deinit(allocator);
+    }
+};
+
+const TableKey = struct { subtree_id: Subtree.Id, block: Subtree.Size };
+
 pub const Context = struct {
-    pub const BlockType = enum { table, row, cell };
-
-    /// Entry pairing a block type with the bfc_stack depth at push time.
-    /// Used to correlate null node pops with the correct table element.
-    pub const BlockEntry = struct {
-        block_type: BlockType,
-        bfc_depth: usize,
-    };
-
-    /// Current table depth (0 = not in table, >0 = in table)
-    table_depth: usize = 0,
-    /// Current row being processed
-    current_row: usize = 0,
-    /// Current column index within row
-    current_column: usize = 0,
-    /// Maximum columns seen across all rows (discovered incrementally)
-    max_columns: usize = 0,
-    /// Finalized column count (set after first row completes)
-    known_columns: usize = 0,
-    /// Table width (containing block size)
-    table_width: Unit = 0,
-    /// Cumulative x position within current row (layout units)
-    row_x_cursor: Unit = 0,
-    /// Default border-spacing (2px = 8 units, CSS default for border-collapse: separate)
-    border_spacing: Unit = 8,
-    /// Pre-computed column widths from auto-layout algorithm.
-    /// Only valid when has_auto_widths is true and index < known_columns.
-    column_widths: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
-    /// Whether column_widths has been computed for the current table.
-    has_auto_widths: bool = false,
-    /// Per-column explicit width (from HTML width attr, in layout units). 0 = auto.
-    col_explicit: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS,
-    /// Stack of table states for nested tables
-    stack: std.ArrayListUnmanaged(State) = .{},
-    /// Stack tracking which table element type pushed each flow block.
-    /// Each entry records the bfc_stack depth at push time so null node
-    /// processing can match pops to the correct table element.
-    block_type_stack: std.ArrayListUnmanaged(BlockEntry) = .{},
-
-    pub const State = struct {
-        row: usize,
-        column: usize,
-        max_columns: usize,
-        known_columns: usize,
-        table_width: Unit,
-        column_widths: [MAX_COLUMNS]Unit,
-        has_auto_widths: bool,
-        col_explicit: [MAX_COLUMNS]Unit,
-    };
+    /// Tables whose elements are open, innermost last.
+    open: std.ArrayListUnmanaged(*Table) = .{},
+    /// Laid-out tables, for relayout.
+    finished: std.AutoHashMapUnmanaged(TableKey, *Table) = .{},
 
     pub fn init(_: Allocator) Context {
         return .{};
     }
 
     pub fn deinit(ctx: *Context, allocator: Allocator) void {
-        ctx.block_type_stack.deinit(allocator);
-        ctx.stack.deinit(allocator);
-    }
-
-    pub fn pushTable(ctx: *Context, allocator: Allocator, table_width: Unit) !void {
-        try ctx.stack.append(allocator, .{
-            .row = ctx.current_row,
-            .column = ctx.current_column,
-            .max_columns = ctx.max_columns,
-            .known_columns = ctx.known_columns,
-            .table_width = ctx.table_width,
-            .column_widths = ctx.column_widths,
-            .has_auto_widths = ctx.has_auto_widths,
-            .col_explicit = ctx.col_explicit,
-        });
-        ctx.table_depth += 1;
-        ctx.current_row = 0;
-        ctx.current_column = 0;
-        ctx.max_columns = 0;
-        ctx.known_columns = 0;
-        ctx.row_x_cursor = ctx.border_spacing;
-        ctx.table_width = table_width;
-        ctx.column_widths = [_]Unit{0} ** MAX_COLUMNS;
-        ctx.col_explicit = [_]Unit{0} ** MAX_COLUMNS;
-        ctx.has_auto_widths = false;
-    }
-
-    pub fn popTable(ctx: *Context) void {
-        if (ctx.stack.items.len == 0) return;
-        const state = ctx.stack.pop().?;
-        ctx.table_depth -= 1;
-        ctx.current_row = state.row;
-        ctx.current_column = state.column;
-        ctx.max_columns = state.max_columns;
-        ctx.known_columns = state.known_columns;
-        ctx.table_width = state.table_width;
-        ctx.column_widths = state.column_widths;
-        ctx.has_auto_widths = state.has_auto_widths;
-        ctx.col_explicit = state.col_explicit;
-        ctx.row_x_cursor = ctx.border_spacing;
-    }
-
-    pub fn beginRow(ctx: *Context) void {
-        // Update known_columns from observed max (keeps pre-computed value if larger)
-        if (ctx.current_row >= 1 and ctx.max_columns > ctx.known_columns) {
-            ctx.known_columns = ctx.max_columns;
+        for (ctx.open.items) |t| {
+            t.deinit(allocator);
+            allocator.destroy(t);
         }
-        ctx.current_column = 0;
-        ctx.row_x_cursor = ctx.border_spacing; // Start with left border-spacing
-        ctx.current_row += 1;
-    }
-
-    pub fn addCell(ctx: *Context) void {
-        // Auto-wrap to new row if we've exceeded finalized column count
-        if (ctx.known_columns > 0 and ctx.current_column >= ctx.known_columns) {
-            ctx.current_column = 0;
-            ctx.row_x_cursor = ctx.border_spacing;
-            ctx.current_row += 1;
+        var it = ctx.finished.valueIterator();
+        while (it.next()) |t| {
+            t.*.deinit(allocator);
+            allocator.destroy(t.*);
         }
-
-        ctx.current_column += 1;
-        if (ctx.current_column > ctx.max_columns) {
-            ctx.max_columns = ctx.current_column;
-        }
-    }
-
-    /// Advance the row cursor by the given cell width.
-    pub fn advanceCursor(ctx: *Context, cell_width: Unit) void {
-        ctx.row_x_cursor += cell_width + ctx.border_spacing; // Add spacing between cells
-    }
-
-    /// Get the default cell width for auto-width cells.
-    /// Uses known_columns after row 1, else divides table width by max seen so far.
-    pub fn getDefaultCellWidth(ctx: *const Context) Unit {
-        const cols: usize = if (ctx.known_columns > 0)
-            ctx.known_columns
-        else if (ctx.max_columns > 0)
-            ctx.max_columns
-        else
-            1;
-        // Available width = table width minus spacing on edges and between cells
-        const total_spacing = ctx.border_spacing * @as(Unit, @intCast(cols + 1));
-        const available = @max(0, ctx.table_width - total_spacing);
-        return @divFloor(available, @as(Unit, @intCast(cols)));
-    }
-
-    /// Get the pre-computed width for column `col_idx` (0-based).
-    /// Falls back to equal distribution if auto-layout was not computed.
-    pub fn getColumnWidth(ctx: *const Context, col_idx: usize) Unit {
-        if (ctx.has_auto_widths and col_idx < ctx.known_columns and col_idx < MAX_COLUMNS) {
-            return ctx.column_widths[col_idx];
-        }
-        return ctx.getDefaultCellWidth();
+        ctx.open.deinit(allocator);
+        ctx.finished.deinit(allocator);
     }
 };
 
-/// Check if a node's tag name matches the given string.
-/// Creates a fresh iterator each time (eql consumes the iterator).
-fn nodeTagEql(env: *const Environment, node: NodeId, tag: []const u8) bool {
-    return env.nodeTagEql(node, tag);
-}
+/// Generate the box of a block-level element whose computed `display` is a
+/// table display type, if its parent allows it. Returns false when the
+/// element is not a table part here (the caller lays it out as a plain
+/// block — anonymous table objects are not generated).
+pub fn dispatch(box_gen: *BoxGen, node: NodeId, box_style: BoxStyle) !bool {
+    const layout = box_gen.getLayout();
+    const box_style_values = layout.computer.getComputedValue(.box_gen, .box_style) orelse return false;
+    const display = box_style_values.display;
+    const parent_role: Role = if (box_gen.stacks.block_info.top) |info| info.table_role else .none;
+    const open_table: ?*Table = if (box_gen.table_context.open.items.len > 0) box_gen.table_context.open.items[box_gen.table_context.open.items.len - 1] else null;
 
-/// Count columns by finding the first <tr> with <td>/<th> children.
-/// Walks through <tbody>/<thead>/<tfoot> wrappers. Skips empty/spacer rows.
-/// Returns 0 if no suitable <tr> is found (caller falls back to incremental counting).
-fn countColumnsFromDom(table_node: NodeId, env: *const Environment) usize {
-    var tr_iter = TrIterator.init(table_node, env);
-    while (tr_iter.next(env)) |tr| {
-        const count = countCellsInRow(tr, env);
-        if (count > 0) return count;
-    }
-    return 0;
-}
+    const role: Role = switch (display) {
+        .table => .table,
+        .table_row_group, .table_header_group, .table_footer_group => if (parent_role == .table) .row_group else return false,
+        .table_row => if (parent_role == .table or parent_role == .row_group) .row else return false,
+        .table_cell => if (parent_role == .row) .cell else return false,
+        .table_caption => if (parent_role == .table) .caption else return false,
+        else => return false,
+    };
 
-/// Count effective columns in a <tr> by summing colspan of each <td>/<th>.
-fn countCellsInRow(tr: NodeId, env: *const Environment) usize {
-    var count: usize = 0;
-    var child = tr.firstChild(env);
-    while (child) |ch| : (child = ch.nextSibling(env)) {
-        if (nodeTagEql(env, ch, "td") or nodeTagEql(env, ch, "th")) {
-            count += env.getNodeProperty(.colspan, ch);
-        }
-    }
-    return count;
-}
+    const allocator = layout.allocator;
+    // Values that must be read while the element is the current node.
+    const font = layout.computer.getSpecifiedValue(.box_gen, .font);
+    const content_width = layout.computer.getSpecifiedValue(.box_gen, .content_width);
 
-/// Iterates through <tr> elements in a table, descending into <tbody>/<thead>/<tfoot>.
-const TrIterator = struct {
-    /// Current child of the table (or section element)
-    current: ?NodeId,
-    /// If inside a section, the section's next sibling to resume from
-    section_resume: ?NodeId,
+    try flow.blockElement(box_gen, node, .flow, box_style.position);
+    const info = &box_gen.stacks.block_info.top.?;
+    info.table_role = role;
+    const block_index = box_gen.stacks.block.top.?.index;
+    const specified_height = info.sizes.get(.block_size);
 
-    fn init(table_node: NodeId, env: *const Environment) TrIterator {
-        return .{
-            .current = table_node.firstChild(env),
-            .section_resume = null,
-        };
-    }
-
-    fn next(self: *TrIterator, env: *const Environment) ?NodeId {
-        while (true) {
-            const node = self.current orelse {
-                // End of section children — resume at table level
-                if (self.section_resume) |resume_node| {
-                    self.current = resume_node;
-                    self.section_resume = null;
-                    continue;
-                }
-                return null;
-            };
-            self.current = node.nextSibling(env);
-
-            if (nodeTagEql(env, node, "tr")) return node;
-
-            // Descend into section elements
-            if (nodeTagEql(env, node, "tbody") or
-                nodeTagEql(env, node, "thead") or
-                nodeTagEql(env, node, "tfoot"))
-            {
-                // Save resume point and descend
-                self.section_resume = self.current;
-                self.current = node.firstChild(env);
-            }
-        }
-    }
-};
-
-// ─── CSS Table Auto-Layout (§17.5.2) ────────────────────────────────────────
-//
-// Pre-scans the table DOM to estimate min/max content width per column,
-// then distributes the table width using the CSS 2.1 automatic layout algorithm:
-//   1. Each column gets at least its minimum content width
-//   2. Remaining space is distributed proportionally to (max - min)
-//
-// Text width is estimated from character count × AVG_CHAR_WIDTH. This is
-// not pixel-accurate but produces correct column proportions for the common
-// case (short labels vs. long text).
-
-/// Min/max content width pair for a single cell.
-const CellWidthEstimate = struct {
-    /// Width of the longest unbreakable word (cannot be narrower than this).
-    min: Unit,
-    /// Width of the entire text on one line (preferred width without wrapping).
-    max: Unit,
-};
-
-/// Estimate the content width of a cell by walking its text nodes.
-/// Returns min (longest word) and max (total text) widths.
-fn estimateCellContentWidth(cell_node: NodeId, env: *const Environment, char_width: Unit) CellWidthEstimate {
-    var stats = TextStats{ .total_len = 0, .max_word_len = 0 };
-    collectTextStats(cell_node, env, &stats);
-
-    if (stats.total_len == 0) {
-        // No text content — use minimum for non-text elements (images, divs)
-        const min_cell_w = @max(MIN_CELL_WIDTH, char_width);
-        return .{ .min = min_cell_w, .max = min_cell_w };
-    }
-
-    const min_cell_w = @max(MIN_CELL_WIDTH, char_width);
-    const min_w = @max(min_cell_w, @as(Unit, @intCast(stats.max_word_len)) * char_width);
-    const max_w = @as(Unit, @intCast(stats.total_len)) * char_width;
-    return .{ .min = min_w, .max = @max(min_w, max_w) };
-}
-
-const TextStats = struct {
-    total_len: usize,
-    max_word_len: usize,
-};
-
-/// Recursively collect text statistics from a subtree.
-fn collectTextStats(node: NodeId, env: *const Environment, stats: *TextStats) void {
-    var child = node.firstChild(env);
-    while (child) |ch| : (child = ch.nextSibling(env)) {
-        if (env.getNodeProperty(.category, ch) == .text) {
-            const text_id = env.getNodeProperty(.text, ch);
-            const text = env.getText(text_id);
-            if (text.len == 0) continue;
-
-            // Accumulate total non-whitespace-only text length
-            stats.total_len += text.len;
-
-            // Find longest word (split on whitespace)
-            var word_start: usize = 0;
-            for (text, 0..) |byte, i| {
-                if (byte == ' ' or byte == '\t' or byte == '\n' or byte == '\r') {
-                    const word_len = i - word_start;
-                    if (word_len > stats.max_word_len) stats.max_word_len = word_len;
-                    word_start = i + 1;
-                }
-            }
-            // Last word (or only word if no spaces)
-            const last_word = text.len - word_start;
-            if (last_word > stats.max_word_len) stats.max_word_len = last_word;
-        } else {
-            // Recurse into child elements
-            collectTextStats(ch, env, stats);
-        }
-    }
-}
-
-/// Pre-scan all rows/cells to compute per-column min/max content widths,
-/// then distribute table width per CSS 2.1 §17.5.2 auto-layout.
-/// Writes results into ctx.column_widths and sets ctx.has_auto_widths.
-fn computeAutoColumnWidths(ctx: *Context, table_node: NodeId, env: *const Environment, fonts: *const Fonts) void {
-    const char_width = getRealCharWidth(fonts);
-    const num_cols = ctx.known_columns;
-    if (num_cols == 0 or num_cols > MAX_COLUMNS) return;
-
-    // Accumulate per-column min/max across all rows
-    var col_min: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS;
-    var col_max: [MAX_COLUMNS]Unit = [_]Unit{0} ** MAX_COLUMNS;
-
-    var tr_iter = TrIterator.init(table_node, env);
-    while (tr_iter.next(env)) |tr| {
-        // Only include rows where cell count matches expected columns.
-        // Rows with colspan produce fewer cells and would misalign
-        // content to the wrong column index.
-        const row_cells = countCellsInRow(tr, env);
-        if (row_cells != num_cols) continue;
-
-        var col_idx: usize = 0;
-        var cell_child = tr.firstChild(env);
-        while (cell_child) |cell| : (cell_child = cell.nextSibling(env)) {
-            if (!nodeTagEql(env, cell, "td") and !nodeTagEql(env, cell, "th")) continue;
-            if (col_idx >= num_cols) break;
-
-            const colspan: usize = env.getNodeProperty(.colspan, cell);
-            const est = estimateCellContentWidth(cell, env, char_width);
-            const span = @min(colspan, num_cols - col_idx);
-
-            if (span == 1) {
-                // CSS 2.1 step 3: single-column cells determine column intrinsic widths.
-                if (est.min > col_min[col_idx]) col_min[col_idx] = est.min;
-                if (est.max > col_max[col_idx]) col_max[col_idx] = est.max;
-
-                // Check if cell has explicit HTML width attribute
-                const explicit_px: u16 = env.getNodeProperty(.explicit_width_px, cell);
-                if (explicit_px > 0) {
-                    const explicit_units: Unit = @as(Unit, @intCast(explicit_px)) * units_per_pixel;
-                    if (explicit_units > col_min[col_idx]) col_min[col_idx] = explicit_units;
-                    if (explicit_units > ctx.col_explicit[col_idx]) ctx.col_explicit[col_idx] = explicit_units;
-                }
-            } else {
-                // CSS 2.1 step 4: multi-column cells — increase spanned columns so
-                // together they are at least as wide as the cell. Only increase the
-                // deficit, don't inflate narrow columns' max (which would distort
-                // the proportional distribution).
-                var spanned_min: Unit = 0;
-                for (col_idx..col_idx + span) |c_idx| {
-                    spanned_min += col_min[c_idx];
-                }
-                if (est.min > spanned_min) {
-                    const deficit = est.min - spanned_min;
-                    for (col_idx..col_idx + span) |c_idx| {
-                        col_min[c_idx] += @divFloor(deficit, @as(Unit, @intCast(span)));
-                    }
-                }
-            }
-            col_idx += span;
-        }
-    }
-
-    // CSS 2.1 §17.5.2.2 width distribution:
-    // 1. Explicit-width columns get their explicit width (clamped to at least col_min)
-    // 2. Remaining space distributes among auto columns proportional to (max - min)
-    const total_spacing = ctx.border_spacing * @as(Unit, @intCast(num_cols + 1));
-    const available = @max(0, ctx.table_width - total_spacing);
-
-    // Phase A: Assign explicit-width columns
-    var explicit_total: Unit = 0;
-    var auto_count: usize = 0;
-    for (0..num_cols) |i| {
-        if (col_min[i] == 0) col_min[i] = MIN_CELL_WIDTH;
-        if (ctx.col_explicit[i] > 0) {
-            // Explicit column: use explicit width, clamped to at least min content width
-            ctx.column_widths[i] = @max(ctx.col_explicit[i], col_min[i]);
-            explicit_total += ctx.column_widths[i];
-        } else {
-            auto_count += 1;
-        }
-    }
-
-    // Phase B: Distribute remaining space to auto columns
-    const auto_available = @max(0, available - explicit_total);
-    var sum_min: Unit = 0;
-    var sum_excess: Unit = 0;
-    for (0..num_cols) |i| {
-        if (ctx.col_explicit[i] == 0) { // auto column
-            sum_min += col_min[i];
-            sum_excess += @max(0, col_max[i] - col_min[i]);
-        }
-    }
-
-    if (auto_count == 0) {
-        // All columns are explicit — if total < available, distribute extra proportionally
-        if (explicit_total < available) {
-            const extra = available - explicit_total;
-            for (0..num_cols) |i| {
-                ctx.column_widths[i] += @divFloor(extra, @as(Unit, @intCast(num_cols)));
-            }
-        }
-    } else if (sum_min >= auto_available) {
-        // Not enough space for auto columns — scale down proportionally
-        for (0..num_cols) |i| {
-            if (ctx.col_explicit[i] == 0) {
-                ctx.column_widths[i] = if (sum_min > 0)
-                    @divFloor(col_min[i] * auto_available, sum_min)
-                else
-                    @divFloor(auto_available, @as(Unit, @intCast(auto_count)));
-            }
-        }
-    } else {
-        // Distribute remaining auto space proportional to (max - min)
-        const remaining = auto_available - sum_min;
-        for (0..num_cols) |i| {
-            if (ctx.col_explicit[i] == 0) { // auto column
-                if (sum_excess > 0) {
-                    const excess = @max(0, col_max[i] - col_min[i]);
-                    ctx.column_widths[i] = col_min[i] + @divFloor(excess * remaining, sum_excess);
-                } else {
-                    ctx.column_widths[i] = col_min[i] + @divFloor(remaining, @as(Unit, @intCast(auto_count)));
-                }
-            }
-        }
-    }
-
-    ctx.has_auto_widths = true;
-}
-
-pub fn beginMode(box_gen: *BoxGen) !void {
-    _ = box_gen;
-    // Table mode initialization happens in tableElement
-}
-
-fn endMode(box_gen: *BoxGen) void {
-    _ = box_gen;
-}
-
-/// Handle a table element
-pub fn tableElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
-    const computer = &box_gen.getLayout().computer;
-    const containing_block_size = box_gen.containingBlockSize();
-
-    // Treat table as a block, but track it in table context
-    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
-    const stacking_context = flow.solveStackingContext(computer, position);
-
-    // Read border-spacing from cascade (set by cellspacing HTML attr or CSS)
-    const font_specified = computer.getSpecifiedValue(.box_gen, .font);
-    const border_spacing_val: Unit = font_specified.border_spacing;
-
-    // Commit font group so descendant text nodes inherit font-size during layout.
-    computer.setComputedValue(.box_gen, .font, font_specified);
-    computer.commitNode(.box_gen);
-
-    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
-    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
-    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
-    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
-    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
-    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
-    computer.commitNode(.box_gen);
-
-    // Push table state and pre-compute column count from DOM structure.
-    // This lets row 1 cells be positioned horizontally (not stacked).
-    try box_gen.table_context.pushTable(box_gen.getLayout().allocator, sizes.inline_size_untagged);
-    box_gen.table_context.border_spacing = border_spacing_val;
-    const env = box_gen.getLayout().inputs.env;
-    const dom_columns = countColumnsFromDom(node, env);
-    if (dom_columns > 0) {
-        box_gen.table_context.known_columns = dom_columns;
-        box_gen.table_context.max_columns = dom_columns;
-
-        // Pre-scan cell content to compute auto-layout column widths
-        computeAutoColumnWidths(&box_gen.table_context, node, env, box_gen.getLayout().inputs.fonts);
-    }
-
-    const alloc = box_gen.getLayout().allocator;
-    box_gen.bfc_stack.top.? += 1;
-    try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .table, .bfc_depth = box_gen.bfc_stack.top.? });
-    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
-    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
-    try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
-    try box_gen.getLayout().pushNode();
-}
-
-/// Handle a table-row element
-pub fn rowElement(box_gen: *BoxGen, node: NodeId, position: BoxTree.BoxStyle.Position) !void {
-    const computer = &box_gen.getLayout().computer;
-    const containing_block_size = box_gen.containingBlockSize();
-
-    // Begin tracking this row
-    box_gen.table_context.beginRow();
-
-    // Treat row as a block
-    const sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
-    const stacking_context = flow.solveStackingContext(computer, position);
-    // Commit font group for child text inheritance.
-    const font_specified = computer.getSpecifiedValue(.box_gen, .font);
-    computer.setComputedValue(.box_gen, .font, font_specified);
-    computer.commitNode(.box_gen);
-
-    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
-    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
-    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
-    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
-    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
-    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
-    computer.commitNode(.box_gen);
-
-    const alloc = box_gen.getLayout().allocator;
-    box_gen.bfc_stack.top.? += 1;
-    try box_gen.table_context.block_type_stack.append(alloc, .{ .block_type = .row, .bfc_depth = box_gen.bfc_stack.top.? });
-    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
-    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
-    box_gen.stacks.block_info.top.?.is_table_row = true;
-    try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
-    try box_gen.getLayout().pushNode();
-}
-
-/// Handle a table-cell element.
-/// Positions the cell horizontally using row_x_cursor and sizes it
-/// based on CSS width (from HTML width attr injection) or auto-layout widths.
-pub fn cellElement(box_gen: *BoxGen, node: NodeId) !void {
-    const computer = &box_gen.getLayout().computer;
-    const containing_block_size = box_gen.containingBlockSize();
-    const table_ctx = &box_gen.table_context;
-
-    // Track cell for column counting
-    table_ctx.addCell();
-
-    // Read colspan from the DOM node
-    const env = box_gen.getLayout().inputs.env;
-    const colspan: usize = env.getNodeProperty(.colspan, node);
-    // Advance column counter for spanned columns (addCell already added 1)
-    if (colspan > 1) {
-        table_ctx.current_column += colspan - 1;
-        if (table_ctx.current_column > table_ctx.max_columns) {
-            table_ctx.max_columns = table_ctx.current_column;
-        }
-    }
-
-    // Check whether the cell has an explicit CSS width BEFORE solveAllSizes
-    // consumes the specified value. The old heuristic (resolved_width < table_w)
-    // was wrong: auto-resolved widths are reduced by padding, making them look
-    // "explicit" and bypassing the auto-layout column width.
-    const specified_width = computer.getSpecifiedValue(.box_gen, .content_width);
-    const has_explicit_width = specified_width.width != .auto;
-
-    // Solve sizes — CSS width (if injected from HTML attr) is picked up here
-    var sizes = flow.solveAllSizes(computer, .static, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
-    const stacking_context = flow.solveStackingContext(computer, .static);
-
-    const resolved_width = sizes.inline_size_untagged;
-    const table_w = table_ctx.table_width;
-
-    // 0-based column index for auto-layout lookup (points to first spanned column)
-    const col_idx = if (table_ctx.current_column >= colspan) table_ctx.current_column - colspan else 0;
-
-    const cell_width = if (has_explicit_width)
-        resolved_width
-    else if (table_w == 0)
-        resolved_width
-    else if (table_ctx.known_columns == 0)
-        resolved_width
-    else if (colspan > 1 and table_ctx.has_auto_widths) blk: {
-        // Sum column widths + internal spacing for spanned cell
-        var total: Unit = 0;
-        var k: usize = 0;
-        while (k < colspan and col_idx + k < table_ctx.known_columns) : (k += 1) {
-            total += table_ctx.getColumnWidth(col_idx + k);
-            if (k > 0) total += table_ctx.border_spacing;
-        }
-        break :blk if (total > 0) total else table_ctx.getDefaultCellWidth();
-    } else if (table_ctx.has_auto_widths)
-        table_ctx.getColumnWidth(col_idx)
-    else
-        table_ctx.getDefaultCellWidth();
-
-    // Apply horizontal positioning whenever column count is known
-    if (table_ctx.known_columns > 0) {
-        sizes.inline_size_untagged = cell_width;
-        sizes.margin_inline_start_untagged = table_ctx.row_x_cursor;
-    }
-
-    // Advance cursor by full border-box width (content + padding + border)
-    const cell_border_box = cell_width + sizes.padding_inline_start + sizes.padding_inline_end + sizes.border_inline_start + sizes.border_inline_end;
-    table_ctx.advanceCursor(cell_border_box);
-
-    // Commit font group for child text inheritance.
-    const cell_font = computer.getSpecifiedValue(.box_gen, .font);
-    computer.setComputedValue(.box_gen, .font, cell_font);
-    computer.commitNode(.box_gen);
-
-    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
-    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
-    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
-    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
-    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
-    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
-    computer.commitNode(.box_gen);
-
-    const alloc = box_gen.getLayout().allocator;
-    box_gen.bfc_stack.top.? += 1;
-    try table_ctx.block_type_stack.append(alloc, .{ .block_type = .cell, .bfc_depth = box_gen.bfc_stack.top.? });
-    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = .static };
-    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
-    box_gen.stacks.block_info.top.?.is_bfc = true;
-    box_gen.stacks.block_info.top.?.vertical_align = cell_font.vertical_align;
-    try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
-    try box_gen.getLayout().pushNode();
-}
-
-pub fn nullNode(box_gen: *BoxGen, element_type: enum { table, row, cell, unknown }) ?void {
-    switch (element_type) {
+    switch (role) {
         .table => {
-            box_gen.table_context.popTable();
-            box_gen.popFlowBlock(.normal);
-            box_gen.getLayout().popNode();
+            // Tables establish a block formatting context (CSS 2.1 §17.4).
+            info.is_bfc = true;
+            const t = try allocator.create(Table);
+            t.* = .{
+                .block = block_index,
+                .subtree_id = box_gen.currentSubtree(),
+                // §17.6.2: no spacing between cells in the collapsing model.
+                .spacing_h = if (font.border_collapse == .collapse) 0 else font.border_spacing.h,
+                .spacing_v = if (font.border_collapse == .collapse) 0 else font.border_spacing.v,
+                .specified_width = content_width.width != .auto,
+                .node = node,
+                .collapse = font.border_collapse == .collapse,
+            };
+            try box_gen.table_context.open.append(allocator, t);
+        },
+        .row_group => {
+            const t = open_table.?;
+            try t.groups.append(allocator, .{
+                .block = block_index,
+                .kind = switch (display) {
+                    .table_header_group => .header,
+                    .table_footer_group => .footer,
+                    else => .body,
+                },
+            });
         },
         .row => {
-            box_gen.popFlowBlock(.normal);
-            box_gen.getLayout().popNode();
+            const t = open_table.?;
+            const group_index: u32 = blk: {
+                if (parent_role == .row_group) break :blk @intCast(t.groups.items.len - 1);
+                // Consecutive rows directly in the table share one anonymous
+                // body group.
+                if (t.groups.items.len > 0 and t.groups.items[t.groups.items.len - 1].block == null) {
+                    break :blk @intCast(t.groups.items.len - 1);
+                }
+                try t.groups.append(allocator, .{ .block = null, .kind = .body });
+                break :blk @intCast(t.groups.items.len - 1);
+            };
+            try t.rows.append(allocator, .{ .block = block_index, .height = specified_height });
+            try t.groups.items[group_index].rows.append(allocator, @intCast(t.rows.items.len - 1));
         },
         .cell => {
-            box_gen.popFlowBlock(.normal);
-            box_gen.getLayout().popNode();
+            // Cells establish a block formatting context (CSS 2.1 §17.4).
+            info.is_bfc = true;
+            const t = open_table.?;
+            const env = layout.inputs.env;
+            try t.cells.append(allocator, .{
+                .block = block_index,
+                .node = node,
+                .colspan = env.getNodeProperty(.colspan, node),
+                .rowspan = env.getNodeProperty(.rowspan, node),
+                .vertical_align = font.vertical_align,
+                .height = specified_height,
+            });
+            try t.rows.items[t.rows.items.len - 1].cells.append(allocator, @intCast(t.cells.items.len - 1));
         },
-        .unknown => {
-            box_gen.popFlowBlock(.normal);
-            box_gen.getLayout().popNode();
-        },
+        .caption => try open_table.?.captions.append(allocator, block_index),
+        .none => unreachable,
     }
-    return null;
+    return true;
 }
 
-pub fn afterFlowMode() noreturn {
-    unreachable;
+/// Lay out the table whose element is closing (block `table_index` of
+/// `subtree`): sets `sizes`' used inline size (and auto margins) and returns
+/// the table's content height.
+pub fn layoutTable(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: Subtree.Id, table_index: Subtree.Size, sizes: *BlockUsedSizes) Unit {
+    const layout = box_gen.getLayout();
+    const ctx = &box_gen.table_context;
+    const t = ctx.open.pop().?;
+    std.debug.assert(t.block == table_index);
+    ctx.finished.put(layout.allocator, .{ .subtree_id = subtree_id, .block = table_index }, t) catch {};
+
+    // `sizes.inline_size` is the specified width, or for `auto` the width the
+    // table would take as a plain block: the available space.
+    var available = sizes.get(.inline_size).?;
+    if (t.collapse) {
+        // §17.6.2: the table's box takes the outer halves of the collapsed
+        // edges as its border, and has no padding.
+        t.own_borders = .{ sizes.border_inline_start, sizes.border_inline_end, sizes.border_block_start, sizes.border_block_end };
+        prepareCollapsed(layout, subtree, t);
+        const old_h = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
+        sizes.border_inline_start = t.outer[0];
+        sizes.border_inline_end = t.outer[1];
+        sizes.border_block_start = t.outer[2];
+        sizes.border_block_end = t.outer[3];
+        sizes.padding_inline_start = 0;
+        sizes.padding_inline_end = 0;
+        sizes.padding_block_start = 0;
+        sizes.padding_block_end = 0;
+        if (!t.specified_width) available += old_h - (t.outer[0] + t.outer[1]);
+    }
+    const result = layoutGrid(layout, subtree, t, available);
+    sizes.setValue(.inline_size, result.width);
+
+    // CSS 2.1 §10.3.3 for the table's used width: auto margins share the
+    // remaining space (block-level tables center with `margin: auto`).
+    const cb_width: Unit = if (box_gen.stacks.containing_block_size.top) |cb| cb.width else result.width;
+    const edges = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
+    const remaining = cb_width - result.width - edges;
+    const flags = sizes.intrinsic;
+    if (flags.margin_start_auto and flags.margin_end_auto) {
+        const start = @max(0, @divFloor(remaining, 2));
+        sizes.setValue(.margin_inline_start, start);
+        sizes.setValue(.margin_inline_end, remaining - start);
+    } else if (flags.margin_start_auto) {
+        sizes.setValue(.margin_inline_start, remaining - sizes.margin_inline_end_untagged);
+    } else if (flags.margin_end_auto) {
+        sizes.setValue(.margin_inline_end, remaining - sizes.margin_inline_start_untagged);
+    } else if (box_gen.stacks.block_info.top) |parent| {
+        // A table is a non-auto-width box for legacy alignment.
+        const saved_width_kind = sizes.intrinsic.width;
+        sizes.intrinsic.width = .fixed;
+        sizes.setValue(.margin_inline_start, sizes.specified_margins[0]);
+        sizes.setValue(.margin_inline_end, remaining - sizes.specified_margins[0]);
+        flow.alignToParentTextAlign(sizes, cb_width, parent.text_align);
+        sizes.intrinsic.width = saved_width_kind;
+    }
+    return result.height;
 }
 
-pub fn beforeInlineMode() SizeMode {
-    return .normal;
+/// Rerun the table algorithm for a table block being relaid out with a
+/// content box `content_w` wide. Returns the new content height, or null if
+/// `index` is not a laid-out table.
+pub fn relayoutTable(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, content_w: Unit) ?Unit {
+    const t = layout.box_gen.table_context.finished.get(.{ .subtree_id = subtree_id, .block = index }) orelse return null;
+    if (t.collapse) prepareCollapsed(layout, subtree, t);
+    const available = if (t.specified_width) subtree.items(.box_offsets)[index].content_size.w else content_w;
+    const result = layoutGrid(layout, subtree, t, available);
+    const bo = &subtree.items(.box_offsets)[index];
+    const edges = bo.border_size.w - bo.content_size.w;
+    bo.content_size.w = result.width;
+    bo.border_size.w = result.width + edges;
+    return result.height;
 }
 
-pub fn afterInlineMode() void {}
+/// Min/max-content border-box width of a laid-out table block, or null if
+/// `index` is not one (used by `intrinsic.zig` for tables nested in cells).
+pub fn intrinsicSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) ?intrinsic.Sizes {
+    const t = layout.box_gen.table_context.finished.get(.{ .subtree_id = subtree_id, .block = index }) orelse return null;
+    var measured = measure(layout, subtree, t) catch return null;
+    defer measured.deinit();
+    const bo = subtree.items(.box_offsets)[index];
+    const edges = bo.border_size.w - bo.content_size.w;
+    if (t.specified_width) {
+        const w = @max(bo.content_size.w, measured.table_min) + edges;
+        return .{ .min = @max(measured.table_min + edges, w), .max = w };
+    }
+    return .{ .min = measured.table_min + edges, .max = measured.table_max + edges };
+}
 
-pub fn afterStfMode() noreturn {
-    unreachable;
+const GridResult = struct { width: Unit, height: Unit };
+
+/// Steps 1-4 shared by layout and intrinsic sizing: row order, grid slots,
+/// column measures and the table's min/max content widths (excluding the
+/// table's own padding and border).
+const Measured = struct {
+    allocator: Allocator,
+    order: std.ArrayListUnmanaged(u32) = .{},
+    group_order: std.ArrayListUnmanaged(u32) = .{},
+    cols: []Column = &.{},
+    measures: []intrinsic.Sizes = &.{},
+    nrows: u32 = 0,
+    ncols: u32 = 0,
+    spacing_total: Unit = 0,
+    table_min: Unit = 0,
+    table_max: Unit = 0,
+
+    fn deinit(m: *Measured) void {
+        m.order.deinit(m.allocator);
+        m.group_order.deinit(m.allocator);
+        m.allocator.free(m.cols);
+        m.allocator.free(m.measures);
+    }
+};
+
+fn measure(layout: *Layout, subtree: Subtree.View, t: *Table) !Measured {
+    const allocator = layout.allocator;
+    const box_offsets = subtree.items(.box_offsets);
+    var result: Measured = .{ .allocator = allocator };
+    errdefer result.deinit();
+
+    // 1. Row order: header groups, body rows, footer groups (CSS 2.1 §17.2).
+    const order = &result.order;
+    const group_order = &result.group_order;
+    inline for (.{ GroupKind.header, GroupKind.body, GroupKind.footer }) |kind| {
+        for (t.groups.items, 0..) |g, gi| {
+            if (g.kind != kind) continue;
+            try group_order.append(allocator, @intCast(gi));
+            for (g.rows.items) |r| try order.append(allocator, r);
+        }
+    }
+    result.nrows = @intCast(order.items.len);
+
+    const ncols = try assignSlots(allocator, t, group_order.items);
+    // 2-3. Column measures.
+    result.ncols = ncols;
+    result.cols = try allocator.alloc(Column, ncols);
+    const cols = result.cols;
+    @memset(cols, .{});
+    result.measures = try allocator.alloc(intrinsic.Sizes, t.cells.items.len);
+    const measures = result.measures;
+    for (t.cells.items, 0..) |cell, ci| {
+        var m = intrinsic.blockBorderBoxSizes(layout, subtree, t.subtree_id, cell.block);
+        const flags = subtree.items(.intrinsic)[cell.block];
+        if (flags.width == .fixed) {
+            // A specified cell width is a minimum and the preferred width
+            // (CSS Tables 3 §3.9.2); content still sets the floor.
+            const content = intrinsic.contentBorderBoxSizes(layout, subtree, t.subtree_id, cell.block);
+            m.min = @max(content.min, box_offsets[cell.block].border_size.w);
+            m.max = m.min;
+        }
+        measures[ci] = m;
+        if (cell.colspan == 1) {
+            const col = &cols[cell.col];
+            col.min = @max(col.min, m.min);
+            if (flags.width == .fixed) {
+                col.max = if (col.constrained) @max(col.max, m.max) else m.max;
+                col.constrained = true;
+            } else if (!col.constrained) {
+                col.max = @max(col.max, m.max);
+            }
+            if (flags.width == .percentage) col.percent = @max(col.percent, subtree.items(.percent_width)[cell.block]);
+            col.max = @max(col.max, col.min);
+        }
+    }
+    // Spanning cells, narrowest span first.
+    var span: u32 = 2;
+    while (span <= ncols) : (span += 1) {
+        for (t.cells.items, 0..) |cell, ci| {
+            if (cell.colspan != span) continue;
+            const spanned = cols[cell.col..@min(ncols, cell.col + span)];
+            const spacing_inside = t.spacing_h * @as(Unit, @intCast(spanned.len - 1));
+            distributeExcess(spanned, measures[ci].min - spacing_inside, .min);
+            distributeExcess(spanned, measures[ci].max - spacing_inside, .max);
+            for (spanned) |*col| col.max = @max(col.max, col.min);
+        }
+    }
+
+    // 4. The table's used content width.
+    const spacing_total: Unit = if (ncols > 0) t.spacing_h * @as(Unit, @intCast(ncols + 1)) else 0;
+    var sum_min: Unit = 0;
+    var sum_max: Unit = 0;
+    var sum_percent: f32 = 0;
+    var max_non_percent: Unit = 0;
+    for (cols) |col| {
+        sum_min += col.min;
+        sum_max += col.max;
+        sum_percent += col.percent;
+        if (col.percent == 0) max_non_percent += col.max;
+    }
+    var table_max = sum_max + spacing_total;
+    if (sum_percent > 0) {
+        // Percentage columns widen the table's max-content width so each
+        // keeps its share (Chromium AutoTableLayout).
+        const pct_total = @min(sum_percent, 1.0);
+        for (cols) |col| {
+            if (col.percent > 0) table_max = @max(table_max, @as(Unit, @intFromFloat(@as(f32, @floatFromInt(col.max)) / col.percent)) + spacing_total);
+        }
+        if (pct_total < 1.0) table_max = @max(table_max, @as(Unit, @intFromFloat(@as(f32, @floatFromInt(max_non_percent)) / (1.0 - pct_total))) + spacing_total);
+    }
+    result.spacing_total = spacing_total;
+    result.table_min = sum_min + spacing_total;
+    result.table_max = table_max;
+    return result;
+}
+
+fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit) GridResult {
+    const allocator = layout.allocator;
+    const box_offsets = subtree.items(.box_offsets);
+    var measured = measure(layout, subtree, t) catch return .{ .width = available, .height = 0 };
+    defer measured.deinit();
+    const order = &measured.order;
+    const group_order = &measured.group_order;
+    const cols = measured.cols;
+    const nrows = measured.nrows;
+    const ncols = measured.ncols;
+    const spacing_total = measured.spacing_total;
+    const width: Unit = if (t.specified_width)
+        @max(available, measured.table_min)
+    else
+        @max(measured.table_min, @min(measured.table_max, available));
+
+    // 5. Distribute to columns.
+    distributeWidth(cols, width - spacing_total);
+
+    // 6. Cells at their widths.
+    const col_x = allocator.alloc(Unit, ncols + 1) catch return .{ .width = width, .height = 0 };
+    defer allocator.free(col_x);
+    {
+        var x = t.spacing_h;
+        for (cols, 0..) |col, c| {
+            col_x[c] = x;
+            x += col.width + t.spacing_h;
+        }
+        col_x[ncols] = x;
+    }
+    const cell_heights = allocator.alloc(Unit, t.cells.items.len) catch return .{ .width = width, .height = 0 };
+    defer allocator.free(cell_heights);
+    for (t.cells.items, 0..) |cell, ci| {
+        const end_col = @min(ncols, cell.col + cell.colspan);
+        const cell_w = col_x[end_col] - t.spacing_h - col_x[cell.col];
+        const bo = &box_offsets[cell.block];
+        const edges = bo.border_size.w - bo.content_size.w;
+        const content_w = @max(0, cell_w - edges);
+        bo.border_size.w = content_w + edges;
+        bo.content_size.w = content_w;
+        // Cells have no margins (CSS 2.1 §17.5).
+        subtree.items(.margins)[cell.block].left = 0;
+        subtree.items(.margins)[cell.block].right = 0;
+        bo.border_pos = .{ .x = 0, .y = 0 };
+        relayout.relayoutContent(layout, subtree, t.subtree_id, cell.block, content_w);
+        // A cell's specified height is a minimum (§17.5.3).
+        if (cell.height) |h| {
+            if (bo.content_size.h < h) relayout.setContentHeight(subtree, cell.block, h);
+        }
+        cell_heights[ci] = bo.border_size.h;
+    }
+
+    // Row heights (§17.5.3).
+    const row_h = allocator.alloc(Unit, nrows) catch return .{ .width = width, .height = 0 };
+    defer allocator.free(row_h);
+    for (order.items, 0..) |r, pos| row_h[pos] = t.rows.items[r].height orelse 0;
+    for (t.cells.items, 0..) |cell, ci| {
+        if (cell.span_rows == 1) row_h[cell.row] = @max(row_h[cell.row], cell_heights[ci]);
+    }
+    for (t.cells.items, 0..) |cell, ci| {
+        if (cell.span_rows == 1) continue;
+        var have = t.spacing_v * @as(Unit, @intCast(cell.span_rows - 1));
+        for (row_h[cell.row .. cell.row + cell.span_rows]) |h| have += h;
+        if (cell_heights[ci] > have) row_h[cell.row + cell.span_rows - 1] += cell_heights[ci] - have;
+    }
+    const row_y = allocator.alloc(Unit, nrows) catch return .{ .width = width, .height = 0 };
+    defer allocator.free(row_y);
+
+    // Captions above the grid (caption-side: top).
+    var y: Unit = 0;
+    for (t.captions.items) |cap| {
+        relayout.relayoutBlock(layout, subtree, t.subtree_id, cap, width);
+        subtree.items(.offset)[cap] = .{ .x = 0, .y = y };
+        y += box_offsets[cap].border_size.h + subtree.items(.margins)[cap].top + subtree.items(.margins)[cap].bottom;
+    }
+    if (nrows > 0) y += t.spacing_v;
+    for (0..nrows) |pos| {
+        row_y[pos] = y;
+        y += row_h[pos] + t.spacing_v;
+    }
+    const grid_width = @max(0, width - 2 * t.spacing_h);
+
+    // Groups and rows.
+    var pos: u32 = 0;
+    for (group_order.items) |gi| {
+        const g = t.groups.items[gi];
+        if (g.rows.items.len == 0) {
+            if (g.block) |gb| placeBox(subtree, gb, t.spacing_h, y, grid_width, 0);
+            continue;
+        }
+        const first = pos;
+        const last = pos + @as(u32, @intCast(g.rows.items.len)) - 1;
+        const group_top = row_y[first];
+        const group_bottom = row_y[last] + row_h[last];
+        // Rows are offset within their group, or within the table for the
+        // anonymous group.
+        const origin_x: Unit = if (g.block != null) 0 else t.spacing_h;
+        const origin_y: Unit = if (g.block != null) group_top else 0;
+        if (g.block) |gb| placeBox(subtree, gb, t.spacing_h, group_top, grid_width, group_bottom - group_top);
+        for (g.rows.items) |r| {
+            placeBox(subtree, t.rows.items[r].block, origin_x, row_y[pos] - origin_y, grid_width, row_h[pos]);
+            pos += 1;
+        }
+    }
+
+    // Cells within their row: x from the column grid, height spanning rows.
+    for (t.cells.items) |cell| {
+        const bo = &box_offsets[cell.block];
+        var h = t.spacing_v * @as(Unit, @intCast(cell.span_rows - 1));
+        for (row_h[cell.row .. cell.row + cell.span_rows]) |rh| h += rh;
+        const content_h = bo.content_size.h;
+        const top_edge = bo.content_pos.y;
+        const bottom_edge = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        bo.border_size.h = h;
+        const free = h - top_edge - bottom_edge - content_h;
+        const shift: Unit = switch (cell.vertical_align) {
+            .middle => @divFloor(free, 2),
+            .bottom => free,
+            .top, .baseline => 0,
+        };
+        bo.content_pos.y = top_edge + @max(0, shift);
+        bo.content_size.h = h - bo.content_pos.y - bottom_edge;
+        subtree.items(.offset)[cell.block] = .{ .x = col_x[cell.col] - t.spacing_h, .y = 0 };
+    }
+
+    return .{ .width = width, .height = y };
+}
+
+fn placeBox(subtree: Subtree.View, index: Subtree.Size, x: Unit, y: Unit, w: Unit, h: Unit) void {
+    const bo = &subtree.items(.box_offsets)[index];
+    const margins = &subtree.items(.margins)[index];
+    margins.* = .{};
+    bo.border_pos = .{ .x = 0, .y = 0 };
+    const edges_w = bo.border_size.w - bo.content_size.w;
+    const edges_h = bo.border_size.h - bo.content_size.h;
+    bo.border_size = .{ .w = w, .h = h };
+    bo.content_size = .{ .w = @max(0, w - edges_w), .h = @max(0, h - edges_h) };
+    subtree.items(.offset)[index] = .{ .x = x, .y = y };
+}
+
+/// Grow the spanned columns so together they reach `target` for the given
+/// measure, in proportion to their max-content widths (equally when those
+/// are all zero).
+fn distributeExcess(spanned: []Column, target: Unit, comptime which: enum { min, max }) void {
+    var have: Unit = 0;
+    var weight: i64 = 0;
+    for (spanned) |col| {
+        have += @field(col, @tagName(which));
+        weight += col.max;
+    }
+    if (target <= have) return;
+    const excess = target - have;
+    var given: Unit = 0;
+    for (spanned, 0..) |*col, i| {
+        const share: Unit = if (i == spanned.len - 1)
+            excess - given
+        else if (weight > 0)
+            @intCast(@divFloor(@as(i64, excess) * col.max, weight))
+        else
+            @divFloor(excess, @as(Unit, @intCast(spanned.len)));
+        @field(col, @tagName(which)) += share;
+        given += share;
+    }
+}
+
+/// CSS Tables 3 §3.10: distribute `target` (the table width minus spacing)
+/// to the columns.
+fn distributeWidth(cols: []Column, target: Unit) void {
+    if (cols.len == 0) return;
+    const guesses = [_]Guess{ .min, .min_percent, .min_specified, .max };
+    var sums: [guesses.len]Unit = undefined;
+    for (guesses, 0..) |g, gi| {
+        var sum: Unit = 0;
+        for (cols) |col| sum += guess(col, g, target);
+        sums[gi] = sum;
+    }
+    if (target <= sums[0]) {
+        for (cols) |*col| col.width = col.min;
+        return;
+    }
+    // Interpolate between the two guesses bracketing the target.
+    var gi: usize = 0;
+    while (gi + 1 < guesses.len) : (gi += 1) {
+        if (target <= sums[gi + 1]) {
+            const span = sums[gi + 1] - sums[gi];
+            var given: Unit = 0;
+            for (cols, 0..) |*col, c| {
+                const a = guess(col.*, guesses[gi], target);
+                const b = guess(col.*, guesses[gi + 1], target);
+                col.width = if (c == cols.len - 1)
+                    target - given
+                else if (span > 0)
+                    a + @as(Unit, @intCast(@divFloor(@as(i64, b - a) * (target - sums[gi]), span)))
+                else
+                    a;
+                given += col.width;
+            }
+            return;
+        }
+    }
+    // Beyond the max-content guess: excess to auto columns with a max-content
+    // width, else to all auto columns, else to constrained columns, else to
+    // percentage columns, in proportion to max-content widths.
+    for (cols) |*col| col.width = guess(col.*, .max, target);
+    const excess = target - sums[guesses.len - 1];
+    const Pick = enum { auto_with_max, auto_any, constrained, percent, all };
+    inline for (.{ Pick.auto_with_max, Pick.auto_any, Pick.constrained, Pick.percent, Pick.all }) |pick| {
+        var count: usize = 0;
+        var weight: i64 = 0;
+        for (cols) |col| {
+            if (picked(col, pick)) {
+                count += 1;
+                weight += col.max;
+            }
+        }
+        if (count > 0) {
+            var given: Unit = 0;
+            var seen: usize = 0;
+            for (cols) |*col| {
+                if (!picked(col.*, pick)) continue;
+                seen += 1;
+                const share: Unit = if (seen == count)
+                    excess - given
+                else if (weight > 0 and pick != .auto_any and pick != .all)
+                    @intCast(@divFloor(@as(i64, excess) * col.max, weight))
+                else
+                    @divFloor(excess, @as(Unit, @intCast(count)));
+                col.width += share;
+                given += share;
+            }
+            return;
+        }
+    }
+}
+
+fn picked(col: Column, pick: anytype) bool {
+    const is_auto = !col.constrained and col.percent == 0;
+    return switch (pick) {
+        .auto_with_max => is_auto and col.max > 0,
+        .auto_any => is_auto,
+        .constrained => col.constrained and col.percent == 0,
+        .percent => col.percent > 0,
+        .all => true,
+    };
+}
+
+const Guess = enum { min, min_percent, min_specified, max };
+
+fn guess(col: Column, g: Guess, target: Unit) Unit {
+    const percent_width: Unit = @intFromFloat(col.percent * @as(f32, @floatFromInt(target)));
+    return switch (g) {
+        .min => col.min,
+        .min_percent => if (col.percent > 0) @max(col.min, percent_width) else col.min,
+        .min_specified => if (col.percent > 0) @max(col.min, percent_width) else if (col.constrained) col.max else col.min,
+        .max => if (col.percent > 0) @max(col.min, percent_width) else col.max,
+    };
+}
+
+/// Row order (header groups, body, footer groups — CSS 2.1 §17.2) into
+/// `group_order` / `order`.
+fn orderRows(allocator: Allocator, t: *const Table, order: *std.ArrayListUnmanaged(u32), group_order: *std.ArrayListUnmanaged(u32)) !void {
+    inline for (.{ GroupKind.header, GroupKind.body, GroupKind.footer }) |kind| {
+        for (t.groups.items, 0..) |g, gi| {
+            if (g.kind != kind) continue;
+            try group_order.append(allocator, @intCast(gi));
+            for (g.rows.items) |r| try order.append(allocator, r);
+        }
+    }
+}
+
+/// Grid slots for every cell (row in display order, first column, rows
+/// spanned), honouring colspan and rowspan. Returns the column count.
+fn assignSlots(allocator: Allocator, t: *Table, group_order: []const u32) !u32 {
+    // `busy[c]` = first ordered row index at which column c is free again.
+    var busy: std.ArrayListUnmanaged(u32) = .{};
+    defer busy.deinit(allocator);
+    var ncols: u32 = 0;
+    var row_pos: u32 = 0;
+    for (group_order) |gi| {
+        const g = t.groups.items[gi];
+        const group_end = row_pos + @as(u32, @intCast(g.rows.items.len));
+        for (g.rows.items) |r| {
+            var col: u32 = 0;
+            for (t.rows.items[r].cells.items) |ci| {
+                const cell = &t.cells.items[ci];
+                while (col < busy.items.len and busy.items[col] > row_pos) col += 1;
+                const span_rows: u32 = if (cell.rowspan == 0) group_end - row_pos else @min(cell.rowspan, group_end - row_pos);
+                cell.row = row_pos;
+                cell.col = col;
+                cell.span_rows = @max(1, span_rows);
+                const end_col = col + cell.colspan;
+                while (busy.items.len < end_col) try busy.append(allocator, 0);
+                var c = col;
+                while (c < end_col) : (c += 1) busy.items[c] = row_pos + cell.span_rows;
+                col = end_col;
+                ncols = @max(ncols, end_col);
+            }
+            row_pos += 1;
+        }
+    }
+    return ncols;
+}
+
+// ─── Collapsing border model (CSS 2.1 §17.6.2) ──────────────────────────
+
+const Edge = struct {
+    width: Unit = 0,
+    style_rank: u8 = 0,
+    origin_rank: u8 = 0,
+    color: math.Color = .transparent,
+    hidden: bool = false,
+    set: bool = false,
+};
+
+fn styleRank(style: types.BorderStyle) u8 {
+    return switch (style) {
+        .none, .hidden => 0,
+        .inset => 1,
+        .groove => 2,
+        .outset => 3,
+        .ridge => 4,
+        .dotted => 5,
+        .dashed => 6,
+        .solid => 7,
+        .double => 8,
+    };
+}
+
+/// Offer one border to an edge (§17.6.2.1 conflict resolution). Earlier
+/// offers win ties (the cell further left / higher up).
+fn offer(edge: *Edge, width: Unit, style: types.BorderStyle, origin_rank: u8, color: math.Color) void {
+    if (style == .hidden) {
+        edge.hidden = true;
+        return;
+    }
+    const w: Unit = if (style == .none) 0 else width;
+    const rank = styleRank(style);
+    if (edge.set) {
+        if (w < edge.width) return;
+        if (w == edge.width) {
+            if (rank < edge.style_rank) return;
+            if (rank == edge.style_rank and origin_rank <= edge.origin_rank) return;
+        }
+    }
+    edge.* = .{ .width = w, .style_rank = rank, .origin_rank = origin_rank, .color = color, .hidden = edge.hidden, .set = true };
+}
+
+fn edgeWidth(e: Edge) Unit {
+    return if (e.hidden) 0 else e.width;
+}
+
+const Sides = struct {
+    widths: [4]Unit,
+    styles: [4]types.BorderStyle,
+    colors: [4]math.Color,
+};
+
+/// An element's own borders: widths as laid out before collapsing, styles
+/// and colors from its committed computed values.
+fn ownSides(layout: *Layout, node: NodeId, widths: [4]Unit) Sides {
+    const computer = &layout.computer;
+    var sides: Sides = .{ .widths = widths, .styles = .{ .none, .none, .none, .none }, .colors = .{ .transparent, .transparent, .transparent, .transparent } };
+    if (computer.committedValue(.box_gen, .border_styles, node)) |bs| sides.styles = .{ bs.left, bs.right, bs.top, bs.bottom };
+    const color_value = computer.committedValue(.box_gen, .color, node);
+    const current: math.Color = if (color_value) |c| solve.colorProperty(c)[1] else .{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    if (computer.committedValue(.box_gen, .border_colors, node)) |bc| {
+        const used = solve.borderColors(bc, current);
+        sides.colors = .{ used.left, used.right, used.top, used.bottom };
+    }
+    return sides;
+}
+
+/// Resolve the collapsed edges of table `t` and give each cell's box half
+/// of each of its edges (start/top halves round down, end/bottom halves
+/// take the rest). Records the table's outer halves in `t.outer`.
+fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
+    const allocator = layout.allocator;
+    var order: std.ArrayListUnmanaged(u32) = .{};
+    defer order.deinit(allocator);
+    var group_order: std.ArrayListUnmanaged(u32) = .{};
+    defer group_order.deinit(allocator);
+    orderRows(allocator, t, &order, &group_order) catch return;
+    const ncols = assignSlots(allocator, t, group_order.items) catch return;
+    const nrows: u32 = @intCast(order.items.len);
+    if (ncols == 0 or nrows == 0) {
+        t.outer = .{ @divFloor(t.own_borders[0], 2), @divFloor(t.own_borders[1], 2), @divFloor(t.own_borders[2], 2), @divFloor(t.own_borders[3], 2) };
+        return;
+    }
+    // Vertical edges: (nrows) x (ncols + 1); horizontal: (nrows + 1) x ncols.
+    const v = allocator.alloc(Edge, nrows * (ncols + 1)) catch return;
+    defer allocator.free(v);
+    const h = allocator.alloc(Edge, (nrows + 1) * ncols) catch return;
+    defer allocator.free(h);
+    @memset(v, .{});
+    @memset(h, .{});
+    const V = struct {
+        fn at(edges: []Edge, n: u32, r: u32, c: u32) *Edge {
+            return &edges[r * (n + 1) + c];
+        }
+    };
+    const H = struct {
+        fn at(edges: []Edge, n: u32, r: u32, c: u32) *Edge {
+            return &edges[r * n + c];
+        }
+    };
+
+    // Cells first (origin rank 4), in row-major order so earlier cells win
+    // ties, then the table (origin rank 0).
+    for (t.cells.items) |*cell| {
+        if (cell.own_borders == null) {
+            const b = subtree.items(.borders)[cell.block];
+            cell.own_borders = .{ b.left, b.right, b.top, b.bottom };
+        }
+        const sides = ownSides(layout, cell.node, cell.own_borders.?);
+        const r0 = cell.row;
+        const r1 = @min(nrows, cell.row + cell.span_rows);
+        const c0 = cell.col;
+        const c1 = @min(ncols, cell.col + cell.colspan);
+        var r = r0;
+        while (r < r1) : (r += 1) {
+            offer(V.at(v, ncols, r, c0), sides.widths[0], sides.styles[0], 4, sides.colors[0]);
+            offer(V.at(v, ncols, r, c1), sides.widths[1], sides.styles[1], 4, sides.colors[1]);
+        }
+        var c = c0;
+        while (c < c1) : (c += 1) {
+            offer(H.at(h, ncols, r0, c), sides.widths[2], sides.styles[2], 4, sides.colors[2]);
+            offer(H.at(h, ncols, r1, c), sides.widths[3], sides.styles[3], 4, sides.colors[3]);
+        }
+    }
+    const table_sides = ownSides(layout, t.node, t.own_borders);
+    for (0..nrows) |r| {
+        offer(V.at(v, ncols, @intCast(r), 0), table_sides.widths[0], table_sides.styles[0], 0, table_sides.colors[0]);
+        offer(V.at(v, ncols, @intCast(r), ncols), table_sides.widths[1], table_sides.styles[1], 0, table_sides.colors[1]);
+    }
+    for (0..ncols) |c| {
+        offer(H.at(h, ncols, 0, @intCast(c)), table_sides.widths[2], table_sides.styles[2], 0, table_sides.colors[2]);
+        offer(H.at(h, ncols, nrows, @intCast(c)), table_sides.widths[3], table_sides.styles[3], 0, table_sides.colors[3]);
+    }
+
+    // Cells: half edges (widest segment of a spanning side).
+    for (t.cells.items) |cell| {
+        const r0 = cell.row;
+        const r1 = @min(nrows, cell.row + cell.span_rows);
+        const c0 = cell.col;
+        const c1 = @min(ncols, cell.col + cell.colspan);
+        var widths = [4]Unit{ 0, 0, 0, 0 };
+        var colors = [4]math.Color{ .transparent, .transparent, .transparent, .transparent };
+        var r = r0;
+        while (r < r1) : (r += 1) {
+            const left = V.at(v, ncols, r, c0).*;
+            const right = V.at(v, ncols, r, c1).*;
+            if (r == r0 or edgeWidth(left) > widths[0] * 2) colors[0] = left.color;
+            if (r == r0 or edgeWidth(right) > widths[1] * 2) colors[1] = right.color;
+            // A cell is on the end side of its left edge: it takes the
+            // rounded-down half; the cell or table before it the rest.
+            widths[0] = @max(widths[0], @divFloor(edgeWidth(left), 2));
+            widths[1] = @max(widths[1], edgeWidth(right) - @divFloor(edgeWidth(right), 2));
+        }
+        var c = c0;
+        while (c < c1) : (c += 1) {
+            const top = H.at(h, ncols, r0, c).*;
+            const bottom = H.at(h, ncols, r1, c).*;
+            if (c == c0) {
+                colors[2] = top.color;
+                colors[3] = bottom.color;
+            }
+            widths[2] = @max(widths[2], @divFloor(edgeWidth(top), 2));
+            widths[3] = @max(widths[3], edgeWidth(bottom) - @divFloor(edgeWidth(bottom), 2));
+        }
+        setCellBorders(subtree, cell.block, widths);
+        subtree.items(.border_colors)[cell.block] = .{ .left = colors[0], .right = colors[1], .top = colors[2], .bottom = colors[3] };
+    }
+
+    // The table's box: outer halves — the part of each outer edge outside
+    // the cells (the rounded-up half), widest along each side.
+    var outer = [4]Unit{ 0, 0, 0, 0 };
+    var outer_colors = [4]math.Color{ .transparent, .transparent, .transparent, .transparent };
+    for (0..nrows) |r| {
+        const left = V.at(v, ncols, @intCast(r), 0).*;
+        const right = V.at(v, ncols, @intCast(r), ncols).*;
+        const lw = edgeWidth(left) - @divFloor(edgeWidth(left), 2);
+        const rw = @divFloor(edgeWidth(right), 2);
+        if (r == 0 or lw > outer[0]) outer_colors[0] = left.color;
+        if (r == 0 or rw > outer[1]) outer_colors[1] = right.color;
+        outer[0] = @max(outer[0], lw);
+        outer[1] = @max(outer[1], rw);
+    }
+    for (0..ncols) |c| {
+        const top = H.at(h, ncols, 0, @intCast(c)).*;
+        const bottom = H.at(h, ncols, nrows, @intCast(c)).*;
+        const tw = edgeWidth(top) - @divFloor(edgeWidth(top), 2);
+        const bw = @divFloor(edgeWidth(bottom), 2);
+        if (c == 0 or tw > outer[2]) outer_colors[2] = top.color;
+        if (c == 0 or bw > outer[3]) outer_colors[3] = bottom.color;
+        outer[2] = @max(outer[2], tw);
+        outer[3] = @max(outer[3], bw);
+    }
+    t.outer = outer;
+    t.outer_colors = outer_colors;
+}
+
+/// Replace a laid-out block's border widths, keeping its padding and
+/// content size.
+fn setCellBorders(subtree: Subtree.View, index: Subtree.Size, widths: [4]Unit) void {
+    const bo = &subtree.items(.box_offsets)[index];
+    const borders = &subtree.items(.borders)[index];
+    const pad_left = bo.content_pos.x - borders.left;
+    const pad_top = bo.content_pos.y - borders.top;
+    const pad_right = bo.border_size.w - bo.content_size.w - bo.content_pos.x - borders.right;
+    const pad_bottom = bo.border_size.h - bo.content_size.h - bo.content_pos.y - borders.bottom;
+    borders.* = .{ .left = widths[0], .right = widths[1], .top = widths[2], .bottom = widths[3] };
+    bo.content_pos = .{ .x = widths[0] + pad_left, .y = widths[2] + pad_top };
+    bo.border_size = .{
+        .w = widths[0] + pad_left + bo.content_size.w + pad_right + widths[1],
+        .h = widths[2] + pad_top + bo.content_size.h + pad_bottom + widths[3],
+    };
+}
+
+/// After the table's own cosmetic values are written: in the collapsing
+/// model its outer half edges take the resolved edge colors.
+pub fn afterTableCosmetic(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) void {
+    const t = box_gen.table_context.finished.get(.{ .subtree_id = subtree_id, .block = index }) orelse return;
+    if (!t.collapse) return;
+    subtree.items(.border_colors)[index] = .{ .left = t.outer_colors[0], .right = t.outer_colors[1], .top = t.outer_colors[2], .bottom = t.outer_colors[3] };
 }

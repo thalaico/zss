@@ -407,13 +407,6 @@ fn dispatchBlockElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
-    // Route table elements to table layout mode by tag name
-    const env = box_gen.getLayout().inputs.env;
-    if (env.nodeTagEql(node, "table")) {
-        return try table.tableElement(box_gen, node, box_style.position);
-    } else if (env.nodeTagEql(node, "tr")) {
-        return try table.rowElement(box_gen, node, box_style.position);
-    }
 
     // Regular block element handling
     // Get inner box style based on outer type
@@ -425,7 +418,12 @@ fn dispatchBlockElement(
     switch (is_root) {
         .root => try initial.blockElement(box_gen, node, inner_box_style, box_style.position),
         .not_root => sw: switch (current_mode) {
-            .flow => try flow.blockElement(box_gen, node, inner_box_style, box_style.position),
+            .flow => {
+                // Table boxes by computed `display` (CSS 2.1 §17.2), not by
+                // tag name — also when the element ends an inline run.
+                if (try table.dispatch(box_gen, node, box_style)) return;
+                try flow.blockElement(box_gen, node, inner_box_style, box_style.position);
+            },
             .stf => try stf.blockElement(box_gen, node, inner_box_style, box_style.position),
             .@"inline" => {
                 const result = try @"inline".blockElement(box_gen);
@@ -449,12 +447,6 @@ fn dispatchInlineElement(
     node: NodeId,
     box_style: BoxTree.BoxStyle,
 ) !void {
-    // Route table-cell elements to table layout mode by tag name
-    const env = box_gen.getLayout().inputs.env;
-    if (env.nodeTagEql(node, "td") or env.nodeTagEql(node, "th")) {
-        return try table.cellElement(box_gen, node);
-    }
-
     // Regular inline element handling
     switch (is_root) {
         .root => {
@@ -485,19 +477,6 @@ fn dispatchNullNode(
         .root => initial.nullNode(box_gen),
         .not_root => switch (current_mode) {
             .flow => {
-                // Only pop block_type_stack if the top entry's depth matches
-                // the current bfc_stack depth — this means the block being
-                // closed IS the table element that pushed the entry.
-                const stack = &box_gen.table_context.block_type_stack;
-                if (stack.items.len > 0) {
-                    const top = stack.items[stack.items.len - 1];
-                    if (box_gen.bfc_stack.top != null and top.bfc_depth == box_gen.bfc_stack.top.?) {
-                        _ = stack.pop();
-                        if (top.block_type == .table) {
-                            box_gen.table_context.popTable();
-                        }
-                    }
-                }
                 flow.nullNode(box_gen) orelse return;
                 afterFlowMode(box_gen);
             },
@@ -617,7 +596,12 @@ pub const BlockInfo = struct {
     node: NodeId,
     out_of_flow: bool,
     position: BoxTree.BoxStyle.Position = .static,
-    is_table_row: bool = false,
+    /// The block's part in a table (CSS 2.1 §17.2), set by `table.zig`.
+    /// Rows and row groups are positioned by the table when it closes.
+    table_role: table.Role = .none,
+    /// This block's computed text-align: the legacy -webkit-* values align
+    /// block-level children (`flow.alignToParentTextAlign`).
+    text_align: zss.values.types.TextAlign = .start,
     is_flex_container: bool = false,
     /// justify-content for flex containers (default: flex_start)
     flex_justify: FlexJustify = .flex_start,
@@ -946,8 +930,13 @@ pub fn popFlowBlock(
             .child_count = block_info.grid_child_count,
         }) catch {};
         break :blk grid.layoutGridChildren(layout, subtree, block.index, block.skip, container_width, container_height, block_info.grid_column_gap, block_info.grid_row_gap, block_info.grid_columns, block_info.grid_rows, block_info.grid_areas, &block_info.grid_child_area_hashes, block_info.grid_child_count);
-    } else if (block_info.is_table_row)
-        flow.offsetChildBlocksHorizontal(subtree, block.index, block.skip)
+    } else if (block_info.table_role == .table)
+        // CSS 2.1 §17.5 / CSS Tables 3: columns, the table's used width,
+        // cell relayout, rows and positions. Sets the used inline size.
+        table.layoutTable(box_gen, subtree, box_gen.currentSubtree(), block.index, &block_info.sizes)
+    else if (block_info.table_role == .row or block_info.table_role == .row_group)
+        // Sized and positioned by the table's layout when the table closes.
+        0
     else blk: {
         const container_width = switch (auto_width) {
             .normal => block_info.sizes.get(.inline_size).?,
@@ -1036,6 +1025,7 @@ pub fn popFlowBlock(
 
     const cb = box_gen.stacks.containing_block_size.top orelse ContainingBlockSize{ .width = 0, .height = null };
     writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
+    if (block_info.table_role == .table) table.afterTableCosmetic(box_gen, subtree, box_gen.currentSubtree(), block.index);
 
     // Register this block on the parent's float context if it's a float,
     // OR advance the parent's running cursor if it's a normal-flow child.
@@ -1247,6 +1237,11 @@ pub const BlockUsedSizes = struct {
     /// author-specified width). After `adjustWidthAndMargins`, `flags
     /// .inline_size` is `.value` for both auto AND explicit.
     was_auto_inline_size: bool = false,
+    /// Specified width / inline margin kinds, copied to the box for
+    /// intrinsic contributions. Set by every size solver.
+    intrinsic: BoxTree.Subtree.IntrinsicFlags = .{},
+    percent_width: f32 = 0,
+    specified_margins: [2]math.Unit = .{ 0, 0 },
 
     pub const Flags = packed struct {
         inline_size: IsAutoTag,
@@ -1398,6 +1393,9 @@ fn setDataBlock(
     subtree.items(.align_self)[index] = .auto;
     subtree.items(.list_style_type)[index] = .none;
     subtree.items(.inner_block)[index] = inner_block;
+    subtree.items(.intrinsic)[index] = used.intrinsic;
+    subtree.items(.percent_width)[index] = used.percent_width;
+    subtree.items(.specified_margins)[index] = used.specified_margins;
     // Default to false; popFlowBlock and other layout entry points
     // overwrite this when the block actually establishes a BFC.
     subtree.items(.is_bfc)[index] = false;

@@ -74,6 +74,9 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 .{ .normal = containing_block_size.width };
             var sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height, parent_is_flex_or_grid);
             form_controls.applyIntrinsicSizes(box_gen.getLayout(), node, &sizes);
+            if (!parent_is_flex_or_grid and position != .absolute) {
+                if (box_gen.stacks.block_info.top) |parent| alignToParentTextAlign(&sizes, containing_block_size.width, parent.text_align);
+            }
             const stacking_context = solveStackingContext(computer, position);
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
             font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };
@@ -92,6 +95,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
             computer.commitNode(.box_gen);
 
             try pushBlock(box_gen, node, sizes, stacking_context, position);
+            box_gen.stacks.block_info.top.?.text_align = font_specified.text_align;
             if (inner_block == .flex and (box_style_specified.flex_direction == .row or box_style_specified.flex_direction == .column)) {
                 const info = &box_gen.stacks.block_info.top.?;
                 info.is_flex_container = true;
@@ -437,6 +441,71 @@ pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32) BlockComputedSizes {
         },
     };
 }
+/// Blink's legacy alignment of block-level children (CSS 2.1 §10.3.3 plus
+/// LayoutBox::ComputeInlineDirectionMargins): when the parent's text-align
+/// is -webkit-center/-right/-left and the child has a non-auto width and no
+/// auto inline margins, its margin box is centered / right / left aligned
+/// in the containing block instead of the end margin absorbing the rest.
+pub fn alignToParentTextAlign(sizes: *BlockUsedSizes, cb_width: Unit, parent_align: zss.values.types.TextAlign) void {
+    switch (parent_align) {
+        .@"-webkit-center", .@"-webkit-right", .@"-webkit-left" => {},
+        else => return,
+    }
+    if (sizes.intrinsic.width == .auto or sizes.intrinsic.margin_start_auto or sizes.intrinsic.margin_end_auto) return;
+    const width = sizes.get(.inline_size) orelse return;
+    const edges = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
+    const start = sizes.specified_margins[0];
+    const end = sizes.specified_margins[1];
+    const leftover = cb_width - width - edges - start - end;
+    if (leftover <= 0) return;
+    const new_start: Unit = switch (parent_align) {
+        .@"-webkit-center" => start + @divFloor(leftover, 2),
+        .@"-webkit-right" => start + leftover,
+        else => start,
+    };
+    sizes.setValue(.margin_inline_start, new_start);
+    sizes.setValue(.margin_inline_end, cb_width - width - edges - new_start);
+}
+
+/// The specified-value kinds `Layout/intrinsic.zig` needs: whether `width`
+/// is auto, a fixed length or a percentage, and which inline margins are
+/// auto (they contribute zero).
+pub fn intrinsicFlags(specified: BlockComputedSizes) BoxTree.Subtree.IntrinsicFlags {
+    return .{
+        .width = switch (specified.content_width.width) {
+            .auto => .auto,
+            .percentage => .percentage,
+            else => .fixed,
+        },
+        .margin_start_auto = specified.horizontal_edges.margin_left == .auto,
+        .margin_end_auto = specified.horizontal_edges.margin_right == .auto,
+        .height_auto = specified.content_height.height == .auto,
+        .border_box = specified.content_width.box_sizing == .border_box,
+    };
+}
+
+/// Specified inline margins in layout units; auto and percentages are 0
+/// (CSS Sizing 3 §5.2.1: percentage margins contribute zero to intrinsic
+/// sizes).
+pub fn specifiedMargins(specified: BlockComputedSizes) [2]Unit {
+    const conv = struct {
+        fn f(m: zss.values.types.Margin) Unit {
+            return switch (m) {
+                .px => |px| @intFromFloat(@round(px * @as(f32, @floatFromInt(zss.math.units_per_pixel)))),
+                else => 0,
+            };
+        }
+    };
+    return .{ conv.f(specified.horizontal_edges.margin_left), conv.f(specified.horizontal_edges.margin_right) };
+}
+
+pub fn percentWidth(specified: BlockComputedSizes) f32 {
+    return switch (specified.content_width.width) {
+        .percentage => |p| p,
+        else => 0,
+    };
+}
+
 pub fn solveAllSizes(
     computer: *StyleComputer,
     position: BoxTree.BoxStyle.Position,
@@ -463,6 +532,10 @@ pub fn solveAllSizes(
 
     var computed_sizes: BlockComputedSizes = undefined;
     var sizes: BlockUsedSizes = undefined;
+    sizes.was_auto_inline_size = false;
+    sizes.intrinsic = intrinsicFlags(specified_sizes);
+    sizes.percent_width = percentWidth(specified_sizes);
+    sizes.specified_margins = specifiedMargins(specified_sizes);
     solveWidthAndHorizontalMargins(specified_sizes, containing_block_width, &computed_sizes, &sizes);
     solveHorizontalBorderPadding(specified_sizes.horizontal_edges, percentage_base_unit, border_styles, &computed_sizes.horizontal_edges, &sizes);
     solveHeight(specified_sizes.content_height, containing_block_height, &computed_sizes.content_height, &sizes);

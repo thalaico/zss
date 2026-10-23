@@ -231,6 +231,18 @@ pub const Subtree = struct {
     ///
     /// Note that all blocks, even "weird" ones like subtree proxies, have size and
     /// position information that must be taken into account during calculations.
+    /// What the block's specified sizes were — what a relayout at a new
+    /// containing-block width (`Layout/relayout.zig`) and intrinsic sizing
+    /// (`Layout/intrinsic.zig`) need, since used sizes lose it.
+    pub const IntrinsicFlags = packed struct(u8) {
+        width: enum(u2) { auto, fixed, percentage } = .auto,
+        margin_start_auto: bool = false,
+        margin_end_auto: bool = false,
+        height_auto: bool = true,
+        border_box: bool = false,
+        _: u2 = 0,
+    };
+
     pub const Block = struct {
         /// The amount to add to this block's index in order to get the index of
         /// it's next sibling block.
@@ -296,6 +308,18 @@ pub const Subtree = struct {
         /// marked `is_bfc` during BoxGen. Read by `flow.resplitWalk` to
         /// stop recursive descent of outer-float exclusion.
         is_bfc: bool = false,
+        /// What the block's specified `width` and inline margins were, for
+        /// intrinsic size contributions (`Layout/intrinsic.zig`, CSS Sizing
+        /// 3 §5): used sizes alone cannot tell an auto width that filled its
+        /// containing block from a fixed one.
+        intrinsic: IntrinsicFlags = .{},
+        /// The specified percentage of a `width: <percentage>` block (0..1).
+        percent_width: f32 = 0,
+        /// The specified inline-start/end margins in layout units (0 for
+        /// `auto`; `margin_percent` for percentages). The used end margin of
+        /// an over-constrained block (CSS 2.1 §10.3.3) is not its specified
+        /// value, and intrinsic contributions and relayout need the latter.
+        specified_margins: [2]math.Unit = .{ 0, 0 },
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
