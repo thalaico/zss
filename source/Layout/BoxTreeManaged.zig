@@ -34,6 +34,10 @@ pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size
     subtree.blocks.items(.intrinsic)[new_len - 1] = .{};
     subtree.blocks.items(.percent_width)[new_len - 1] = 0;
     subtree.blocks.items(.specified_margins)[new_len - 1] = .{ 0, 0 };
+    subtree.blocks.items(.block_margins)[new_len - 1] = .{ 0, 0 };
+    subtree.blocks.items(.min_block_size)[new_len - 1] = 0;
+    subtree.blocks.items(.max_block_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
+    subtree.blocks.items(.bfc_floats)[new_len - 1] = false;
     return new_len - 1;
 }
 

@@ -1063,10 +1063,6 @@ pub fn solveUsedHeight(sizes: BlockUsedSizes, auto_height: Unit) Unit {
     return sizes.get(.block_size) orelse solve.clampSize(auto_height, sizes.min_block_size, sizes.max_block_size);
 }
 
-/// Position children of a block container, handling normal flow, floats, and clears.
-/// Floated children are placed at the left/right edge at the current line position.
-/// Clear children are pushed below the relevant floats.
-/// Returns the auto height of the container.
 /// Result of offsetChildBlocks: auto_height plus first-child's escaped margin
 /// (for parent-child margin collapsing, CSS 2.1 Section 8.3.1).
 pub const OffsetResult = struct {
@@ -1076,24 +1072,12 @@ pub const OffsetResult = struct {
     escaped_margin_top: Unit,
 };
 
-/// Per-block-container record of placed floats, used by IFC layout to query
-/// line-box exclusions (CSS 2.1 §9.5).
-///
-/// Floats are positioned during the block container's `popFlowBlock` (after
-/// each float child closes). IFC layout (`splitIntoLineBoxes`) running for a
-/// sibling text node consults this list to narrow each line's available
-/// width based on float rectangles intersecting the line's y-range.
-///
-/// Stage 1 simplification: floats are recorded with y = 0 (assumes the float
-/// is the first content of its parent block, so cursor = 0 when it's placed).
-/// Width comes from the float's resolved border-box width, height includes
-/// margins. Margin-collapsing edge cases and stacked floats are not yet
-/// modeled — those produce slightly wrong line wraps but no panics.
+/// The floats beside one inline formatting context, for line-box
+/// shortening (CSS 2.1 §9.5): float margin boxes in the IFC's coordinates
+/// (x from its content-box left edge, y from its top). Built per IFC by the
+/// BFC pass (`Layout/bfc.zig`).
 pub const FloatContext = struct {
-    placed_floats: [MAX_FLOATS]PlacedFloat = undefined,
-    placed_count: u8 = 0,
-
-    pub const MAX_FLOATS = 8;
+    floats: []const PlacedFloat,
 
     pub const Side = enum { left, right };
 
@@ -1103,17 +1087,10 @@ pub const FloatContext = struct {
         y: Unit,
         w: Unit,
         h: Unit,
-        /// Subtree index of the float box, used by
-        /// `finalizeFloatRectangles` to look up the canonical
-        /// position/size set by `offsetChildBlocks` and overwrite the
-        /// provisional values registered at `popFlowBlock` time.
-        /// 0 means "no link" (legacy registration path).
-        child_index: BoxTree.Subtree.Size = 0,
     };
 
     /// Compute line-box exclusion for a line at line_y of height line_h.
-    /// `line_y` is in the parent block's content-box coordinates (same space
-    /// as PlacedFloat.y). Returns the left edge offset and right edge limit.
+    /// Returns the left edge offset and right edge limit.
     pub fn getLineExclusion(
         self: *const FloatContext,
         line_y: Unit,
@@ -1122,9 +1099,7 @@ pub const FloatContext = struct {
     ) struct { left_offset: Unit, right_limit: Unit } {
         var left_offset: Unit = 0;
         var right_limit: Unit = container_width;
-        var i: u8 = 0;
-        while (i < self.placed_count) : (i += 1) {
-            const f = self.placed_floats[i];
+        for (self.floats) |f| {
             // Float rect [f.y, f.y + f.h) intersects line range [line_y, line_y + line_h)?
             if (f.y + f.h <= line_y) continue;
             if (f.y >= line_y + line_h) continue;
@@ -1135,108 +1110,12 @@ pub const FloatContext = struct {
         }
         return .{ .left_offset = left_offset, .right_limit = right_limit };
     }
-
-    pub fn registerFloat(self: *FloatContext, side: Side, x: Unit, y: Unit, w: Unit, h: Unit) void {
-        if (self.placed_count >= MAX_FLOATS) return;
-        self.placed_floats[self.placed_count] = .{ .side = side, .x = x, .y = y, .w = w, .h = h };
-        self.placed_count += 1;
-    }
-
-    pub fn registerFloatWithIndex(
-        self: *FloatContext,
-        side: Side,
-        x: Unit,
-        y: Unit,
-        w: Unit,
-        h: Unit,
-        child_index: BoxTree.Subtree.Size,
-    ) void {
-        if (self.placed_count >= MAX_FLOATS) return;
-        self.placed_floats[self.placed_count] = .{ .side = side, .x = x, .y = y, .w = w, .h = h, .child_index = child_index };
-        self.placed_count += 1;
-    }
 };
 
-/// Walk the parent's `float_ctx` and overwrite each float entry's
-/// rectangle with the canonical position+size set by `offsetChildBlocks`.
-/// Called from `popFlowBlock` *after* `offsetChildBlocks` has finalized
-/// float widths (via `floatContentWidth`) and stacked x-positions. The
-/// IFC line-exclusion rectangle then matches what's actually rendered.
-pub fn finalizeFloatRectangles(subtree: BoxTree.Subtree.View, float_ctx: *FloatContext) void {
-    var i: u8 = 0;
-    while (i < float_ctx.placed_count) : (i += 1) {
-        const idx = float_ctx.placed_floats[i].child_index;
-        if (idx == 0) continue; // legacy registration without a link
-        const bo = subtree.items(.box_offsets)[idx];
-        const off = subtree.items(.offset)[idx];
-        const margins = subtree.items(.margins)[idx];
-        float_ctx.placed_floats[i].x = off.x + bo.border_pos.x;
-        float_ctx.placed_floats[i].y = off.y + bo.border_pos.y;
-        float_ctx.placed_floats[i].w = bo.border_size.w;
-        float_ctx.placed_floats[i].h = bo.border_size.h + margins.top + margins.bottom;
-    }
-}
-
-/// Re-split direct IFC children of a block whose float_ctx was just
-/// updated by `finalizeFloatRectangles`, so their line boxes pick up
-/// the corrected float exclusion rectangles. Each IFC's stored
-/// `persisted_parent_float_ctx` is also refreshed so subsequent
-/// re-layouts (flex Phase 4, grid relayout) use the corrected context.
-///
-/// Currently walks only DIRECT children. Deeper IFCs (e.g. Wikipedia's
-/// news bullets at `mp-itn > ul > li > IFC`) aren't reached by this
-/// pass; their line boxes were split during inline mode using the
-/// provisional float values and aren't re-split here. A recursive
-/// version was attempted but caused diff regressions on wiki-minimal
-/// (some non-flex blocks still acted as BFC-like and shouldn't have
-/// inherited outer-float exclusion). See `is_bfc` field on subtree
-/// blocks — currently set but a recursive walk needs more BFC-source
-/// detection (overflow != visible, table cells, etc.) before it's
-/// safe to enable.
-pub fn resplitDirectIfcsWithFloats(
-    layout: *@import("../zss.zig").Layout,
-    subtree: BoxTree.Subtree.View,
-    parent_index: BoxTree.Subtree.Size,
-    parent_skip: BoxTree.Subtree.Size,
-    float_ctx: *const FloatContext,
-) void {
-    if (float_ctx.placed_count == 0) return;
-    const inline_layout = @import("./inline.zig");
-    const types_slice = subtree.items(.type);
-    const skips = subtree.items(.skip);
-    const end = parent_index + parent_skip;
-    var gc = parent_index + 1;
-    while (gc < end) {
-        if (subtree.items(.out_of_flow)[gc]) {
-            gc += skips[gc];
-            continue;
-        }
-        switch (types_slice[gc]) {
-            .ifc_container => |ifc_id| {
-                const ifc = layout.box_tree.ptr.getIfc(ifc_id);
-                // Translate float y from parent-content-box coords to
-                // IFC-local coords. line_y inside splitIntoLineBoxes
-                // starts at 0 corresponding to the IFC's top edge in
-                // the parent; without translation, floats placed below
-                // the IFC's top would never appear to overlap any line.
-                const ifc_offset_y = subtree.items(.offset)[gc].y + subtree.items(.box_offsets)[gc].border_pos.y;
-                var translated = float_ctx.*;
-                var ti: u8 = 0;
-                while (ti < translated.placed_count) : (ti += 1) {
-                    translated.placed_floats[ti].y -= ifc_offset_y;
-                }
-                ifc.persisted_parent_float_ctx = translated;
-                const ifc_w = subtree.items(.box_offsets)[gc].content_size.w;
-                ifc.line_boxes.clearRetainingCapacity();
-                _ = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, ifc_w, translated) catch {};
-            },
-            else => {},
-        }
-        gc += skips[gc];
-    }
-}
-
-
+/// Position the in-flow children of a block container in normal flow, with
+/// margin collapsing (CSS 2.1 §8.3.1). Floats and the formatting contexts
+/// they appear in are laid out by `Layout/bfc.zig`; here a float child is
+/// left where it is.
 pub fn offsetChildBlocks(
     subtree: Subtree.View,
     index: Subtree.Size,
@@ -1245,16 +1124,14 @@ pub fn offsetChildBlocks(
     /// border_block_start + padding_block_start of the parent. 0 means the
     /// first child's top margin can escape (parent-child collapsing).
     parent_block_start_edge: Unit,
-    /// Optional box_tree pointer used by `floatContentWidth` to resolve the
-    /// natural max-content width of an `ifc_container` child. When null,
-    /// falls back to the IFC container's stored border_size.w (which equals
-    /// the containing block width, NOT the IFC's actual content extent).
+    /// Unused (kept for the callers' signature).
     box_tree: ?*const BoxTree,
 ) OffsetResult {
+    _ = container_width;
+    _ = box_tree;
     const skips = subtree.items(.skip);
     const out_of_flow_flags = subtree.items(.out_of_flow);
     const float_sides = subtree.items(.float_side);
-    const clear_sides = subtree.items(.clear_side);
     var child = index + 1;
     const end = index + skip;
 
@@ -1265,140 +1142,64 @@ pub fn offsetChildBlocks(
     var prev_margin: Unit = 0;
     var first_normal_child = true;
     var escaped_margin_top: Unit = 0;
-    var float_left_bottom: Unit = 0;
-    var float_right_bottom: Unit = 0;
-    // Horizontal tracking for side-by-side float placement.
-    // Left floats accumulate rightward; right floats accumulate leftward.
-    var float_left_x: Unit = 0;
-    var float_left_line_y: Unit = 0;
-    var float_right_x: Unit = container_width;
-    var float_right_line_y: Unit = 0;
 
     while (child < end) {
         if (out_of_flow_flags[child]) {
             subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
-        } else {
-            const float_side = float_sides[child];
-            const clear_side = clear_sides[child];
+        } else if (float_sides[child] == .none) {
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
             const margin_top = box_offsets.border_pos.y; // = margin_block_start
             const border_box_h = box_offsets.border_size.h;
             const margin_bottom = margins.bottom;
+            // CSS 2.1 §8.3.1: Empty box margin collapsing.
+            // When a box has zero border-box height (no content, no
+            // padding, no border), its top and bottom margins collapse
+            // through it into a single margin of max(top, bottom).
+            const is_empty_box = (border_box_h == 0);
 
-            // Apply clear: push cursor below relevant floats and reset float x
-            switch (clear_side) {
-                .left => {
-                    cursor = @max(cursor, float_left_bottom);
-                    float_left_x = 0;
-                    float_left_line_y = cursor;
-                },
-                .right => {
-                    cursor = @max(cursor, float_right_bottom);
-                    float_right_x = container_width;
-                    float_right_line_y = cursor;
-                },
-                .both => {
-                    cursor = @max(cursor, @max(float_left_bottom, float_right_bottom));
-                    float_left_x = 0;
-                    float_left_line_y = cursor;
-                    float_right_x = container_width;
-                    float_right_line_y = cursor;
-                },
-                .none => {},
-            }
-
-            switch (float_side) {
-                .left => {
-                    const child_skip = skips[child];
-                    // CSS §10.3.5: Floated elements with auto width use shrink-to-fit.
-                    // Measure the max content right of descendants to determine used width.
-                    const content_w = floatContentWidth(subtree, child, child_skip, box_offsets, box_tree);
-                    const child_border_width = content_w;
-                    const child_height = margin_top + border_box_h + margin_bottom;
-                    // Also shrink the float's border-box to content width.
-                    subtree.items(.box_offsets)[child].border_size.w = @max(0, content_w - box_offsets.border_pos.x);
-                    subtree.items(.box_offsets)[child].content_size.w = @max(0, content_w - box_offsets.content_pos.x * 2);
-                    // If this float doesn't fit on the current line, wrap.
-                    if (float_left_x > 0 and float_left_x + child_border_width > container_width) {
-                        float_left_line_y = float_left_bottom;
-                        float_left_x = 0;
-                    }
-                    // Use the higher of cursor and current float line.
-                    const y = @max(cursor, float_left_line_y);
-                    subtree.items(.offset)[child] = .{ .x = float_left_x, .y = y };
-                    float_left_x += child_border_width;
-                    float_left_bottom = @max(float_left_bottom, y + child_height);
-                },
-                .right => {
-                    const child_skip = skips[child];
-                    const content_w = floatContentWidth(subtree, child, child_skip, box_offsets, box_tree);
-                    const child_border_width = content_w;
-                    const child_height = margin_top + border_box_h + margin_bottom;
-                    subtree.items(.box_offsets)[child].border_size.w = @max(0, content_w - box_offsets.border_pos.x);
-                    subtree.items(.box_offsets)[child].content_size.w = @max(0, content_w - box_offsets.content_pos.x * 2);
-                    // If this float doesn't fit, wrap.
-                    if (float_right_x < container_width and float_right_x - child_border_width < 0) {
-                        float_right_line_y = float_right_bottom;
-                        float_right_x = container_width;
-                    }
-                    const y = @max(cursor, float_right_line_y);
-                    const x = @max(0, float_right_x - child_border_width);
-                    subtree.items(.offset)[child] = .{ .x = x, .y = y };
-                    float_right_x = x;
-                    float_right_bottom = @max(float_right_bottom, y + child_height);
-                },
-                .none => {
-                    // CSS 2.1 §8.3.1: Empty box margin collapsing.
-                    // When a box has zero border-box height (no content, no
-                    // padding, no border), its top and bottom margins collapse
-                    // through it into a single margin of max(top, bottom).
-                    const is_empty_box = (border_box_h == 0);
-
-                    if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
-                        // Parent-child margin collapsing: first child's top margin
-                        // escapes through the parent (which has no border/padding-top,
-                        // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
-                        if (is_empty_box) {
-                            // Empty first child: its collapsed margin escapes and is
-                            // accumulated into escaped_margin_top. The parent-child
-                            // collapsing opportunity carries forward to the next
-                            // non-empty child, so first_normal_child stays true.
-                            // CSS 2.1 §8.3.1: collapsing is transitive through
-                            // self-collapsing boxes between parent and first content.
-                            escaped_margin_top = @max(escaped_margin_top, margin_top, margin_bottom);
-                            subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
-                            // cursor stays at 0, prev_margin = escaped_margin_top so
-                            // the next non-empty child collapses with it.
-                            prev_margin = escaped_margin_top;
-                            // first_normal_child stays true: next child can still escape.
-                        } else {
-                            escaped_margin_top = @max(escaped_margin_top, margin_top);
-                            subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
-                            cursor = border_box_h;
-                            prev_margin = margin_bottom;
-                            first_normal_child = false;
-                        }
-                    } else {
-                        if (is_empty_box) {
-                            // Empty box: top and bottom margins collapse through.
-                            // The resulting margin is max(prev, top, bottom) and
-                            // carries forward as prev_margin. Cursor doesn't move.
-                            const self_collapsed = @max(margin_top, margin_bottom);
-                            prev_margin = @max(prev_margin, self_collapsed);
-                            // Place at current cursor so the box occupies zero space.
-                            subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin - margin_top };
-                        } else {
-                            // Collapse this child's top margin with previous sibling's bottom margin.
-                            const collapsed = @max(prev_margin, margin_top);
-                            const border_box_y = cursor + collapsed;
-                            subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
-                            cursor = border_box_y + border_box_h;
-                            prev_margin = margin_bottom;
-                        }
-                        first_normal_child = false;
-                    }
-                },
+            if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
+                // Parent-child margin collapsing: first child's top margin
+                // escapes through the parent (which has no border/padding-top,
+                // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
+                if (is_empty_box) {
+                    // Empty first child: its collapsed margin escapes and is
+                    // accumulated into escaped_margin_top. The parent-child
+                    // collapsing opportunity carries forward to the next
+                    // non-empty child, so first_normal_child stays true.
+                    // CSS 2.1 §8.3.1: collapsing is transitive through
+                    // self-collapsing boxes between parent and first content.
+                    escaped_margin_top = @max(escaped_margin_top, margin_top, margin_bottom);
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                    // cursor stays at 0, prev_margin = escaped_margin_top so
+                    // the next non-empty child collapses with it.
+                    prev_margin = escaped_margin_top;
+                    // first_normal_child stays true: next child can still escape.
+                } else {
+                    escaped_margin_top = @max(escaped_margin_top, margin_top);
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                    cursor = border_box_h;
+                    prev_margin = margin_bottom;
+                    first_normal_child = false;
+                }
+            } else {
+                if (is_empty_box) {
+                    // Empty box: top and bottom margins collapse through.
+                    // The resulting margin is max(prev, top, bottom) and
+                    // carries forward as prev_margin. Cursor doesn't move.
+                    const self_collapsed = @max(margin_top, margin_bottom);
+                    prev_margin = @max(prev_margin, self_collapsed);
+                    // Place at current cursor so the box occupies zero space.
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin - margin_top };
+                } else {
+                    // Collapse this child's top margin with previous sibling's bottom margin.
+                    const collapsed = @max(prev_margin, margin_top);
+                    const border_box_y = cursor + collapsed;
+                    subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
+                    cursor = border_box_y + border_box_h;
+                    prev_margin = margin_bottom;
+                }
+                first_normal_child = false;
             }
         }
         child += skips[child];
@@ -1410,72 +1211,10 @@ pub fn offsetChildBlocks(
     // do not contribute to the parent's content height (CSS 2.1 §10.6.3).
     const normal_height = if (cursor > 0) cursor + prev_margin else cursor;
     return .{
-        .auto_height = @max(normal_height, @max(float_left_bottom, float_right_bottom)),
+        .auto_height = normal_height,
         .escaped_margin_top = escaped_margin_top,
     };
 }
-
-/// Compute the content-dependent width for a floated element.
-/// CSS §10.3.5: floated elements with auto width use shrink-to-fit.
-/// Approximation: measure the rightmost edge of all direct children,
-/// using IFC's natural max-content width (longest_line_box_length) for
-/// `ifc_container` children, descendant max for nested blocks, and the
-/// stored border_size.w otherwise.
-pub fn floatContentWidth(
-    subtree: Subtree.View,
-    child: Subtree.Size,
-    child_skip: Subtree.Size,
-    bo: BoxTree.BoxOffsets,
-    box_tree: ?*const BoxTree,
-) Unit {
-    const skips_slice = subtree.items(.skip);
-    const types = subtree.items(.type);
-    var max_content_right: Unit = 0;
-    var gc = child + 1;
-    const child_end = child + child_skip;
-    while (gc < child_end) {
-        if (!subtree.items(.out_of_flow)[gc]) {
-            const gc_skip = skips_slice[gc];
-            const gbo = subtree.items(.box_offsets)[gc];
-            const goff = subtree.items(.offset)[gc];
-            const gc_x = goff.x + gbo.border_pos.x;
-            // Special-case IFC containers: their stored border_size.w equals
-            // the containing block width (where lines wrap), NOT the actual
-            // content extent. Look up the IFC's `longest_line_box_length`
-            // — the natural max-content width of the inline content — when
-            // a box_tree is available. Without it, fall back to border_size.w
-            // and floats will refuse to shrink below their parent.
-            const ifc_natural_w: ?Unit = blk: {
-                if (box_tree == null) break :blk null;
-                switch (types[gc]) {
-                    .ifc_container => |ifc_id| {
-                        const ifc = box_tree.?.getIfc(ifc_id);
-                        break :blk ifc.longest_line_box_length;
-                    },
-                    else => break :blk null,
-                }
-            };
-            if (ifc_natural_w) |w| {
-                max_content_right = @max(max_content_right, gc_x + w);
-            } else if (gc_skip == 1) {
-                // Leaf block: its border_size.w is the actual content width.
-                max_content_right = @max(max_content_right, gc_x + gbo.border_size.w);
-            } else {
-                // Non-leaf block: recurse to find content width.
-                const inner_w = floatContentWidth(subtree, gc, gc_skip, gbo, box_tree);
-                max_content_right = @max(max_content_right, gc_x + inner_w);
-            }
-        }
-        gc += skips_slice[gc];
-    }
-    const left_edge = bo.content_pos.x;
-    if (max_content_right > 0) {
-        return max_content_right + left_edge;
-    }
-    // No descendants: use the element's own border-box width.
-    return bo.border_pos.x + bo.border_size.w;
-}
-
 
 /// Offset children of a table row: all children at offset {0,0} (horizontal
 /// positioning is handled by border_pos.x set during cell sizing).

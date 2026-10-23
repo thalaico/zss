@@ -21,10 +21,11 @@
 //! calls back into `resizeItem` / `relayoutChild` here, so every
 //! formatting context relays out through the same rules.
 //!
+//! A BFC root whose formatting context has floats is relaid by `bfc.zig`.
+//!
 //! Known limits (documented, not approximated): padding percentages are not
-//! re-resolved; floats keep the shrink-to-fit size box generation gave them
-//! (they are re-placed against the new width and the line boxes beside them
-//! re-split); min/max-height are not re-applied to a recomputed auto height.
+//! re-resolved; min/max-height are not re-applied to a recomputed auto
+//! height outside `bfc.zig`.
 const std = @import("std");
 const zss = @import("../zss.zig");
 const Unit = zss.math.Unit;
@@ -36,6 +37,7 @@ const BoxGen = Layout.BoxGen;
 const flow = @import("./flow.zig");
 const grid = @import("./grid.zig");
 const table = @import("./table.zig");
+const bfc = @import("./bfc.zig");
 const inline_layout = @import("./inline.zig");
 
 /// Used inline size and inline margins of a block-level box.
@@ -149,7 +151,7 @@ pub fn resizeItem(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
 fn relayoutIfc(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, ifc_id: BoxTree.InlineFormattingContext.Id, width: Unit) void {
     const ifc = layout.box_tree.ptr.getIfc(ifc_id);
     ifc.line_boxes.clearRetainingCapacity();
-    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, width, ifc.persisted_parent_float_ctx) catch return;
+    const result = inline_layout.splitIntoLineBoxes(layout, subtree, ifc, width, null) catch return;
     // CSS 2.1 §9.2.2.1: an IFC with no visible content (inter-element white
     // space) contributes no height — the same rule inline.endMode applies at
     // generation.
@@ -194,17 +196,17 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
         return;
     }
 
-    // Flow: each child against this content box. Floats keep the
-    // shrink-to-fit size box generation gave them; offsetChildBlocks below
-    // places them against the new width.
-    var has_floats = false;
+    // A formatting context with floats is laid out top-down (bfc.zig).
+    if (subtree.items(.bfc_floats)[index]) {
+        const height = bfc.layoutBfc(layout, subtree, subtree_id, index, skip, content_w);
+        if (subtree.items(.intrinsic)[index].height_auto) setContentHeight(subtree, index, height);
+        return;
+    }
+
+    // Flow: each child against this content box.
     var child = index + 1;
     while (child < index + skip) : (child += subtree.items(.skip)[child]) {
         if (subtree.items(.out_of_flow)[child]) continue;
-        if (subtree.items(.float_side)[child] != .none) {
-            has_floats = true;
-            continue;
-        }
         relayoutChild(layout, subtree, subtree_id, child, content_w);
     }
 
@@ -212,25 +214,7 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
     // first child margin cannot escape (§8.3.1).
     var parent_edge = bo.content_pos.y;
     if (subtree.items(.is_bfc)[index] and parent_edge == 0) parent_edge = 1;
-    var result = flow.offsetChildBlocks(subtree, index, skip, content_w, parent_edge, box_tree);
-    if (has_floats) {
-        // CSS 2.1 §9.5: line boxes beside the floats shorten around their
-        // new positions; re-split them, then restack.
-        var float_ctx: flow.FloatContext = .{};
-        child = index + 1;
-        while (child < index + skip) : (child += subtree.items(.skip)[child]) {
-            if (subtree.items(.out_of_flow)[child]) continue;
-            const side: flow.FloatContext.Side = switch (subtree.items(.float_side)[child]) {
-                .none => continue,
-                .left => .left,
-                .right => .right,
-            };
-            float_ctx.registerFloatWithIndex(side, 0, 0, 0, 0, child);
-        }
-        flow.finalizeFloatRectangles(subtree, &float_ctx);
-        flow.resplitDirectIfcsWithFloats(layout, subtree, index, skip, &float_ctx);
-        result = flow.offsetChildBlocks(subtree, index, skip, content_w, parent_edge, box_tree);
-    }
+    const result = flow.offsetChildBlocks(subtree, index, skip, content_w, parent_edge, box_tree);
     if (subtree.items(.intrinsic)[index].height_auto) setContentHeight(subtree, index, result.auto_height);
 }
 

@@ -320,6 +320,16 @@ pub const Subtree = struct {
         /// an over-constrained block (CSS 2.1 §10.3.3) is not its specified
         /// value, and intrinsic contributions and relayout need the latter.
         specified_margins: [2]math.Unit = .{ 0, 0 },
+        /// The specified block-start/end margins (box generation folds
+        /// collapsed child margins into the used top margin; the BFC pass
+        /// `Layout/bfc.zig` collapses margins from these).
+        block_margins: [2]math.Unit = .{ 0, 0 },
+        /// Used min/max-height of the content box.
+        min_block_size: math.Unit = 0,
+        max_block_size: math.Unit = std.math.maxInt(math.Unit),
+        /// This block is a BFC root with floats in its formatting context:
+        /// its content is laid out by `Layout/bfc.zig`.
+        bfc_floats: bool = false,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;
@@ -406,7 +416,7 @@ pub const InlineFormattingContext = struct {
     /// per-line float exclusions when re-splitting lines. Without this, a
     /// re-split call would pass `null` and overwrite correctly-wrapped
     /// lines with full-width lines that ignore floats.
-    persisted_parent_float_ctx: ?@import("./Layout/flow.zig").FloatContext = null,
+
 
     font: zss.Fonts.Handle = .invalid,
     font_color: math.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 }, // CSS initial: black

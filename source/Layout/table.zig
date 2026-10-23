@@ -338,6 +338,11 @@ pub fn relayoutTable(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree
     return result.height;
 }
 
+/// Whether block `index` is a laid-out table.
+pub fn isTable(layout: *const Layout, subtree_id: Subtree.Id, index: Subtree.Size) bool {
+    return layout.box_gen.table_context.finished.contains(.{ .subtree_id = subtree_id, .block = index });
+}
+
 /// Min/max-content border-box width of a laid-out table block, or null if
 /// `index` is not one (used by `intrinsic.zig` for tables nested in cells).
 pub fn intrinsicSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) ?intrinsic.Sizes {

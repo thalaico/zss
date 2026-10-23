@@ -19,6 +19,7 @@ const IsRoot = Layout.IsRoot;
 const flow = @import("flow.zig");
 const grid = @import("grid.zig");
 const intrinsic = @import("intrinsic.zig");
+const bfc = @import("bfc.zig");
 const initial = @import("initial.zig");
 const @"inline" = @import("inline.zig");
 const solve = @import("solve.zig");
@@ -656,20 +657,9 @@ pub const BlockInfo = struct {
     /// align-self override for this item (default .auto = defer to container's
     /// align-items). See BoxTree.Subtree.Block.align_self for full semantics.
     align_self: zss.values.types.AlignSelf = .auto,
-    /// Records floats placed in this block container, for IFC line-exclusion
-    /// queries (CSS 2.1 §9.5). Populated as float children close in
-    /// `popFlowBlock`. Read by `splitIntoLineBoxes` via the IFC start path.
-    float_ctx: flow.FloatContext = .{},
-    /// Running approximation of the cursor y in this block's content-box
-    /// coordinates. Advanced as in-flow normal children close. Used as the
-    /// y-coordinate for any float children that close after some normal-flow
-    /// content has already been laid out (Stage 2 of float-text-wrap).
-    /// Approximation: ignores margin collapsing — overshoots slightly on
-    /// adjacent margins but never under-shoots, so float exclusion always
-    /// covers at least the actual float rectangle. Final positions are still
-    /// computed by offsetChildBlocks at parent pop; this only affects the
-    /// IFC's line-wrapping decisions for sibling text.
-    running_cursor_y: math.Unit = 0,
+    /// A float was generated in this BFC root's formatting context:
+    /// `bfc.zig` lays the context out when the root is finished.
+    bfc_has_floats: bool = false,
     inline_before_state: InlinePseudoState = .not_deferred,
     inline_after_state: InlinePseudoState = .not_deferred,
 
@@ -818,6 +808,28 @@ pub fn pushFlowBlock(
     return ref;
 }
 
+/// A float was just finished: mark the root of the formatting context it
+/// is in (the nearest ancestor that is a BFC root, CSS 2.1 §9.4.1), which
+/// lays the context out with `bfc.zig` when it is finished.
+fn markFloat(box_gen: *BoxGen) void {
+    const stack = &box_gen.stacks.block_info;
+    if (stack.top == null) return;
+    var i: usize = stack.rest.items.len + 1;
+    while (i > 0) {
+        i -= 1;
+        const info: *BlockInfo = if (i == stack.rest.items.len) &stack.top.? else &stack.rest.items[i];
+        const parent: ?*const BlockInfo = if (i == 0) null else &stack.rest.items[i - 1];
+        const is_root = info.is_bfc or info.out_of_flow or info.float_side != .none or
+            info.is_flex_container or info.is_grid_container or info.table_role != .none or
+            // i == 1: the root element (i == 0 is the initial containing block).
+            i <= 1 or (if (parent) |p| p.is_flex_container or p.is_grid_container else true);
+        if (is_root) {
+            info.bfc_has_floats = true;
+            return;
+        }
+    }
+}
+
 /// Pop the current float block from the stack, set its box tree data,
 /// and register it in the parent's float_ctx. Called from flow.popBlock
 /// for bfc_depth == 0 leaf blocks that would normally skip popFlowBlock.
@@ -848,20 +860,7 @@ pub fn registerFloatLeaf(box_gen: *BoxGen) void {
         writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
     }
 
-    // Register in parent's float_ctx.
-    if (box_gen.stacks.block_info.top) |*parent_info| {
-        if (block_info.float_side != .none) {
-            const width = block_info.sizes.get(.inline_size) orelse return;
-            const height = block_info.sizes.get(.block_size) orelse return;
-            const container_w = parent_info.sizes.get(.inline_size) orelse return;
-            const margin_top = block_info.sizes.margin_block_start;
-            const margin_bottom = block_info.sizes.margin_block_end;
-            const outer_h: math.Unit = margin_top + height + margin_bottom;
-            const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
-            const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
-            parent_info.float_ctx.registerFloatWithIndex(side, x, parent_info.running_cursor_y, width, outer_h, block.index);
-        }
-    }
+    box_gen.markFloat();
 }
 
 /// CSS 2.1 §10.3.9 shrink-to-fit inline size of an inline-level container
@@ -885,6 +884,11 @@ pub fn popFlowBlock(
     const block = box_gen.popBlock();
     var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
+    // The specified top margin, before child margins are folded into it.
+    const specified_margin_top = block_info.sizes.margin_block_start;
+    // The root element establishes the initial formatting context.
+    // (Below it on the stack is only the initial containing block.)
+    if (box_gen.stacks.block_info.rest.items.len == 0 and !block_info.out_of_flow) block_info.is_bfc = true;
 
     // If the parent is a grid container, record this child's grid-area hash.
     // IFC containers (generated for inter-element whitespace) are not grid
@@ -964,26 +968,14 @@ pub fn popFlowBlock(
         // BFC roots prevent parent-child margin escape (CSS 2.1 §8.3.1)
         if (block_info.is_bfc and parent_edge == 0) parent_edge = 1;
         const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, layout.box_tree.ptr);
+        // A formatting context with floats is laid out top-down instead.
+        if (block_info.bfc_has_floats) break :blk bfc.layoutBfc(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, container_width);
         // Parent-child margin collapsing: adjust parent's margin to absorb
         // the first child's escaped margin (CSS 2.1 Section 8.3.1).
         if (!block_info.is_bfc) {
             if (result.escaped_margin_top > block_info.sizes.margin_block_start) {
                 block_info.sizes.margin_block_start = result.escaped_margin_top;
             }
-        }
-        // Two-phase float fix (CSS 2.1 §10.3.5 + §9.5):
-        //   1. Floats registered provisionally at popFlowBlock with auto-
-        //      resolved widths and x=0/x=container-w. IFC siblings already
-        //      split lines using those provisional values.
-        //   2. offsetChildBlocks just finalized the canonical
-        //      shrink-to-fit widths and stacked x positions on each
-        //      float's box_offsets/offset.
-        //   3. Now overwrite the float_ctx entries with final values and
-        //      re-split direct IFC children so their line boxes pick up
-        //      the corrected exclusion rectangles.
-        if (block_info.float_ctx.placed_count > 0) {
-            flow.finalizeFloatRectangles(subtree, &block_info.float_ctx);
-            flow.resplitDirectIfcsWithFloats(layout, subtree, block.index, block.skip, &block_info.float_ctx);
         }
         break :blk result.auto_height;
     };
@@ -1009,6 +1001,8 @@ pub fn popFlowBlock(
     const inner_block: BoxTree.BoxStyle.InnerBlock =
         if (block_info.is_flex_container) .flex else if (block_info.is_grid_container) .grid else .flow;
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);
+    subtree.items(.block_margins)[block.index][0] = specified_margin_top;
+    subtree.items(.bfc_floats)[block.index] = block_info.bfc_has_floats;
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
     subtree.items(.visibility)[block.index] = .visible;
@@ -1030,45 +1024,7 @@ pub fn popFlowBlock(
     writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
     if (block_info.table_role == .table) table.afterTableCosmetic(box_gen, subtree, box_gen.currentSubtree(), block.index);
 
-    // Register this block on the parent's float context if it's a float,
-    // OR advance the parent's running cursor if it's a normal-flow child.
-    // The parent's IFC sibling layout (splitIntoLineBoxes) will consult the
-    // float context to narrow per-line widths around float exclusions
-    // (CSS 2.1 §9.5).
-    //
-    // Stage 2: floats register at the parent's running_cursor_y (the
-    // approximate top of where this child would land in normal flow).
-    // Margin collapsing is not yet mirrored, so y may be slightly off, but
-    // it's always >= 0 — better than the Stage 1 fixed-zero approximation.
-    // Final canonical positions still come from offsetChildBlocks; this
-    // context affects only the IFC's line-wrapping decisions.
-    if (box_gen.stacks.block_info.top) |*parent_info| {
-        if (block_info.float_side != .none) {
-            const margin_top = block_info.sizes.margin_block_start;
-            const margin_bottom = block_info.sizes.margin_block_end;
-            // Outer height = top margin + border-box height + bottom margin.
-            const outer_h: math.Unit = margin_top + height + margin_bottom;
-            const container_w = parent_info.sizes.get(.inline_size).?;
-            const side: flow.FloatContext.Side = if (block_info.float_side == .left) .left else .right;
-            // Provisional registration: width and x will be overwritten by
-            // `flow.finalizeFloatRectangles` after the parent's
-            // `offsetChildBlocks` runs (which is what actually computes the
-            // float's shrink-to-fit width and stacked x position). Store
-            // the child's subtree index in `child_index` so the finalize
-            // pass can find the correct entry.
-            const x: math.Unit = if (block_info.float_side == .left) 0 else container_w - width;
-            parent_info.float_ctx.registerFloatWithIndex(side, x, parent_info.running_cursor_y, width, outer_h, block.index);
-            // Floats are out-of-flow w.r.t. cursor advancement: they overlay
-            // the normal flow below them, so the cursor does NOT advance here.
-        } else if (!block_info.out_of_flow) {
-            // Normal-flow child: advance parent's running cursor by this
-            // child's outer (margin-box) height. Approximate — no margin
-            // collapsing — but consistent across siblings.
-            const margin_top = block_info.sizes.margin_block_start;
-            const margin_bottom = block_info.sizes.margin_block_end;
-            parent_info.running_cursor_y += margin_top + height + margin_bottom;
-        }
-    }
+    if (block_info.float_side != .none) box_gen.markFloat();
 }
 
 pub fn pushStfFlowBlock(
@@ -1399,6 +1355,10 @@ fn setDataBlock(
     subtree.items(.intrinsic)[index] = used.intrinsic;
     subtree.items(.percent_width)[index] = used.percent_width;
     subtree.items(.specified_margins)[index] = used.specified_margins;
+    subtree.items(.block_margins)[index] = .{ used.margin_block_start, used.margin_block_end };
+    subtree.items(.min_block_size)[index] = used.min_block_size;
+    subtree.items(.max_block_size)[index] = used.max_block_size;
+    subtree.items(.bfc_floats)[index] = false;
     // Default to false; popFlowBlock and other layout entry points
     // overwrite this when the block actually establishes a BFC.
     subtree.items(.is_bfc)[index] = false;

@@ -129,61 +129,10 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     if (containing_block_size.height) |h| assert(h >= 0);
 
     const ifc = try box_gen.pushIfc();
-    // Snapshot the nearest ancestor block's float context with placed floats.
-    // CSS 2.1 §9.5: floats affect inline content within the same BFC, even
-    // when the inline content is nested (e.g. inside an anonymous block or
-    // an explicit <p> sibling of the float). Walk the block_info stack from
-    // top down until we find an ancestor that has registered floats.
-    //
-    // Stage 2: When the float-host IS the immediate parent of this IFC
-    // (the dominant case — anonymous inline text directly inside a div
-    // that has float siblings), translate each float's y from the parent's
-    // content-box coord space into the IFC's local coord space by
-    // subtracting the parent's `running_cursor_y` (= where this IFC starts
-    // in the parent). Floats placed before the IFC end up at negative y
-    // (they overlap the IFC from above) or zero (lead the IFC) or extend
-    // into the IFC if their height carries them past the IFC start.
-    //
-    // For deeper nesting (float-host is a grand-ancestor), translation is
-    // approximate — we don't track the cumulative offset across intermediate
-    // blocks. Acceptable for Stage 2; lines may be slightly over-narrowed
-    // in those cases.
-    //
-    // Snapshot by value because block_info can realloc during IFC content
-    // processing, dangling any captured pointer.
-    //
-    // BFC scoping (CSS 2.1 §9.4.1): floats only affect inline content within
-    // the same Block Formatting Context. If we encounter a BFC root ancestor
-    // (a float itself, table cell, overflow:hidden, etc.) before finding any
-    // floats, stop — content inside a BFC is shielded from outer floats.
-    // This is critical for sibling floats containing text: each sibling
-    // float establishes its own BFC, so the second float's text must not
-    // be wrapped around the first float.
-    const parent_float_ctx: ?flow.FloatContext = blk: {
-        const stack = &box_gen.stacks.block_info;
-        if (stack.top) |info| {
-            if (info.float_ctx.placed_count > 0) {
-                var snap = info.float_ctx;
-                const offset = info.running_cursor_y;
-                if (offset != 0) {
-                    var j: u8 = 0;
-                    while (j < snap.placed_count) : (j += 1) {
-                        snap.placed_floats[j].y -= offset;
-                    }
-                }
-                break :blk snap;
-            }
-            if (info.is_bfc) break :blk null;
-        }
-        var i: usize = stack.rest.items.len;
-        while (i > 0) {
-            i -= 1;
-            const info = stack.rest.items[i];
-            if (info.float_ctx.placed_count > 0) break :blk info.float_ctx;
-            if (info.is_bfc) break :blk null;
-        }
-        break :blk null;
-    };
+    // Floats shorten line boxes only once their positions are known: the
+    // BFC pass (bfc.zig) re-splits this IFC when its formatting context has
+    // floats.
+    const parent_float_ctx: ?flow.FloatContext = null;
     try box_gen.inline_context.pushIfc(box_gen.getLayout().allocator, ifc, size_mode, containing_block_size, parent_float_ctx);
 
     try pushRootInlineBox(box_gen);
@@ -235,11 +184,6 @@ fn endMode(box_gen: *BoxGen) !Result {
     // Ensure font is at the cascaded size before solving metrics.
     layout.inputs.fonts.setFontSize(ifc.ptr.font, ifc.ptr.font_size);
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
-    // Persist the parent float context on the IFC so later re-layout passes
-    // (flex Phase 4 via flow.relayoutIfcAtWidth, grid relayout) can re-apply
-    // the same per-line exclusions. Without this, those callers pass `null`
-    // and overwrite correctly-wrapped lines with full-width lines.
-    ifc.ptr.persisted_parent_float_ctx = ifc.parent_float_ctx;
     const t_split = Layout.now();
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width, ifc.parent_float_ctx);
     Layout.profile.line_split_ns += Layout.now() - t_split;
@@ -546,6 +490,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     if (auto_width) sizes.setValue(.inline_size, available);
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+                    // An inline-block is a BFC root (CSS 2.1 §9.4.1).
+                    box_gen.stacks.block_info.top.?.is_bfc = true;
                     if (auto_width) box_gen.stacks.block_info.top.?.fit_content_available = available;
                     flow.setupContainer(box_gen, block_inner, box_style_specified);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
@@ -558,6 +504,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 if (sizes.get(.inline_size)) |_| {
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+                    // An inline-block is a BFC root (CSS 2.1 §9.4.1).
+                    box_gen.stacks.block_info.top.?.is_bfc = true;
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     // Inline-block is visible content for whitespace-only IFC discard.
                     ctx.ifc.top.?.has_visible_content = true;
@@ -573,6 +521,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .{ .stf = available_width }, stacking_context, node);
+                    // An inline-block is a BFC root (CSS 2.1 §9.4.1).
+                    box_gen.stacks.block_info.top.?.is_bfc = true;
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     // Inline-block is visible content for whitespace-only IFC discard.
                     ctx.ifc.top.?.has_visible_content = true;
@@ -1779,9 +1729,7 @@ fn clearLineYUntilFits(
         // line range — that's the first y where one of them stops
         // contributing to the exclusion.
         var next_clear: ?Unit = null;
-        var i: u8 = 0;
-        while (i < fctx.placed_count) : (i += 1) {
-            const f = fctx.placed_floats[i];
+        for (fctx.floats) |f| {
             if (f.y + f.h <= line_y) continue;
             if (f.y >= line_y + line_h) continue;
             const bottom = f.y + f.h;
