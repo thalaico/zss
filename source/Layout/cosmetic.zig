@@ -169,8 +169,9 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
     // Propagate text properties to IFCs
     const font_family = specified.font.font_family;
     const font_precomputed = if (bgc) |v| v.font != null else false;
-    const font_size_px: f32 = if (font_precomputed) specified.font.font_size.px_val() else layout.computer.resolvedFontSizePx(.cosmetic);
-    const font_weight = specified.font.font_weight;
+    const computed_font = if (font_precomputed) specified.font else layout.computer.computedFont(.cosmetic);
+    const font_size_px: f32 = computed_font.font_size.px_val();
+    const font_weight = computed_font.font_weight;
     const font_style = specified.font.font_style;
     const text_transform = specified.font.text_transform;
     const overflow_wrap = specified.font.overflow_wrap;

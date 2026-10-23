@@ -495,6 +495,13 @@ fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *co
             size * 13.0 / 16.0;
     }
     var result = specified;
+    // CSS Fonts 4 §2.2: relative weights from the inherited weight.
+    const parent_weight: u16 = @intFromEnum(parent.font_weight);
+    switch (specified.font_weight) {
+        .bolder => result.font_weight = @enumFromInt(@as(u16, if (parent_weight < 350) 400 else if (parent_weight < 550) 700 else if (parent_weight < 900) 900 else parent_weight)),
+        .lighter => result.font_weight = @enumFromInt(@as(u16, if (parent_weight < 100) parent_weight else if (parent_weight < 550) 100 else if (parent_weight < 750) 400 else 700)),
+        else => {},
+    }
     result.font_size = .{ .px = size };
     result.font_size_info = info;
     return result;

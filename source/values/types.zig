@@ -517,6 +517,10 @@ pub const FontWeight = enum(u16) {
     // Kept for backwards-compat with existing match arms in the codebase.
     normal = 400,
     bold = 700,
+    /// Relative weights (CSS Fonts 4 §2.2), resolved against the inherited
+    /// weight when the font is computed; never a computed value.
+    bolder = 1001,
+    lighter = 1002,
     _,
 
     pub fn isBold(self: FontWeight) bool {

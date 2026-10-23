@@ -1080,12 +1080,9 @@ pub fn fontWeight(ctx: *Context) ?types.FontWeight {
             return keyword(ctx, types.FontWeight, &.{
                 .{ "normal", .normal },
                 .{ "bold", .bold },
-                // "bolder" / "lighter" are relative-to-inherited. Approximate
-                // with concrete values — most authors who ship these mean
-                // "slightly bolder than inherited", so pick the canonical
-                // next-step weight.
-                .{ "lighter", @as(types.FontWeight, @enumFromInt(300)) },
-                .{ "bolder", @as(types.FontWeight, @enumFromInt(700)) },
+                // Relative to the inherited weight (StyleComputer.computeFont).
+                .{ "lighter", .lighter },
+                .{ "bolder", .bolder },
             });
         },
         .token_integer => {
