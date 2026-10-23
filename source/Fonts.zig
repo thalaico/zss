@@ -314,6 +314,50 @@ pub const DesignMetrics = struct {
     units_per_em: u16,
 };
 
+/// Per-font character widths at a given size, as Blink reads them for text
+/// control sizing (`SimpleFontData::PlatformInit`): the OS/2 table's
+/// `xAvgCharWidth` (the advance of "0" when the table is missing or zero —
+/// Blink's "invalid average char width" fallback) and the face bounding
+/// box's width, each rounded to whole pixels.
+pub const CharWidthMetrics = struct {
+    avg: f32,
+    max: f32,
+};
+
+// FreeType's SFNT table access (freetype/tttables.h), declared here because
+// the HarfBuzz import only pulls in FT_FREETYPE_H. Only the leading fields
+// of TT_OS2 are read.
+const FT_SFNT_OS2: c_int = 2;
+extern fn FT_Get_Sfnt_Table(face: hb.FT_Face, tag: c_int) ?*anyopaque;
+const TT_OS2_Head = extern struct {
+    version: u16,
+    xAvgCharWidth: i16,
+};
+
+pub fn getCharWidthMetrics(fonts: *const Fonts, handle: Handle, font_size_px: f32) CharWidthMetrics {
+    const entry = fonts.entryFor(handle) orelse return .{ .avg = 0, .max = 0 };
+    const face = entry.ft_face;
+    if (face.*.units_per_EM == 0) return .{ .avg = 0, .max = 0 };
+    const scale = font_size_px / @as(f32, @floatFromInt(face.*.units_per_EM));
+
+    var avg_units: i32 = 0;
+    if (FT_Get_Sfnt_Table(face, FT_SFNT_OS2)) |os2_ptr| {
+        const os2: *const TT_OS2_Head = @ptrCast(@alignCast(os2_ptr));
+        avg_units = os2.xAvgCharWidth;
+    }
+    if (avg_units <= 0) {
+        const zero_index = hb.FT_Get_Char_Index(face, '0');
+        if (zero_index != 0 and hb.FT_Load_Glyph(face, zero_index, hb.FT_LOAD_NO_SCALE) == 0) {
+            avg_units = @intCast(face.*.glyph.*.advance.x);
+        }
+    }
+    const max_units: i32 = @intCast(@max(0, face.*.bbox.xMax - face.*.bbox.xMin));
+    return .{
+        .avg = @round(@as(f32, @floatFromInt(avg_units)) * scale),
+        .max = @round(@as(f32, @floatFromInt(max_units)) * scale),
+    };
+}
+
 pub fn getDesignMetrics(fonts: *const Fonts, handle: Handle) DesignMetrics {
     const raw = @intFromEnum(handle);
     const entry: ?FontEntry = if (raw >= 5) blk: {

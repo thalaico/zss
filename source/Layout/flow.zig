@@ -17,6 +17,7 @@ const BlockInfo = BoxGen.BlockInfo;
 
 const solve = @import("./solve.zig");
 const @"inline" = @import("./inline.zig");
+const form_controls = @import("./form_controls.zig");
 
 const groups = zss.values.groups;
 const SpecifiedValues = groups.Tag.SpecifiedValues;
@@ -71,7 +72,8 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 break :blk .{ .normal = containing_block_size.width };
             } else
                 .{ .normal = containing_block_size.width };
-            const sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height, parent_is_flex_or_grid);
+            var sizes = solveAllSizes(computer, position, layout_width, containing_block_size.height, parent_is_flex_or_grid);
+            form_controls.applyIntrinsicSizes(box_gen.getLayout(), node, &sizes);
             const stacking_context = solveStackingContext(computer, position);
             var font_specified = computer.getSpecifiedValue(.box_gen, .font);
             font_specified.font_size = .{ .px = computer.resolvedFontSizePx(.box_gen) };

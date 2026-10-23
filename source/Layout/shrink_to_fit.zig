@@ -19,6 +19,7 @@ const SctBuilder = BoxGen.StackingContextTreeBuilder;
 const flow = @import("./flow.zig");
 const @"inline" = @import("./inline.zig");
 const solve = @import("./solve.zig");
+const form_controls = @import("./form_controls.zig");
 const selectors = zss.selectors;
 
 const BoxTree = zss.BoxTree;
@@ -316,7 +317,8 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
 fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
-    const sizes = flow.solveAllSizes(computer, position, .stf, containing_block_size.height, false);
+    var sizes = flow.solveAllSizes(computer, position, .stf, containing_block_size.height, false);
+    form_controls.applyIntrinsicSizes(box_gen.getLayout(), node, &sizes);
     const stacking_context = flow.solveStackingContext(computer, position);
     computer.commitNode(.box_gen);
 

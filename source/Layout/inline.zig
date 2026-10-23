@@ -21,6 +21,7 @@ const SctBuilder = BoxGen.StackingContextTreeBuilder;
 const SizeMode = BoxGen.SizeMode;
 
 const flow = @import("./flow.zig");
+const form_controls = @import("./form_controls.zig");
 const stf = @import("./shrink_to_fit.zig");
 const solve = @import("./solve.zig");
 
@@ -515,7 +516,8 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
         },
         .block => |block_inner| switch (block_inner) {
             .flow, .flex, .grid => {
-                const sizes = inlineBlockSolveSizes(&layout.computer, position, ifc.containing_block_size);
+                var sizes = inlineBlockSolveSizes(&layout.computer, position, ifc.containing_block_size);
+                form_controls.applyIntrinsicSizes(layout, node, &sizes);
                 const stacking_context = inlineBlockSolveStackingContext(&layout.computer, position);
 
                 var ib_font = layout.computer.getSpecifiedValue(.box_gen, .font);
@@ -1325,6 +1327,25 @@ fn inlineBlockSolveSizes(
 
     computed.insets = solve.insets(specified.insets);
     flow.solveInsets(computed.insets, position, &used);
+
+    // box-sizing: border-box (CSS Box Sizing §4) — a specified width/height
+    // includes padding and border; the engine works in content-box sizes.
+    // Same adjustment as flow.solveAllSizes; inline-blocks used to skip it,
+    // so a `box-sizing: border-box` input/button was padding+border wider
+    // than its specified width.
+    computed.content_width.box_sizing = specified.content_width.box_sizing;
+    if (specified.content_width.box_sizing == .border_box) {
+        if (used.get(.inline_size)) |w| {
+            const h_adjustment = used.border_inline_start + used.border_inline_end +
+                used.padding_inline_start + used.padding_inline_end;
+            used.setValue(.inline_size, @max(0, w - h_adjustment));
+        }
+        if (used.get(.block_size)) |h| {
+            const v_adjustment = used.border_block_start + used.border_block_end +
+                used.padding_block_start + used.padding_block_end;
+            used.setValue(.block_size, @max(0, h - v_adjustment));
+        }
+    }
 
     computer.setComputedValue(.box_gen, .content_width, computed.content_width);
     computer.setComputedValue(.box_gen, .horizontal_edges, computed.horizontal_edges);
