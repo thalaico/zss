@@ -103,8 +103,17 @@ pub const State = struct {
         state.active = true;
     }
 
-    /// Free what the new tree did not take over of `previous`.
-    pub fn releasePrevious(state: *State, previous: *BoxTree) void {
+    /// Free what the new tree did not take over of `previous`. Its root
+    /// subtree's block storage (copied from, never taken over) goes to
+    /// `new_tree` as spare storage for the next layout.
+    pub fn releasePrevious(state: *State, previous: *BoxTree, new_tree: *BoxTree) void {
+        if (previous.subtrees.items.len > 0 and !(state.active and state.taken_subtrees.items[0])) {
+            const root = previous.subtrees.items[0];
+            root.blocks.shrinkRetainingCapacity(0);
+            new_tree.spare_blocks.deinit(new_tree.allocator);
+            new_tree.spare_blocks = root.blocks;
+            root.blocks = .{};
+        }
         if (state.active) {
             previous.deinitExcept(state.taken_subtrees.items, state.taken_ifcs.items);
         } else {
@@ -250,7 +259,7 @@ pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bo
     }
 
     const skip = old_view.items(.skip)[ref.index];
-    if (!rangeIsSelfContained(previous, old_view, ref.index, skip)) return false;
+    const range_ifcs = selfContainedIfcCount(previous, old_view, ref.index, skip) orelse return false;
 
     const new_tree = layout.box_tree.ptr;
     const new_subtree = new_tree.getSubtree(box_gen.currentSubtree());
@@ -259,6 +268,11 @@ pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bo
 
     // Take it over.
     const allocator = new_tree.allocator;
+    // Room for the range and, as a guess, the rest of the old subtree after
+    // it (unchanged siblings that follow are taken over too): growing a
+    // large subtree copies all of it.
+    const following = old_view.len - ref.index;
+    try new_subtree.blocks.ensureTotalCapacity(allocator, @min(start + following + following / 8, std.math.maxInt(Subtree.Size)));
     try new_subtree.blocks.resize(allocator, start + skip);
     const new_view = new_subtree.view();
     inline for (comptime std.enums.values(Subtree.List.Field)) |field| {
@@ -266,6 +280,9 @@ pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bo
     }
     const delta: i32 = @as(i32, @intCast(start)) - @as(i32, ref.index);
     try state.ranges.append(layout.allocator, .{ .root = node, .block = .{ .subtree = new_subtree.id, .index = @intCast(start) } });
+    // Reserved once, sparing the lists' growth copies.
+    try new_tree.ifcs.ensureUnusedCapacity(allocator, range_ifcs);
+    try box_gen.sct_builder.reserveIfcs(new_tree, range_ifcs);
     try takeBlocks(box_gen, previous, ref.subtree, new_subtree, @intCast(start), skip, delta);
 
     layout.computer.keepCurrentNode(.box_gen);
@@ -276,25 +293,28 @@ pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bo
     return true;
 }
 
-/// The blocks [index, index + skip) of `view` and the subtrees their
-/// proxies reach hold no stacking context, positioned box or float.
-fn rangeIsSelfContained(previous: *const BoxTree, view: Subtree.View, index: Subtree.Size, skip: Subtree.Size) bool {
+/// The number of IFCs in the blocks [index, index + skip) of `view` and
+/// the subtrees their proxies reach, or null if they hold a stacking
+/// context, positioned box or float.
+fn selfContainedIfcCount(previous: *const BoxTree, view: Subtree.View, index: Subtree.Size, skip: Subtree.Size) ?usize {
     const types = view.items(.type);
     const contexts = view.items(.stacking_context);
     const cbs = view.items(.creates_absolute_cb);
     const out_of_flow = view.items(.out_of_flow);
     const floats = view.items(.float_side);
+    var ifcs: usize = 0;
     for (index..index + skip) |i| {
-        if (contexts[i] != null or cbs[i] or out_of_flow[i] or floats[i] != .none) return false;
+        if (contexts[i] != null or cbs[i] or out_of_flow[i] or floats[i] != .none) return null;
         switch (types[i]) {
+            .block => {},
+            .ifc_container => ifcs += 1,
             .subtree_proxy => |id| {
                 const child = previous.getSubtree(id);
-                if (!rangeIsSelfContained(previous, child.view(), 0, child.size())) return false;
+                ifcs += selfContainedIfcCount(previous, child.view(), 0, child.size()) orelse return null;
             },
-            else => {},
         }
     }
-    return true;
+    return ifcs;
 }
 
 /// Renumber what the blocks [start, start + count) of `subtree` (copied
@@ -316,13 +336,13 @@ fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, old_subtree: Subtree.Id, sub
             .ifc_container => |old_id| {
                 const ifc = previous.getIfc(old_id);
                 const new_id_int = std.math.cast(std.meta.Tag(Ifc.Id), new_tree.ifcs.items.len) orelse return error.SizeLimitExceeded;
-                try new_tree.ifcs.append(new_tree.allocator, ifc);
+                new_tree.ifcs.appendAssumeCapacity(ifc);
                 state.taken_ifcs.items[@intFromEnum(old_id)] = true;
                 state.new_ifc.items[@intFromEnum(old_id)] = @enumFromInt(new_id_int);
                 state.ifc_range.items[@intFromEnum(old_id)] = @intCast(state.ranges.items.len);
                 ifc.id = @enumFromInt(new_id_int);
                 ifc.parent_block = here;
-                if (delta != 0) shiftInlineBlocks(ifc, delta);
+                if (delta != 0 and ifc.has_inline_blocks) shiftInlineBlocks(ifc, delta);
                 try box_gen.sct_builder.addIfc(new_tree, ifc.id);
                 types[i] = .{ .ifc_container = ifc.id };
             },

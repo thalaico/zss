@@ -642,6 +642,7 @@ fn ifcAddInlineBlock(box_tree: BoxTreeManaged, ifc: *Ifc, block_box_index: Subtr
     const allocator = box_tree.ptr.allocator;
     if (wrap and ifc.glyphs.len > 0) try ifc.atomic_breaks.append(allocator, @intCast(ifc.glyphs.len - 1));
     try box_tree.appendSpecialGlyph(ifc, .InlineBlock, block_box_index);
+    ifc.has_inline_blocks = true;
     if (wrap) try ifc.atomic_breaks.append(allocator, @intCast(ifc.glyphs.len - 1));
     ifc.ends_in_collapsible_space = false;
 }

@@ -23,6 +23,10 @@ background_images: BackgroundImages = .{},
 computed_styles: zss.Layout.StyleComputer.ComputedStyles = .empty,
 /// The viewport the tree was laid out for.
 viewport: math.Size = .{ .w = 0, .h = 0 },
+/// Empty block storage with capacity, handed down from the tree before
+/// this one: the next incremental layout's root subtree takes it instead
+/// of growing new storage (`Layout/reuse.zig`).
+spare_blocks: Subtree.List = .{},
 allocator: Allocator,
 debug: Debug = .{},
 
@@ -35,6 +39,7 @@ pub fn deinit(box_tree: *BoxTree) void {
 /// took them over (`Layout/reuse.zig`).
 pub fn deinitExcept(box_tree: *BoxTree, kept_subtrees: []const bool, kept_ifcs: []const bool) void {
     box_tree.computed_styles.deinit(box_tree.allocator);
+    box_tree.spare_blocks.deinit(box_tree.allocator);
     for (box_tree.subtrees.items, 0..) |subtree, i| {
         if (i < kept_subtrees.len and kept_subtrees[i]) continue;
         subtree.deinit(box_tree.allocator);
@@ -439,6 +444,8 @@ pub const InlineFormattingContext = struct {
     /// consulted by flow.relayoutIfcAtWidth so flex re-layout doesn't
     /// resurrect zeroed whitespace IFCs.
     has_visible_content: bool = false,
+    /// The glyphs include inline-block glyphs (`Special.Kind.InlineBlock`).
+    has_inline_blocks: bool = false,
 
     /// Longest line-box length produced by splitIntoLineBoxes — i.e. the
     /// max-content width of this IFC. Stored so that consumers needing the

@@ -156,9 +156,11 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
     errdefer box_tree.deinit();
     try box_tree.node_to_generated_box.ensureNodes(allocator, layout.inputs.env.node_count);
     layout.box_tree = .{ .ptr = &box_tree };
-    // The previous tree's remaining parts are freed whatever happens.
-    defer if (layout.incremental) |inc| {
-        layout.reuse_state.releasePrevious(inc.previous);
+    // The previous tree's remaining parts are freed whatever happens (on
+    // success just before returning, as they pass spare storage to the new
+    // tree).
+    errdefer if (layout.incremental) |inc| {
+        layout.reuse_state.releasePrevious(inc.previous, &box_tree);
         layout.incremental = null;
     };
 
@@ -186,6 +188,10 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
     // inheritance queries) without re-running the cascade.
     box_tree.computed_styles = layout.computer.takeStage(.box_gen);
 
+    if (layout.incremental) |inc| {
+        layout.reuse_state.releasePrevious(inc.previous, &box_tree);
+        layout.incremental = null;
+    }
     return box_tree;
 }
 

@@ -399,7 +399,14 @@ pub fn currentSubtree(box_gen: *BoxGen) Subtree.Id {
 }
 
 pub fn pushInitialSubtree(box_gen: *BoxGen) !void {
-    const subtree = try box_gen.getLayout().box_tree.newSubtree();
+    const layout = box_gen.getLayout();
+    const subtree = try layout.box_tree.newSubtree();
+    // An incremental layout's root subtree takes the storage the tree
+    // before the previous one used (it is about as large).
+    if (layout.incremental) |inc| {
+        subtree.blocks = inc.previous.spare_blocks;
+        inc.previous.spare_blocks = .{};
+    }
     box_gen.stacks.subtree.top = .{ .id = subtree.id, .depth = 0 };
 }
 

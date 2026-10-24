@@ -204,6 +204,13 @@ pub fn setBlock(b: *Builder, id: Id, box_tree: *BoxTree, ref: BlockRef) void {
     b.incompletes.remove(id);
 }
 
+/// Room for `count` more IFCs in the current stacking context.
+pub fn reserveIfcs(b: *Builder, box_tree: *BoxTree, count: usize) !void {
+    const index = b.contexts.top.?.index;
+    const list = &box_tree.sct.list.items(.ifcs)[index];
+    try list.ensureUnusedCapacity(box_tree.allocator, count);
+}
+
 pub fn addIfc(b: *Builder, box_tree: *BoxTree, ifc_id: IfcId) !void {
     const index = b.contexts.top.?.index;
     const list = &box_tree.sct.list.items(.ifcs)[index];
