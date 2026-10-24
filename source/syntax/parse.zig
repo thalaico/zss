@@ -485,9 +485,10 @@ fn consumeAtRule(parser: *Parser, ast: *AstManaged, main_location: Location, at_
                 break;
             },
             .token_left_curly => {
-                // @media blocks contain nested rules — parse as a rule list.
-                // Other at-rules get their block parsed as raw component values.
-                if (at_rule == .media) {
+                // @media and @supports blocks contain nested rules — parse as
+                // a rule list. Other at-rules get their block parsed as raw
+                // component values.
+                if (at_rule == .media or at_rule == .supports) {
                     try consumeBlockRuleList(parser, ast, location);
                 } else {
                     _ = try consumeComponentValue(parser, ast, .token_left_curly, location, .css);

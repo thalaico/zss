@@ -34,6 +34,9 @@ pub const Parser = struct {
     /// Reset before each compound, set by parsePseudoElementSelector.
     /// Used to encode pseudo-element info in the last trailing of a complex selector.
     last_pseudo_element: selectors.PseudoElement = .unrecognized,
+    /// Set while parsing a :has() argument, where :has() may not nest
+    /// (Selectors 4 §4.5).
+    in_has: bool = false,
 
     pub fn init(
         env: *Environment,
@@ -183,12 +186,27 @@ const DataListManaged = struct {
 };
 
 fn parseComplexSelector(parser: *Parser, data_list: DataListManaged) !?void {
+    return parseComplexOrRelativeSelector(parser, data_list, null);
+}
+
+/// A <complex-selector>, or with `leading` a <relative-selector> (Selectors 4
+/// §3.5) whose leading combinator has already been consumed. A relative
+/// selector is stored as a complex selector whose first compound is a lone
+/// `has_anchor`, joined to the rest by the leading combinator.
+fn parseComplexOrRelativeSelector(parser: *Parser, data_list: DataListManaged, leading: ?selectors.Combinator) !?void {
     const complex_start = try data_list.beginComplexSelector();
     try parser.specificities.ensureUnusedCapacity(parser.allocator, 1);
     parser.specificity = .{};
     parser.valid = true;
 
     var compound_start = complex_start + 1;
+    if (leading) |combinator| {
+        try data_list.appendSlice(&.{
+            .{ .simple_selector_tag = .has_anchor },
+            .{ .trailing = .{ .combinator = combinator, .compound_selector_start = compound_start } },
+        });
+        compound_start = data_list.len();
+    }
     _ = parser.skipSpaces();
     parser.last_pseudo_element = .unrecognized;
     (try parseCompoundSelector(parser, data_list)) orelse return parser.fail();
@@ -420,25 +438,20 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
             return;
         },
         .token_colon => pseudo_class_selector: {
-            // Peek ahead: if this is :not(), handle it specially to emit negated selector tags.
-            // parsePseudo can't do this because it returns a PseudoClass enum, not selector data.
+            // Functional pseudo-classes carry selector data of their own, which
+            // parsePseudo (returning a bare PseudoClass) cannot express.
             const after_colon_tag, const after_colon_index = parser.next() orelse break :pseudo_class_selector;
             if (after_colon_tag == .function) {
                 const fn_loc = after_colon_index.location(parser.ast);
-                const is_not = parser.source_code.mapIdentifierValue(fn_loc, bool, &.{.{ "not", true }});
-                if (is_not != null) {
-                    try parseNotFunction(parser, data_list, after_colon_index);
-                    // :not() specificity = specificity of its argument (CSS Selectors Level 3)
-                    return;
-                }
-                // Check for :is() or :where()
-                const fn_name = parser.source_code.mapIdentifierValue(fn_loc, []const u8, &.{
-                    .{ "is", "is" },
-                    .{ "where", "where" },
+                const list_kind = parser.source_code.mapIdentifierValue(fn_loc, ListPseudoClass, &.{
+                    .{ "is", .is },
+                    .{ "where", .where },
+                    .{ "not", .not },
+                    .{ "has", .has },
                 }) orelse {
                     // :nth-*() / :lang() carry an argument Data of their own.
-                    if (try parseFunctionalPseudoClass(parser, data_list, after_colon_index, false)) return;
-                    // Not :not/:is/:where — reset and fall through
+                    if (try parseFunctionalPseudoClass(parser, data_list, after_colon_index)) return;
+                    // Any other function: an unsupported pseudo-class.
                     parser.sequence.reset(after_colon_index);
                     const pseudo_class = parsePseudo(.class, parser) orelse break :pseudo_class_selector;
                     try data_list.appendSlice(&.{
@@ -448,13 +461,8 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
                     parser.addSpecificity(.pseudo_class);
                     return;
                 };
-                if (std.mem.eql(u8, fn_name, "is")) {
-                    try parseIsOrWhereFunction(parser, data_list, after_colon_index, true);
-                    return;
-                } else {
-                    try parseIsOrWhereFunction(parser, data_list, after_colon_index, false);
-                    return;
-                }
+                try parseSelectorListPseudoClass(parser, data_list, after_colon_index, list_kind);
+                return;
             }
             // Non-function pseudo-class like :link, :hover, :first-child, :checked.
             // Reset so parsePseudo can consume the ident and return the class.
@@ -557,182 +565,171 @@ fn parseAttributeSelector(parser: *Parser, data_list: DataListManaged, block_ind
     });
 }
 
-/// Parse the argument of :not() and emit the corresponding negated selector tag.
-/// CSS Selectors Level 3: :not() accepts a single simple selector (type, id, class, or pseudo-class).
-/// We emit not_class, not_id, or not_type tags that the matcher already understands.
-fn parseNotFunction(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index) !void {
+const ListPseudoClass = enum { is, where, not, has };
+
+/// The errors of selector parsing; spelled out because parsing recurses
+/// through the selector-list pseudo-classes.
+const Error = error{ ParseError, OutOfMemory, MaxSizeExceeded, OutOfSegments };
+
+/// The pseudo-classes taking a selector list (Selectors 4 §4):
+///   :is() / :where() — <forgiving-selector-list>: arguments that fail to
+///     parse are dropped; the rest still apply (§4.2, §4.4).
+///   :not() — <complex-real-selector-list>; any invalid argument makes the
+///     whole selector invalid (§4.3).
+///   :has() — <relative-selector-list>, unforgiving like :not(); :has() may
+///     not nest (§4.5).
+/// Pseudo-elements are not valid in any of these arguments.
+/// Specificity (§17): :is(), :not() and :has() contribute that of their most
+/// specific argument; :where() contributes zero.
+///
+/// The tag and list placeholder are emitted first, the nested selectors right
+/// after them (so the compound matcher meets the tag before the nested data);
+/// the placeholder is filled in once the arguments are parsed. An argument
+/// using an unsupported pseudo-class matches nothing, so under :not() its
+/// verdict is unknown — the whole :not() is then emitted as an unsupported
+/// pseudo-class, which matches nothing.
+fn parseSelectorListPseudoClass(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, kind: ListPseudoClass) Error!void {
     const saved_sequence = parser.sequence;
     defer parser.sequence = saved_sequence;
+    const saved_pe = parser.last_pseudo_element;
+    defer parser.last_pseudo_element = saved_pe;
+    const saved_in_has = parser.in_has;
+    defer parser.in_has = saved_in_has;
+    // parseComplexSelector resets the running specificity and validity of the
+    // complex selector being parsed; keep the outer ones.
+    const saved_specificity = parser.specificity;
+    const saved_valid = parser.valid;
+    const saved_specificities_len = parser.specificities.items.len;
+    defer parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+
+    const tag_index = data_list.len();
+    try data_list.appendSlice(&.{ .{ .simple_selector_tag = .is }, .{ .is_selector_list = undefined } });
+    const nested_start = data_list.len();
+
+    if (kind == .has) {
+        if (parser.in_has) {
+            parser.specificity = saved_specificity;
+            parser.valid = false;
+            return;
+        }
+        parser.in_has = true;
+    }
+
     parser.sequence = function_index.children(parser.ast);
-
-    _ = parser.skipSpaces();
-    const arg_tag, const arg_index = parser.next() orelse return;
-
-    switch (arg_tag) {
-        // :not(.class)
-        .token_delim => {
-            if (arg_index.extra(parser.ast).codepoint != '.') return;
-            const class_name_index = parser.accept(.token_ident) orelse return;
-            const name = try parser.env.addClassName(class_name_index.location(parser.ast), parser.source_code);
-            try data_list.appendSlice(&.{
-                .{ .simple_selector_tag = .not_class },
-                .{ .class_selector = name },
-            });
-            parser.addSpecificity(.class);
-        },
-        // :not(#id)
-        .token_hash_id => {
-            const name = try parser.env.addIdName(arg_index.location(parser.ast), parser.source_code);
-            try data_list.appendSlice(&.{
-                .{ .simple_selector_tag = .not_id },
-                .{ .id_selector = name },
-            });
-            parser.addSpecificity(.id);
-        },
-        // :not(type) — e.g., :not(div), :not(span)
-        .token_ident => {
-            const type_name = try parser.env.addTypeName(arg_index.location(parser.ast), parser.source_code);
-            const element_type: Environment.ElementType = .{
-                .namespace = parser.default_namespace,
-                .name = type_name,
-            };
-            try data_list.appendSlice(&.{
-                .{ .simple_selector_tag = .not_type },
-                .{ .type_selector = element_type },
-            });
-            parser.addSpecificity(.type);
-        },
-        // :not(:pseudo-class) — e.g., :not(:focus), :not(:hover)
-        .token_colon => {
-            // :not(:nth-child(..)) / :not(:lang(..)): argument-carrying forms.
-            const inner_tag, const inner_index = parser.next() orelse return;
-            if (inner_tag == .function) {
-                if (try parseFunctionalPseudoClass(parser, data_list, inner_index, true)) return;
+    var count: u8 = 0;
+    var invalid = false;
+    while (true) {
+        _ = parser.skipSpaces();
+        if (parser.sequence.emptyKeepSpaces()) {
+            // An empty argument (or a trailing comma) is invalid.
+            invalid = true;
+            break;
+        }
+        const arg_start = data_list.len();
+        const specificities_before = parser.specificities.items.len;
+        const ok = parseListArgument(parser, data_list, kind) catch |err| switch (err) {
+            error.ParseError => false,
+            else => |e| return e,
+        };
+        // A forgiving list drops an argument using an unsupported
+        // pseudo-class like any other invalid one.
+        const usable = ok and !((kind == .is or kind == .where) and selectors.complexSelectorHasUnsupported(data_list.list.items, arg_start));
+        if (usable and count < std.math.maxInt(u8)) {
+            count += 1;
+        } else {
+            data_list.reset(arg_start);
+            parser.specificities.shrinkRetainingCapacity(specificities_before);
+            if (kind != .is and kind != .where) {
+                invalid = true;
+                break;
             }
-            parser.sequence.reset(inner_index);
-            const pseudo_class = parsePseudo(.class, parser) orelse return;
-            try data_list.appendSlice(&.{
-                .{ .simple_selector_tag = .not_pseudo_class },
-                .{ .pseudo_class_selector = pseudo_class },
-            });
-            parser.addSpecificity(.pseudo_class);
-        },
-        // Unsupported :not() argument (compound selectors, attribute selectors, etc.)
-        // Treat as ignored — the selector still participates in the cascade.
-        else => return,
+            // Forgiving: skip to the next top-level comma.
+            while (parser.next()) |item| {
+                if (item[0] == .token_comma) {
+                    parser.sequence.reset(item[1]);
+                    break;
+                }
+            }
+        }
+        _ = parser.skipSpaces();
+        const sep_tag, _ = parser.next() orelse break;
+        if (sep_tag != .token_comma) {
+            invalid = true;
+            break;
+        }
+    }
+
+    parser.valid = saved_valid;
+    parser.specificity = saved_specificity;
+    if (invalid and kind != .is and kind != .where) {
+        parser.valid = false;
+        return;
+    }
+
+    const list: Data.NestedSelectorList = .{ .start = nested_start, .count = count };
+    if (kind == .not and selectors.listHasUnsupported(data_list.list.items, list)) {
+        data_list.reset(tag_index);
+        try data_list.appendSlice(&.{
+            .{ .simple_selector_tag = .pseudo_class },
+            .{ .pseudo_class_selector = .unrecognized },
+        });
+        parser.addSpecificity(.pseudo_class);
+        return;
+    }
+    data_list.list.items[tag_index] = .{ .simple_selector_tag = switch (kind) {
+        .is => .is,
+        .where => .where,
+        .not => .not,
+        .has => .has,
+    } };
+    data_list.list.items[tag_index + 1] = switch (kind) {
+        .is => .{ .is_selector_list = list },
+        .where => .{ .where_selector_list = list },
+        .not => .{ .not_selector_list = list },
+        .has => .{ .has_selector_list = list },
+    };
+
+    if (kind != .where) {
+        var max: Specificity = .{};
+        for (parser.specificities.items[saved_specificities_len..]) |spec| {
+            if (spec.order(max) == .gt) max = spec;
+        }
+        parser.specificity.a +|= max.a;
+        parser.specificity.b +|= max.b;
+        parser.specificity.c +|= max.c;
     }
 }
 
-/// Parse :is() or :where() with a selector list argument.
-/// Stores nested selectors in data_list and emits a NestedSelectorList reference.
-fn parseIsOrWhereFunction(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, is_is: bool) Allocator.Error!void {
-    const saved_sequence = parser.sequence;
-    defer parser.sequence = saved_sequence;
-    // Save/restore last_pseudo_element so nested selector parsing doesn't corrupt
-    // the outer compound's pseudo-element tracking.
-    const saved_pe = parser.last_pseudo_element;
-    defer parser.last_pseudo_element = saved_pe;
-    parser.sequence = function_index.children(parser.ast);
-
-    // Emit the :is/:where tag and list placeholder FIRST, before nested selector data.
-    // This ensures matchCompoundSelector encounters the tag before the inline nested data.
-    // The placeholder start/count will be updated after parsing the nested selectors.
-    const tag: Data.SimpleSelectorTag = if (is_is) .is else .where;
-    const list_index: selectors.Data.ListIndex = @intCast(data_list.len());
-    try data_list.appendSlice(&.{
-        .{ .simple_selector_tag = tag },
-        if (is_is)
-            Data{ .is_selector_list = .{ .start = undefined, .count = undefined } }
-        else
-            Data{ .where_selector_list = .{ .start = undefined, .count = undefined } },
-    });
-
-    // Remember where nested selectors start (right after the tag + list entries)
-    const nested_start: selectors.Data.ListIndex = @intCast(data_list.len());
-    var selector_count: u8 = 0;
-
-    // Save the outer compound's running specificity counter and validity
-    // before recursing — `parseComplexSelector` resets `parser.specificity`
-    // to `.{}` (line ~188) and `parser.valid` to true at every call, so a
-    // recursive call clobbers anything the outer compound has already
-    // accumulated for THIS complex selector (e.g. `.A` in `.A:is(.B):C`).
-    // We restore them after the nested loop.
-    const saved_specificity = parser.specificity;
-    const saved_valid = parser.valid;
-
-    // Parse first selector
-    _ = parser.skipSpaces();
-    const saved_specificities_len = parser.specificities.items.len;
-    if ((parseComplexSelector(parser, data_list) catch {
-        parser.specificity = saved_specificity;
-        parser.valid = saved_valid;
-        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
-        return;
-    }) != null) {} else {
-        parser.specificity = saved_specificity;
-        parser.valid = saved_valid;
-        parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
-        return;
-    }
-    selector_count += 1;
-
-    // Parse additional selectors (comma-separated)
-    while (true) {
-        _ = parser.skipSpaces();
-        const next_tag, _ = parser.next() orelse break;
-        if (next_tag != .token_comma) break;
-        _ = parser.skipSpaces();
-        if ((parseComplexSelector(parser, data_list) catch break) != null) {} else break;
-        selector_count += 1;
-        if (selector_count == 255) break; // u8 max
-    }
-
-    // Restore outer compound's running counters that the recursion stomped on
-    parser.specificity = saved_specificity;
-    parser.valid = saved_valid;
-
-    // Update the placeholder with the actual nested data location and count
-    if (is_is)
-        data_list.list.items[list_index + 1] = Data{ .is_selector_list = .{ .start = nested_start, .count = selector_count } }
-    else
-        data_list.list.items[list_index + 1] = Data{ .where_selector_list = .{ .start = nested_start, .count = selector_count } };
-
-    // Specificity handling (CSS Selectors Level 4):
-    //   :is()    contributes max(specificity(arg)) to the OUTER complex
-    //            selector's running tally
-    //   :where() contributes zero
-    //
-    // Nested calls to parseComplexSelector pushed one entry per nested
-    // selector onto `parser.specificities` (one entry == one COMPLEX
-    // selector). Those are bookkeeping for the recursion and must be
-    // removed — `parser.specificities` exists to record exactly one
-    // specificity per *outer* complex selector parsed by the public
-    // entry point. Leaving an extra entry behind here would desync
-    // `parser.specificities.items.len` from the outer rule's
-    // selector_data length, which surfaces in Stylesheet.zig as the
-    // "specificity/data mismatch" warning and silently drops trailing
-    // selectors in any rule that uses :is() or :where(). The fix is
-    // to fold :is()'s max into `parser.specificity` (the outer
-    // running tally) and let the outer parseComplexSelector's single
-    // push at line 237 carry it.
-    if (is_is) {
-        var max_a: u8 = 0;
-        var max_b: u8 = 0;
-        var max_c: u8 = 0;
-        var i = saved_specificities_len;
-        while (i < parser.specificities.items.len) : (i += 1) {
-            const spec = parser.specificities.items[i];
-            if (spec.a > max_a) max_a = spec.a;
-            if (spec.b > max_b) max_b = spec.b;
-            if (spec.c > max_c) max_c = spec.c;
+/// One argument of a selector-list pseudo-class, up to (not including) the
+/// next top-level comma. Returns false if it is invalid.
+fn parseListArgument(parser: *Parser, data_list: DataListManaged, kind: ListPseudoClass) Error!bool {
+    var leading: ?selectors.Combinator = null;
+    if (kind == .has) {
+        leading = .descendant;
+        if (parser.accept(.token_delim)) |index| {
+            switch (index.extra(parser.ast).codepoint) {
+                '>' => leading = .child,
+                '+' => leading = .next_sibling,
+                '~' => leading = .subsequent_sibling,
+                else => return false,
+            }
         }
-        parser.specificity.a +|= max_a;
-        parser.specificity.b +|= max_b;
-        parser.specificity.c +|= max_c;
     }
-    // :where() contributes zero — nothing to add. Both branches drop
-    // the nested entries.
-    parser.specificities.shrinkRetainingCapacity(saved_specificities_len);
+    const start = data_list.len();
+    (try parseComplexOrRelativeSelector(parser, data_list, leading)) orelse return false;
+    // No pseudo-elements inside these arguments.
+    const last_trailing = data_list.list.items[start].next_complex_selector - 1;
+    switch (data_list.list.items[last_trailing].trailing.combinator) {
+        .end_before, .end_after => return false,
+        else => {},
+    }
+    // The argument must end here: a comma or the end of the function.
+    _ = parser.skipSpaces();
+    if (parser.next()) |item| {
+        parser.sequence.reset(item[1]);
+        if (item[0] != .token_comma) return false;
+    }
+    return true;
 }
 
 fn parsePseudoElementSelector(parser: *Parser, data_list: DataListManaged) !?void {
@@ -785,7 +782,7 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                         .enabled, .disabled, .checked, .empty,
                         .scope, .target, .required, .optional, .default, .indeterminate, .defined,
                         => return pc,
-                        .unrecognized, .ignored => {},
+                        .unrecognized => {},
                         // Hyphenated names won't match via mapIdentifierEnum
                         else => {},
                     }
@@ -821,12 +818,11 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
             return unrecognizedPseudo(pseudo, parser, main_component_index);
         },
         .function => {
-            // Functional pseudo-classes like :not(), :is(), :where(), :nth-child().
-            // Consume arguments and treat as always-matching (.ignored) rather
-            // than .unrecognized, which would cause the entire rule to be dropped.
+            // A functional pseudo-class or pseudo-element this parser does not
+            // know (the selector-list, :nth-*() and :lang() ones are handled
+            // before this): it matches nothing.
             var function_values = main_component_index.children(parser.ast);
             if (anyValue(parser.ast, &function_values)) {
-                if (pseudo == .class) return .ignored;
                 return unrecognizedPseudo(pseudo, parser, main_component_index);
             }
         },
@@ -875,7 +871,7 @@ fn matchHyphenatedPseudoClass(parser: *Parser, index: Ast.Index) ?selectors.Pseu
 /// `function_index` is some other function. A recognized pseudo-class with an
 /// invalid argument is emitted as `.unrecognized`, which never matches — the
 /// selector is invalid (Selectors 4 §3.9), not "matches everything".
-fn parseFunctionalPseudoClass(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index, negate: bool) !bool {
+fn parseFunctionalPseudoClass(parser: *Parser, data_list: DataListManaged, function_index: Ast.Index) !bool {
     const kind = parser.source_code.mapIdentifierValue(function_index.location(parser.ast), selectors.PseudoClass, &.{
         .{ "nth-child", .nth_child },
         .{ "nth-last-child", .nth_last_child },
@@ -883,7 +879,7 @@ fn parseFunctionalPseudoClass(parser: *Parser, data_list: DataListManaged, funct
         .{ "nth-last-of-type", .nth_last_of_type },
         .{ "lang", .lang },
     }) orelse return false;
-    const tag: selectors.Data.SimpleSelectorTag = if (negate) .not_pseudo_class else .pseudo_class;
+    const tag: selectors.Data.SimpleSelectorTag = .pseudo_class;
 
     switch (kind) {
         .lang => {
@@ -1041,5 +1037,20 @@ fn unrecognizedPseudo(comptime pseudo: Pseudo, parser: *Parser, main_component_i
         },
         parser.source_code.formatIdentToken(main_component_index.location(parser.ast)),
     });
+    // A name with another engine's vendor prefix is not a pseudo-class or
+    // pseudo-element of this UA at all: the selector is invalid (Selectors 4
+    // §3.9), dropping its whole rule — or, inside :is()/:where(), just that
+    // argument. Other unknown names may be ones the platform defines but this
+    // implementation lacks; those match nothing.
+    var buf: [5]u8 = undefined;
+    var n: usize = 0;
+    var it = parser.source_code.identTokenIterator(main_component_index.location(parser.ast));
+    while (n < buf.len) : (n += 1) {
+        const cp = it.next() orelse break;
+        buf[n] = if (cp < 128) std.ascii.toLower(@intCast(cp)) else 0;
+    }
+    for ([_][]const u8{ "-moz-", "-ms-", "-o-" }) |prefix| {
+        if (std.mem.startsWith(u8, buf[0..n], prefix)) parser.valid = false;
+    }
     return .unrecognized;
 }

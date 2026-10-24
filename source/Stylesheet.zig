@@ -231,9 +231,6 @@ const RuleProcessor = struct {
                 try ctx.handleMediaRule(at_rule_index);
             },
             .supports => {
-                // Treat @supports as always-true: process contained rules.
-                // We don't evaluate the @supports condition since we want all
-                // rules to apply (missing features fail gracefully at render time).
                 try ctx.handleSupportsRule(at_rule_index);
             },
             .@"font-face" => {},
@@ -293,17 +290,139 @@ const RuleProcessor = struct {
         try ctx.processRuleList(nested_rule_list);
     }
 
-    /// Handle @supports: always process contained rules (we treat all @supports
-    /// conditions as true since unsupported CSS properties fail gracefully).
+    /// @supports (CSS Conditional 3 §6): process the contained rules if the
+    /// condition in the prelude holds. A prelude that is not a
+    /// <supports-condition> makes the whole rule invalid.
     fn handleSupportsRule(ctx: *RuleProcessor, at_rule_index: Ast.Index) !void {
-        var children = at_rule_index.children(ctx.ast);
-        while (children.nextKeepSpaces(ctx.ast)) |child_idx| {
-            if (child_idx.tag(ctx.ast) == .rule_list) {
-                try ctx.processRuleList(child_idx);
-                return;
+        var prelude = at_rule_index.children(ctx.ast);
+        var rule_list: ?Ast.Index = null;
+        var probe = prelude;
+        while (probe.nextKeepSpaces(ctx.ast)) |child| {
+            if (child.tag(ctx.ast) == .rule_list) {
+                rule_list = child;
+                prelude.end = child;
+                break;
             }
         }
-        // @supports without a block — skip silently.
+        const nested_rule_list = rule_list orelse return;
+        const holds = (try ctx.supportsCondition(&prelude)) orelse return error.InvalidAtRule;
+        if (holds) try ctx.processRuleList(nested_rule_list);
+    }
+
+    /// <supports-condition> = not <supports-in-parens>
+    ///                      | <supports-in-parens> [ and <supports-in-parens> ]*
+    ///                      | <supports-in-parens> [ or <supports-in-parens> ]*
+    /// Consumes all of `sequence`. Null if it does not match the grammar.
+    fn supportsCondition(ctx: *RuleProcessor, sequence: *Ast.Sequence) anyerror!?bool {
+        const first = sequence.nextSkipSpaces(ctx.ast) orelse return null;
+        if (first.tag(ctx.ast) == .token_ident and ctx.source_code.identifierEqlIgnoreCase(first.location(ctx.ast), "not")) {
+            const operand = sequence.nextSkipSpaces(ctx.ast) orelse return null;
+            const value = (try ctx.supportsInParens(operand)) orelse return null;
+            if (!sequence.emptySkipSpaces(ctx.ast)) return null;
+            return !value;
+        }
+        var result = (try ctx.supportsInParens(first)) orelse return null;
+        const Op = enum { @"and", @"or" };
+        var op: ?Op = null;
+        while (sequence.nextSkipSpaces(ctx.ast)) |keyword| {
+            if (keyword.tag(ctx.ast) != .token_ident) return null;
+            const this_op = ctx.source_code.mapIdentifierValue(keyword.location(ctx.ast), Op, &.{
+                .{ "and", .@"and" },
+                .{ "or", .@"or" },
+            }) orelse return null;
+            // and/or may not be mixed without parentheses.
+            if (op != null and op.? != this_op) return null;
+            op = this_op;
+            const operand = sequence.nextSkipSpaces(ctx.ast) orelse return null;
+            const value = (try ctx.supportsInParens(operand)) orelse return null;
+            result = switch (this_op) {
+                .@"and" => result and value,
+                .@"or" => result or value,
+            };
+        }
+        return result;
+    }
+
+    /// <supports-in-parens> = ( <supports-condition> ) | <supports-feature> | <general-enclosed>
+    /// <supports-feature> = <supports-selector-fn> | ( <declaration> )
+    /// <general-enclosed> (any other ()-block or function) is false.
+    fn supportsInParens(ctx: *RuleProcessor, index: Ast.Index) anyerror!?bool {
+        switch (index.tag(ctx.ast)) {
+            .simple_block_paren => {
+                var inner = index.children(ctx.ast);
+                var look = inner;
+                const head = look.nextSkipSpaces(ctx.ast) orelse return false;
+                if (head.tag(ctx.ast) == .token_ident) {
+                    if (look.nextSkipSpaces(ctx.ast)) |after| {
+                        if (after.tag(ctx.ast) == .token_colon) return try ctx.supportsDeclaration(index);
+                    }
+                }
+                return (try ctx.supportsCondition(&inner)) orelse false;
+            },
+            .function => {
+                if (ctx.source_code.identifierEqlIgnoreCase(index.location(ctx.ast), "selector")) {
+                    return try ctx.supportsSelector(index);
+                }
+                return false;
+            },
+            else => return null,
+        }
+    }
+
+    /// ( <declaration> ): supported if this implementation parses the
+    /// property and value (a custom property, or a value with var(), always
+    /// parses). The text between the parentheses is parsed as a one-declaration
+    /// style block, the way `zss.custom_properties` parses substituted values.
+    fn supportsDeclaration(ctx: *RuleProcessor, block_index: Ast.Index) !bool {
+        const text = ctx.source_code.text;
+        const open: u32 = @intFromEnum(block_index.location(ctx.ast));
+        var tokenizer = zss.syntax.Tokenizer.init(ctx.source_code);
+        tokenizer.setLocation(@enumFromInt(open + 1));
+        var depth: usize = 1;
+        const close: u32 = while (true) {
+            const token, const location = (tokenizer.next() catch return false) orelse return false;
+            switch (token) {
+                .token_left_paren, .token_function => depth += 1,
+                .token_right_paren => {
+                    depth -= 1;
+                    if (depth == 0) break @intFromEnum(location);
+                },
+                else => {},
+            }
+        };
+        const env = ctx.env;
+        const source_text = try std.fmt.allocPrint(ctx.allocator, "x{{{s}}}", .{text[open + 1 .. close]});
+        defer ctx.allocator.free(source_text);
+        const source = SourceCode.init(source_text) catch return false;
+        var parser = zss.syntax.Parser.init(source, env.allocator);
+        defer parser.deinit();
+        var ast, const rules_index = parser.parseCssStylesheet(env.allocator) catch return false;
+        defer ast.deinit(env.allocator);
+        var rules = rules_index.children(ast);
+        const rule = rules.nextSkipSpaces(ast) orelse return false;
+        if (rule.tag(ast) != .qualified_rule) return false;
+        const last_declaration = ast.qualifiedRulePrelude(rule).end.extra(ast).index;
+        // Exactly one declaration.
+        if (@intFromEnum(last_declaration) == 0) return false;
+        if (@intFromEnum(last_declaration.extra(ast).index) != 0) return false;
+        var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
+        var urls = Urls.init(env);
+        defer urls.deinit(env.allocator);
+        const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator));
+        return env.decls.hasValues(block, .normal) or env.decls.hasValues(block, .important);
+    }
+
+    /// selector( <complex-selector> ) (CSS Conditional 4 §6.1): supported if
+    /// the selector parses and uses nothing this implementation cannot match.
+    fn supportsSelector(ctx: *RuleProcessor, function_index: Ast.Index) !bool {
+        var data_list: std.ArrayList(selectors.Data) = .empty;
+        defer data_list.deinit(ctx.allocator);
+        ctx.selector_parser.parseComplexSelectorList(&data_list, ctx.allocator, function_index.children(ctx.ast)) catch |err| switch (err) {
+            error.ParseError => return false,
+            else => |e| return e,
+        };
+        if (ctx.selector_parser.specificities.items.len != 1) return false;
+        return !selectors.complexSelectorHasUnsupported(data_list.items, 0);
     }
 };
 

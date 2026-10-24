@@ -53,6 +53,11 @@ pub const Data = union {
     is_selector_list: NestedSelectorList,
     /// :where() pseudo-class with nested selector list
     where_selector_list: NestedSelectorList,
+    /// :not() pseudo-class with nested selector list
+    not_selector_list: NestedSelectorList,
+    /// :has() pseudo-class with nested relative selector list (each one starts
+    /// with a `has_anchor` compound)
+    has_selector_list: NestedSelectorList,
 
     /// Selectors 4 §3 An+B: matches sibling indices `a*n + b` for n >= 0.
     pub const Nth = packed struct {
@@ -68,7 +73,7 @@ pub const Data = union {
         }
     };
 
-    /// Reference to a list of nested selectors (for :is/:where)
+    /// Reference to a list of nested selectors (for :is/:where/:not/:has)
     pub const NestedSelectorList = packed struct {
         /// Index of first complex selector in the nested list
         start: ListIndex,
@@ -102,18 +107,20 @@ pub const Data = union {
         pseudo_class,
         /// The next Data is a `pseudo_element_selector`
         pseudo_element,
-        /// :not() negation: next Data is a `class_selector` to negate
-        not_class,
-        /// :not() negation: next Data is a `id_selector` to negate
-        not_id,
-        /// :not() negation: next Data is a `type_selector` to negate
-        not_type,
-        /// :not() negation: next Data is a `pseudo_class_selector` to negate
-        not_pseudo_class,
         /// :is() pseudo-class: next Data is an `is_selector_list`
         is,
         /// :where() pseudo-class: next Data is a `where_selector_list`
         where,
+        /// :not() with a selector list argument (Selectors 4 §4.3): next Data
+        /// is a `not_selector_list`
+        not,
+        /// :has() (Selectors 4 §4.5): next Data is a `has_selector_list`
+        has,
+        /// The anchor of a relative selector — the element :has() is matched
+        /// against. No payload. Only ever the whole first compound of a
+        /// complex selector nested in a :has() list; its trailing carries the
+        /// relative selector's leading combinator.
+        has_anchor,
     };
 
     pub const AttributeOperatorCase = struct {
@@ -179,8 +186,8 @@ pub const PseudoClass = enum {
     default,
     indeterminate,
     defined,
+    /// A pseudo-class this implementation does not support: matches nothing.
     unrecognized,
-    ignored,
 };
 
 /// Bits naming the user-action pseudo-classes (Selectors 4 §13.2) a selector
@@ -226,7 +233,7 @@ fn compoundUserActionMask(data: []const Data, start: Data.ListIndex, end: Data.L
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
-            .pseudo_class, .not_pseudo_class => {
+            .pseudo_class => {
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
@@ -239,14 +246,15 @@ fn compoundUserActionMask(data: []const Data, start: Data.ListIndex, end: Data.L
                 }
                 idx += pseudoClassPayload(pc);
             },
-            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .type, .id, .class, .pseudo_element => idx += 1,
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
             },
-            inline .is, .where => |_, tag| {
+            .has_anchor => {},
+            inline .is, .where, .not, .has => |_, tag| {
                 idx += 1;
-                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                const list = nestedList(data[idx], tag);
                 var sel_idx = list.start;
                 for (0..list.count) |_| {
                     mask = mask.merge(complexSelectorUserActionMask(data, sel_idx));
@@ -257,6 +265,75 @@ fn compoundUserActionMask(data: []const Data, start: Data.ListIndex, end: Data.L
         }
     }
     return mask;
+}
+
+/// True if any selector of the nested list uses a pseudo-class the matcher
+/// cannot answer, directly or within its own nested lists.
+pub fn listHasUnsupported(data: []const Data, list: Data.NestedSelectorList) bool {
+    var sel_idx = list.start;
+    for (0..list.count) |_| {
+        const next = data[sel_idx].next_complex_selector;
+        if (complexSelectorHasUnsupported(data, sel_idx)) return true;
+        sel_idx = next;
+    }
+    return false;
+}
+
+/// True if the complex selector at `complex_selector_index` uses a
+/// pseudo-class or pseudo-element the matcher cannot answer.
+pub fn complexSelectorHasUnsupported(data: []const Data, complex_selector_index: Data.ListIndex) bool {
+    var trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    while (true) {
+        const start = data[trailing_idx].trailing.compound_selector_start;
+        var idx = start;
+        while (idx < trailing_idx) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .pseudo_class => {
+                    idx += 1;
+                    const pc = data[idx].pseudo_class_selector;
+                    if (pc == .unrecognized) return true;
+                    idx += pseudoClassPayload(pc);
+                },
+                .pseudo_element => {
+                    idx += 1;
+                    if (data[idx].pseudo_element_selector == .unrecognized) return true;
+                },
+                .type, .id, .class => idx += 1,
+                .attribute => |op_case| {
+                    idx += 1;
+                    if (op_case != null) idx += 1;
+                },
+                .has_anchor => {},
+                inline .is, .where, .not, .has => |_, tag| {
+                    idx += 1;
+                    const list = nestedList(data[idx], tag);
+                    if (listHasUnsupported(data, list)) return true;
+                    idx = nestedListEnd(data, list) - 1;
+                },
+            }
+        }
+        if (start <= complex_selector_index + 1) return false;
+        trailing_idx = start - 1;
+    }
+}
+
+/// The nested selector list carried by the Data following an :is(), :where(),
+/// :not() or :has() tag.
+pub fn nestedList(payload: Data, comptime tag: std.meta.Tag(Data.SimpleSelectorTag)) Data.NestedSelectorList {
+    return switch (tag) {
+        .is => payload.is_selector_list,
+        .where => payload.where_selector_list,
+        .not => payload.not_selector_list,
+        .has => payload.has_selector_list,
+        else => @compileError("not a selector-list pseudo-class"),
+    };
+}
+
+/// The index just past the last complex selector of a nested list.
+pub fn nestedListEnd(data: []const Data, list: Data.NestedSelectorList) Data.ListIndex {
+    var sel_idx = list.start;
+    for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+    return sel_idx;
 }
 
 /// Number of extra Data entries that follow a `pseudo_class_selector` of
@@ -481,7 +558,7 @@ pub fn Matcher(comptime Tree: type) type {
         ) bool {
             assert(tree.isElement(match_candidate));
             const last_trailing = data[complex_selector_index].next_complex_selector - 1;
-            return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, tree, match_candidate, allocator);
+            return matchComplexSelector(data, complex_selector_index + 1, last_trailing, env, tree, match_candidate, allocator, null);
         }
 
         /// Returns `true` if any complex selector in the list starting at
@@ -510,10 +587,13 @@ pub fn Matcher(comptime Tree: type) type {
             tree: Tree,
             match_candidate: Node,
             allocator: Allocator,
+            /// The element a relative selector (a :has() argument) is
+            /// anchored at; null for an absolute selector.
+            has_anchor: ?Node,
         ) bool {
             const trailing = data[last_trailing].trailing;
-            if (!matchCompoundSelector(data, trailing.compound_selector_start, last_trailing, env, tree, match_candidate, allocator)) return false;
-            return matchLeftOfCompound(data, first_compound, trailing.compound_selector_start, env, tree, match_candidate, allocator);
+            if (!matchCompoundSelector(data, trailing.compound_selector_start, last_trailing, env, tree, match_candidate, allocator, has_anchor)) return false;
+            return matchLeftOfCompound(data, first_compound, trailing.compound_selector_start, env, tree, match_candidate, allocator, has_anchor);
         }
 
         /// Matches the part of a complex selector to the left of the compound selector
@@ -535,6 +615,7 @@ pub fn Matcher(comptime Tree: type) type {
             tree: Tree,
             anchor: Node,
             allocator: Allocator,
+            has_anchor: ?Node,
         ) bool {
             if (compound_start == first_compound) return true;
             const trailing_index = compound_start - 1;
@@ -545,23 +626,23 @@ pub fn Matcher(comptime Tree: type) type {
                     var element = tree.parent(anchor);
                     while (element) |e| : (element = tree.parent(e)) {
                         if (!tree.isElement(e)) break;
-                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator) and
-                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator)) return true;
+                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator, has_anchor) and
+                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator, has_anchor)) return true;
                     }
                     return false;
                 },
                 .child => {
                     const parent = tree.parent(anchor) orelse return false;
                     if (!tree.isElement(parent)) return false;
-                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, parent, allocator)) return false;
-                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, parent, allocator);
+                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, parent, allocator, has_anchor)) return false;
+                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, parent, allocator, has_anchor);
                 },
                 .subsequent_sibling => {
                     var element = tree.previousSibling(anchor);
                     while (element) |e| : (element = tree.previousSibling(e)) {
                         if (!tree.isElement(e)) continue;
-                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator) and
-                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator)) return true;
+                        if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator, has_anchor) and
+                            matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator, has_anchor)) return true;
                     }
                     return false;
                 },
@@ -570,8 +651,8 @@ pub fn Matcher(comptime Tree: type) type {
                     const sibling = while (element) |e| : (element = tree.previousSibling(e)) {
                         if (tree.isElement(e)) break e;
                     } else return false;
-                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, sibling, allocator)) return false;
-                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, sibling, allocator);
+                    if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, sibling, allocator, has_anchor)) return false;
+                    return matchLeftOfCompound(data, first_compound, left_start, env, tree, sibling, allocator, has_anchor);
                 },
                 // Selectors 4 §16.4: the column combinator relates cells to
                 // columns; no browser implements it, and neither does this.
@@ -639,6 +720,7 @@ pub fn Matcher(comptime Tree: type) type {
             tree: Tree,
             element: Node,
             allocator: Allocator,
+            has_anchor: ?Node,
         ) bool {
             var index = start;
             while (index < end) : (index += 1) {
@@ -667,26 +749,6 @@ pub fn Matcher(comptime Tree: type) type {
                             if (!tree.hasAttribute(element, attr_selector.name)) return false;
                         }
                     },
-                    .not_class => {
-                        index += 1;
-                        if (tree.hasClass(element, data[index].class_selector)) return false;
-                    },
-                    .not_id => {
-                        index += 1;
-                        if (tree.hasId(element, data[index].id_selector)) return false;
-                    },
-                    .not_type => {
-                        index += 1;
-                        if (tree.typeMatches(element, data[index].type_selector)) return false;
-                    },
-                    .not_pseudo_class => {
-                        index += 1;
-                        const negated_pc = data[index].pseudo_class_selector;
-                        const payload = if (pseudoClassPayload(negated_pc) > 0) data[index + 1] else data[index];
-                        index += pseudoClassPayload(negated_pc);
-                        // If the pseudo-class MATCHES, the :not() fails.
-                        if (matchPseudoClass(negated_pc, payload, element, env, tree, allocator)) return false;
-                    },
                     .pseudo_class => {
                         index += 1;
                         const pseudo_class = data[index].pseudo_class_selector;
@@ -703,26 +765,139 @@ pub fn Matcher(comptime Tree: type) type {
                             .unrecognized => return false,
                         }
                     },
-                    // :is() / :where(): the element matches any complex selector of
-                    // the nested list (the lists differ only in specificity, which the
-                    // parser handled). The nested selector data is stored inline after
-                    // the list entry, chained through next_complex_selector.
-                    inline .is, .where => |_, tag| {
+                    // :is() / :where() / :not(): the element matches (for :not, fails
+                    // to match) any complex selector of the nested list (:is and
+                    // :where differ only in specificity, which the parser handled).
+                    // The nested selectors are absolute: no :has() anchor. Their
+                    // data is stored inline after the list entry, chained through
+                    // next_complex_selector.
+                    inline .is, .where, .not => |_, tag| {
                         index += 1;
-                        const list = if (tag == .is) data[index].is_selector_list else data[index].where_selector_list;
+                        const list = nestedList(data[index], tag);
                         var matched = false;
                         var sel_idx = list.start;
                         for (0..list.count) |_| {
                             const next = data[sel_idx].next_complex_selector;
-                            if (!matched and matchComplexSelector(data, sel_idx + 1, next - 1, env, tree, element, allocator)) matched = true;
+                            if (!matched and matchComplexSelector(data, sel_idx + 1, next - 1, env, tree, element, allocator, null)) matched = true;
                             sel_idx = next;
                         }
-                        if (!matched) return false;
+                        if (matched == (tag == .not)) return false;
                         index = sel_idx - 1; // -1 compensates for the while loop increment
+                    },
+                    .has => {
+                        index += 1;
+                        const list = data[index].has_selector_list;
+                        if (!matchHas(data, list, env, tree, element, allocator)) return false;
+                        index = nestedListEnd(data, list) - 1;
+                    },
+                    .has_anchor => {
+                        const a = has_anchor orelse return false;
+                        if (!eql(a, element)) return false;
                     },
                 }
             }
             return true;
+        }
+
+        /// :has() (Selectors 4 §4.5): `subject` matches if some relative
+        /// selector of the list, anchored at `subject`, matches an element.
+        /// Candidates are the elements the leading combinator can reach —
+        /// descendants for ` ` and `>`, following siblings for `+` and `~` —
+        /// extended to their descendants when a later combinator descends,
+        /// and narrowed to children (or siblings) when none does. Each is
+        /// matched right to left as an ordinary complex selector whose first
+        /// compound is the anchor.
+        fn matchHas(
+            data: []const Data,
+            list: Data.NestedSelectorList,
+            env: *const Environment,
+            tree: Tree,
+            subject: Node,
+            allocator: Allocator,
+        ) bool {
+            var sel_idx = list.start;
+            for (0..list.count) |_| {
+                const next = data[sel_idx].next_complex_selector;
+                const first_compound = sel_idx + 1;
+                const last_trailing = next - 1;
+                // The anchor compound is the single `has_anchor` tag; its trailing follows.
+                const leading = data[first_compound + 1].trailing.combinator;
+                var descends = false;
+                var t = last_trailing;
+                while (true) {
+                    const start = data[t].trailing.compound_selector_start;
+                    if (start <= first_compound + 2) break;
+                    t = start - 1;
+                    switch (data[t].trailing.combinator) {
+                        .descendant, .child => descends = true,
+                        else => {},
+                    }
+                }
+                const Ctx = struct {
+                    data: []const Data,
+                    env: *const Environment,
+                    tree: Tree,
+                    subject: Node,
+                    allocator: Allocator,
+                    first_compound: Data.ListIndex,
+                    last_trailing: Data.ListIndex,
+                    fn test_(c: @This(), e: Node) bool {
+                        if (!c.tree.isElement(e)) return false;
+                        return matchComplexSelector(c.data, c.first_compound, c.last_trailing, c.env, c.tree, e, c.allocator, c.subject);
+                    }
+                    /// `root` and every element below it, in tree order.
+                    fn testSubtree(c: @This(), root: Node) bool {
+                        var cur: ?Node = root;
+                        while (cur) |n| {
+                            if (c.test_(n)) return true;
+                            cur = c.nextInSubtree(n, root);
+                        }
+                        return false;
+                    }
+                    fn nextInSubtree(c: @This(), n: Node, root: Node) ?Node {
+                        if (c.tree.firstChild(n)) |child| return child;
+                        var cur = n;
+                        while (!eql(cur, root)) {
+                            if (c.tree.nextSibling(cur)) |sib| return sib;
+                            cur = c.tree.parent(cur) orelse return null;
+                        }
+                        return null;
+                    }
+                };
+                const ctx = Ctx{
+                    .data = data,
+                    .env = env,
+                    .tree = tree,
+                    .subject = subject,
+                    .allocator = allocator,
+                    .first_compound = first_compound,
+                    .last_trailing = last_trailing,
+                };
+                const found = switch (leading) {
+                    .descendant, .child => blk: {
+                        var child = tree.firstChild(subject);
+                        while (child) |ch| : (child = tree.nextSibling(ch)) {
+                            if (leading == .child and !descends) {
+                                if (ctx.test_(ch)) break :blk true;
+                            } else if (tree.isElement(ch) and ctx.testSubtree(ch)) break :blk true;
+                        }
+                        break :blk false;
+                    },
+                    .next_sibling, .subsequent_sibling => blk: {
+                        var sib = tree.nextSibling(subject);
+                        while (sib) |sb| : (sib = tree.nextSibling(sb)) {
+                            if (descends) {
+                                if (tree.isElement(sb) and ctx.testSubtree(sb)) break :blk true;
+                            } else if (ctx.test_(sb)) break :blk true;
+                        }
+                        break :blk false;
+                    },
+                    else => false,
+                };
+                if (found) return true;
+                sel_idx = next;
+            }
+            return false;
         }
 
         /// 1-based position of `element` among its element siblings (Selectors 4 §14),
@@ -921,7 +1096,6 @@ pub fn Matcher(comptime Tree: type) type {
                 .defined => return !tree.localNameHasDash(element),
                 .empty => return isEmpty(tree, element),
                 .unrecognized => return false,
-                .ignored => return true,
             }
         }
 

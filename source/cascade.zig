@@ -379,6 +379,12 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
+            // Negated and relative selectors put no requirement on this element.
+            inline .not, .has => |_, tag| {
+                idx += 1;
+                idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+            },
+            .has_anchor => {},
             .id => {
                 idx += 1;
                 found_id = data[idx].id_selector;
@@ -396,10 +402,7 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
                 idx += 1; // skip attribute_selector
                 if (op_case != null) idx += 1; // skip attribute_selector_value
             },
-            .not_class, .not_id, .not_type => {
-                idx += 1;
-            },
-            .not_pseudo_class, .pseudo_class => {
+            .pseudo_class => {
                 idx += 1;
                 idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
             },
@@ -567,7 +570,15 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
     var idx = start;
     while (idx < last_trailing_idx) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
-            .pseudo_class, .not_pseudo_class => {
+            .has, .has_anchor => {
+                // The :has() argument describes other elements; siblings never
+                // share a verdict through it (see compoundIsPositional).
+                if (data[idx].simple_selector_tag == .has) {
+                    idx += 1;
+                    idx = selectors.nestedListEnd(data, data[idx].has_selector_list) - 1;
+                }
+            },
+            .pseudo_class => {
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
@@ -576,14 +587,14 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
                 }
                 idx += selectors.pseudoClassPayload(pc);
             },
-            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .type, .id, .class, .pseudo_element => idx += 1,
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
             },
-            inline .is, .where => |_, tag| {
+            inline .is, .where, .not => |_, tag| {
                 idx += 1;
-                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                const list = selectors.nestedList(data[idx], tag);
                 var sel_idx = list.start;
                 for (0..list.count) |_| {
                     if (rightmostCompoundHasElementState(data, sel_idx)) return true;
@@ -636,20 +647,21 @@ fn rightmostCompoundIsSelfInvariant(data: []const selectors.Data, complex_select
     var idx = start;
     while (idx < last_trailing_idx) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
-            .pseudo_class, .not_pseudo_class => {
+            .has, .has_anchor => return false,
+            .pseudo_class => {
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
-                    .root, .link, .visited, .unrecognized, .ignored => {},
+                    .root, .link, .visited, .unrecognized => {},
                     else => return false,
                 }
                 idx += selectors.pseudoClassPayload(pc);
             },
             .attribute => return false,
-            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-            inline .is, .where => |_, tag| {
+            .type, .id, .class, .pseudo_element => idx += 1,
+            inline .is, .where, .not => |_, tag| {
                 idx += 1;
-                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                const list = selectors.nestedList(data[idx], tag);
                 var sel_idx = list.start;
                 for (0..list.count) |_| {
                     if (!rightmostCompoundIsSelfInvariant(data, sel_idx)) return false;
@@ -666,7 +678,10 @@ fn compoundIsPositional(data: []const selectors.Data, start: selectors.Data.List
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
-            .pseudo_class, .not_pseudo_class => {
+            // :has() looks at descendants and following siblings, which differ
+            // between siblings like their position does.
+            .has, .has_anchor => return true,
+            .pseudo_class => {
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
@@ -675,14 +690,14 @@ fn compoundIsPositional(data: []const selectors.Data, start: selectors.Data.List
                 }
                 idx += selectors.pseudoClassPayload(pc);
             },
-            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .type, .id, .class, .pseudo_element => idx += 1,
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
             },
-            inline .is, .where => |_, tag| {
+            inline .is, .where, .not => |_, tag| {
                 idx += 1;
-                const list = if (tag == .is) data[idx].is_selector_list else data[idx].where_selector_list;
+                const list = selectors.nestedList(data[idx], tag);
                 var sel_idx = list.start;
                 for (0..list.count) |_| {
                     // The nested selector's subject is this same element.
@@ -739,6 +754,11 @@ fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.Li
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
+            inline .not, .has => |_, tag| {
+                idx += 1;
+                idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+            },
+            .has_anchor => {},
             .pseudo_class => {
                 idx += 1;
                 switch (data[idx].pseudo_class_selector) {
@@ -751,11 +771,7 @@ fn compoundCanMatchStatic(data: []const selectors.Data, start: selectors.Data.Li
                 }
                 idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
             },
-            .not_pseudo_class => {
-                idx += 1;
-                idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
-            },
-            .type, .id, .class, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
+            .type, .id, .class, .pseudo_element => idx += 1,
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -866,6 +882,12 @@ fn collectAllHashes(data: []const selectors.Data, complex_selector_index: select
         var idx = start;
         while (idx < trailing_idx) : (idx += 1) {
             switch (data[idx].simple_selector_tag) {
+                // Negated and relative selectors put no requirement on this element.
+                inline .not, .has => |_, tag| {
+                    idx += 1;
+                    idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+                },
+                .has_anchor => {},
                 .type => {
                     idx += 1;
                     const et = data[idx].type_selector;
@@ -884,8 +906,8 @@ fn collectAllHashes(data: []const selectors.Data, complex_selector_index: select
                     idx += 1;
                     if (op_case != null) idx += 1;
                 },
-                .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+                .pseudo_element => idx += 1,
+                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
                 .is => {
                     idx += 1;
                     const list = data[idx].is_selector_list;
@@ -949,6 +971,12 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                 var idx = start;
                 while (idx < end) : (idx += 1) {
                     switch (data[idx].simple_selector_tag) {
+                        // Negated and relative selectors put no requirement on this element.
+                        inline .not, .has => |_, tag| {
+                            idx += 1;
+                            idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+                        },
+                        .has_anchor => {},
                         .type => {
                             idx += 1;
                             const et = data[idx].type_selector;
@@ -967,10 +995,7 @@ fn extractAncestorHashes(data: []const selectors.Data, complex_selector_index: s
                             idx += 1;
                             if (op_case != null) idx += 1;
                         },
-                        .not_class, .not_id, .not_type => {
-                            idx += 1;
-                        },
-                        .not_pseudo_class, .pseudo_class => {
+                        .pseudo_class => {
                             idx += 1;
                             idx += selectors.pseudoClassPayload(data[idx].pseudo_class_selector);
                         },
@@ -1022,6 +1047,12 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
+            // Negated and relative selectors put no requirement on this element.
+            inline .not, .has => |_, tag| {
+                idx += 1;
+                idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+            },
+            .has_anchor => {},
             .is => {
                 idx += 1;
                 const list = data[idx].is_selector_list;
@@ -1044,8 +1075,8 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
             },
-            .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .type, .class, .id, .pseudo_element => idx += 1,
+                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -1084,6 +1115,12 @@ fn extractAltAncestorHashes(
                 var idx = start;
                 while (idx < end) : (idx += 1) {
                     switch (data[idx].simple_selector_tag) {
+                        // Negated and relative selectors put no requirement on this element.
+                        inline .not, .has => |_, tag| {
+                            idx += 1;
+                            idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+                        },
+                        .has_anchor => {},
                         .is => {
                             idx += 1;
                             const list = data[idx].is_selector_list;
@@ -1108,8 +1145,8 @@ fn extractAltAncestorHashes(
                             for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                             idx = skip_idx - 1;
                         },
-                        .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+                        .type, .class, .id, .pseudo_element => idx += 1,
+                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
                         .attribute => |op_case| {
                             idx += 1;
                             if (op_case != null) idx += 1;
@@ -1158,6 +1195,12 @@ fn extractAltAncestorHashesWrapped(
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
+            // Negated and relative selectors put no requirement on this element.
+            inline .not, .has => |_, tag| {
+                idx += 1;
+                idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+            },
+            .has_anchor => {},
             .is => {
                 idx += 1;
                 const list = data[idx].is_selector_list;
@@ -1182,8 +1225,8 @@ fn extractAltAncestorHashesWrapped(
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
             },
-            .type, .class, .id, .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .type, .class, .id, .pseudo_element => idx += 1,
+                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -1223,6 +1266,11 @@ fn compoundCanMatchInDoc(data: []const selectors.Data, start: selectors.Data.Lis
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
+            inline .not, .has => |_, tag| {
+                idx += 1;
+                idx = selectors.nestedListEnd(data, selectors.nestedList(data[idx], tag)) - 1;
+            },
+            .has_anchor => {},
             .type => {
                 idx += 1;
                 const et = data[idx].type_selector;
@@ -1258,8 +1306,8 @@ fn compoundCanMatchInDoc(data: []const selectors.Data, start: selectors.Data.Lis
                 idx += 1;
                 if (op_case != null) idx += 1;
             },
-            .not_class, .not_id, .not_type, .pseudo_element => idx += 1,
-                .not_pseudo_class, .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .pseudo_element => idx += 1,
+                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
         }
     }
     return true;
@@ -1300,9 +1348,10 @@ fn compoundIsElementOnly(data: []const selectors.Data, start: selectors.Data.Lis
     var idx = start;
     while (idx < end) : (idx += 1) {
         switch (data[idx].simple_selector_tag) {
-            .type, .class, .id, .not_class, .not_id, .not_type => idx += 1,
+            .has, .has_anchor => return false,
+            .type, .class, .id => idx += 1,
             .pseudo_element => idx += 1,
-            .attribute, .pseudo_class, .not_pseudo_class => return false,
+            .attribute, .pseudo_class => return false,
             .is => {
                 idx += 1;
                 const list = data[idx].is_selector_list;
@@ -1314,6 +1363,16 @@ fn compoundIsElementOnly(data: []const selectors.Data, start: selectors.Data.Lis
                 var skip_idx = list.start;
                 for (0..list.count) |_| skip_idx = data[skip_idx].next_complex_selector;
                 idx = skip_idx - 1;
+            },
+            .not => {
+                idx += 1;
+                const list = data[idx].not_selector_list;
+                var alt_start = list.start;
+                for (0..list.count) |_| {
+                    if (!isElementOnly(data, alt_start)) return false;
+                    alt_start = data[alt_start].next_complex_selector;
+                }
+                idx = selectors.nestedListEnd(data, list) - 1;
             },
             .where => {
                 idx += 1;
