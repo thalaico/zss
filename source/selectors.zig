@@ -267,6 +267,186 @@ fn compoundUserActionMask(data: []const Data, start: Data.ListIndex, end: Data.L
     return mask;
 }
 
+/// What a set of selectors observes, for restyling only the elements a
+/// document change can affect (a coarse form of Blink's RuleFeatureSet).
+/// The element that changed is always restyled; these say how far beyond
+/// it a change can reach.
+pub const InvalidationFeatures = struct {
+    /// Class, ID and attribute names that occur in a selector with a
+    /// combinator (directly or in a nested selector list): changing one on
+    /// an element can change whether its descendants match — and, with
+    /// `sibling_combinator`, its following siblings and their descendants.
+    /// `lang` and `disabled` are here when `:lang()` or `:disabled` /
+    /// `:enabled` are used: those match on an ancestor's attribute.
+    classes: std.AutoHashMapUnmanaged(ClassName, void) = .empty,
+    ids: std.AutoHashMapUnmanaged(IdName, void) = .empty,
+    attributes: std.AutoHashMapUnmanaged(AttributeName, void) = .empty,
+    /// `+` or `~` in some selector.
+    sibling_combinator: bool = false,
+    /// A pseudo-class that depends on an element's siblings or children
+    /// (:first-child, :nth-*(), :empty, ...): inserting or removing a child
+    /// can restyle the parent and the other children.
+    structural: bool = false,
+    /// Such a pseudo-class in a selector with a combinator: the other
+    /// children's descendants too.
+    structural_descendants: bool = false,
+    /// :has() in some selector: a change can restyle ancestors and earlier
+    /// siblings.
+    has: bool = false,
+
+    pub fn deinit(f: *InvalidationFeatures, allocator: Allocator) void {
+        f.classes.deinit(allocator);
+        f.ids.deinit(allocator);
+        f.attributes.deinit(allocator);
+    }
+
+    /// Add what the complex selector at `complex_selector_index` observes.
+    pub fn addSelector(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, complex_selector_index: Data.ListIndex) anyerror!void {
+        const reach = complexHasCombinator(data, complex_selector_index);
+        try f.addComplex(allocator, env, data, complex_selector_index, reach);
+    }
+
+    fn addComplex(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, complex_selector_index: Data.ListIndex, reach: bool) anyerror!void {
+        const first_compound: Data.ListIndex = complex_selector_index + 1;
+        const last_trailing = data[complex_selector_index].next_complex_selector - 1;
+        var trailing_idx = last_trailing;
+        while (true) {
+            const start = data[trailing_idx].trailing.compound_selector_start;
+            if (trailing_idx != last_trailing) switch (data[trailing_idx].trailing.combinator) {
+                .next_sibling, .subsequent_sibling => f.sibling_combinator = true,
+                else => {},
+            };
+            try f.addCompound(allocator, env, data, start, trailing_idx, reach);
+            if (start <= first_compound) break;
+            trailing_idx = start - 1;
+        }
+    }
+
+    fn addCompound(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, start: Data.ListIndex, end: Data.ListIndex, reach: bool) anyerror!void {
+        var idx = start;
+        while (idx < end) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .id => {
+                    idx += 1;
+                    if (reach) try f.ids.put(allocator, data[idx].id_selector, {});
+                },
+                .class => {
+                    idx += 1;
+                    if (reach) try f.classes.put(allocator, data[idx].class_selector, {});
+                },
+                .attribute => |op_case| {
+                    idx += 1;
+                    if (reach) try f.attributes.put(allocator, data[idx].attribute_selector.name, {});
+                    if (op_case != null) idx += 1;
+                },
+                .pseudo_class => {
+                    idx += 1;
+                    const pc = data[idx].pseudo_class_selector;
+                    switch (pc) {
+                        .first_child, .last_child, .only_child, .first_of_type, .last_of_type, .only_of_type, .nth_child, .nth_last_child, .nth_of_type, .nth_last_of_type, .empty, .placeholder_shown => {
+                            f.structural = true;
+                            if (reach) f.structural_descendants = true;
+                        },
+                        .lang => try f.attributes.put(allocator, try env.addAttributeNameFromString("lang"), {}),
+                        .disabled, .enabled => try f.attributes.put(allocator, try env.addAttributeNameFromString("disabled"), {}),
+                        else => {},
+                    }
+                    idx += pseudoClassPayload(pc);
+                },
+                .type, .pseudo_element => idx += 1,
+                .has_anchor => {},
+                inline .is, .where, .not, .has => |_, tag| {
+                    if (tag == .has) f.has = true;
+                    idx += 1;
+                    const list = nestedList(data[idx], tag);
+                    var sel_idx = list.start;
+                    for (0..list.count) |_| {
+                        try f.addComplex(allocator, env, data, sel_idx, reach);
+                        sel_idx = data[sel_idx].next_complex_selector;
+                    }
+                    idx = sel_idx - 1;
+                },
+            }
+        }
+    }
+};
+
+/// Add every attribute name the complex selector tests (directly or in a
+/// nested list) to `names`.
+pub fn collectAttributeNames(data: []const Data, complex_selector_index: Data.ListIndex, names: *std.AutoHashMapUnmanaged(AttributeName, void), allocator: Allocator) Allocator.Error!void {
+    const first_compound: Data.ListIndex = complex_selector_index + 1;
+    var trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    while (true) {
+        const start = data[trailing_idx].trailing.compound_selector_start;
+        var idx = start;
+        while (idx < trailing_idx) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .attribute => |op_case| {
+                    idx += 1;
+                    try names.put(allocator, data[idx].attribute_selector.name, {});
+                    if (op_case != null) idx += 1;
+                },
+                .pseudo_class => {
+                    idx += 1;
+                    idx += pseudoClassPayload(data[idx].pseudo_class_selector);
+                },
+                .type, .id, .class, .pseudo_element => idx += 1,
+                .has_anchor => {},
+                inline .is, .where, .not, .has => |_, tag| {
+                    idx += 1;
+                    const list = nestedList(data[idx], tag);
+                    var sel_idx = list.start;
+                    for (0..list.count) |_| {
+                        try collectAttributeNames(data, sel_idx, names, allocator);
+                        sel_idx = data[sel_idx].next_complex_selector;
+                    }
+                    idx = sel_idx - 1;
+                },
+            }
+        }
+        if (start <= first_compound) break;
+        trailing_idx = start - 1;
+    }
+}
+
+/// Whether the complex selector, or a selector in one of its nested lists,
+/// has more than one compound selector.
+fn complexHasCombinator(data: []const Data, complex_selector_index: Data.ListIndex) bool {
+    const first_compound: Data.ListIndex = complex_selector_index + 1;
+    const trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    // The last compound starts after the first one: there are two or more.
+    const start = data[trailing_idx].trailing.compound_selector_start;
+    if (start > first_compound) return true;
+    {
+        var idx = start;
+        while (idx < trailing_idx) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .pseudo_class => {
+                    idx += 1;
+                    idx += pseudoClassPayload(data[idx].pseudo_class_selector);
+                },
+                .type, .id, .class, .pseudo_element => idx += 1,
+                .attribute => |op_case| {
+                    idx += 1;
+                    if (op_case != null) idx += 1;
+                },
+                .has_anchor => {},
+                inline .is, .where, .not, .has => |_, tag| {
+                    idx += 1;
+                    const list = nestedList(data[idx], tag);
+                    var sel_idx = list.start;
+                    for (0..list.count) |_| {
+                        if (complexHasCombinator(data, sel_idx)) return true;
+                        sel_idx = data[sel_idx].next_complex_selector;
+                    }
+                    idx = sel_idx - 1;
+                },
+            }
+        }
+        return false;
+    }
+}
+
 /// True if any selector of the nested list uses a pseudo-class the matcher
 /// cannot answer, directly or within its own nested lists.
 pub fn listHasUnsupported(data: []const Data, list: Data.NestedSelectorList) bool {

@@ -74,6 +74,12 @@ pub const Source = struct {
         return mask;
     }
 
+    /// Add what this source's selectors observe (`selectors.InvalidationFeatures`).
+    pub fn addInvalidationFeatures(source: *const Source, features: *selectors.InvalidationFeatures, allocator: Allocator, env: *Environment) !void {
+        for (source.selectors_normal.items(.selector)) |sel| try features.addSelector(allocator, env, source.selector_data.items, sel);
+        for (source.selectors_important.items(.selector)) |sel| try features.addSelector(allocator, env, source.selector_data.items, sel);
+    }
+
     pub fn deinit(source: *Source, allocator: Allocator) void {
         source.style_attrs_important.deinit(allocator);
         source.style_attrs_normal.deinit(allocator);
@@ -102,6 +108,22 @@ pub const Database = struct {
     pub fn initNodes(db: *Database, allocator: Allocator, node_count: u32) !void {
         db.node_storage = try allocator.alloc(Storage, node_count);
         @memset(db.node_storage, .{});
+    }
+
+    /// The bytes the database's arenas hold (cascaded and custom property
+    /// values, live and superseded).
+    pub fn arenaBytes(db: *const Database) usize {
+        var arena = db.arena.promote(std.heap.page_allocator);
+        var custom = db.custom_arena.promote(std.heap.page_allocator);
+        return arena.queryCapacity() + custom.queryCapacity();
+    }
+
+    /// Make room for `node_count` nodes, keeping the cascaded values held.
+    pub fn ensureNodes(db: *Database, allocator: Allocator, node_count: u32) !void {
+        if (db.node_storage.len >= node_count) return;
+        const old = db.node_storage.len;
+        db.node_storage = try allocator.realloc(db.node_storage, @max(node_count, old + old / 2));
+        @memset(db.node_storage[old..], .{});
     }
 
     pub fn deinit(db: *Database, allocator: Allocator) void {
@@ -1391,6 +1413,107 @@ fn compoundIsElementOnly(data: []const selectors.Data, start: selectors.Data.Lis
     return true;
 }
 
+/// A source's selectors (of the given importances) bucketed by the key of
+/// their rightmost compound — ID, class, type or universal — each with its
+/// precomputed match facts.
+const RuleIndex = struct {
+    id_index: std.AutoArrayHashMapUnmanaged(Environment.IdName, std.ArrayListUnmanaged(SelectorEntry)) = .empty,
+    class_index: std.AutoArrayHashMapUnmanaged(Environment.ClassName, std.ArrayListUnmanaged(SelectorEntry)) = .empty,
+    type_index: std.AutoArrayHashMapUnmanaged(Environment.TypeName, std.ArrayListUnmanaged(SelectorEntry)) = .empty,
+    universal: std.ArrayListUnmanaged(SelectorEntry) = .{},
+    /// Whether any selector's verdict for an element depends on where the
+    /// element sits among its siblings (see rightmostCompoundIsPositional).
+    /// When it does, the L1 sibling-sharing key must carry the position.
+    positional_selectors: bool = false,
+    /// Likewise for host-owned element state (see rightmostCompoundHasElementState).
+    state_selectors: bool = false,
+    /// The attribute names some selector tests: the only attributes that
+    /// can tell two siblings' verdicts apart (the L1 sharing key).
+    tested_attributes: std.AutoHashMapUnmanaged(Environment.AttributeName, void) = .empty,
+
+    /// Build the index in `allocator` (an arena: nothing is freed).
+    fn build(source: *const Source, importances: []const Importance, allocator: Allocator) !RuleIndex {
+        const data = source.selector_data.items;
+        var index: RuleIndex = .{};
+        for (importances) |importance| {
+            const selector_list = switch (importance) {
+                .important => source.selectors_important,
+                .normal => source.selectors_normal,
+            };
+            const sel_items = selector_list.items(.selector);
+            const blk_items = selector_list.items(.block);
+
+            for (sel_items, blk_items, 0..) |selector, block, i| {
+                if (!canMatchStatic(data, selector)) continue;
+                const pe = selectors.extractPseudoElement(data, selector);
+                const key = extractRightmostKey(data, selector);
+                const ah = extractAncestorHashes(data, selector);
+                const entry = SelectorEntry{
+                    .selector = selector,
+                    .block = block,
+                    .source_order = @intCast(i),
+                    .pseudo = if (pe) |p| switch (p) {
+                        .before => .before,
+                        .after => .after,
+                        .unrecognized => .unrecognized,
+                    } else .none,
+                    .fast_match = isFastMatch(data, selector, key),
+                    .importance = importance,
+                    .ancestor_hashes = ah,
+                    .alt_ancestor_hashes = if (ah == null) try extractAltAncestorHashes(data, selector, allocator) else null,
+                };
+                if (!entry.fast_match and rightmostCompoundIsPositional(data, selector)) index.positional_selectors = true;
+                if (rightmostCompoundHasElementState(data, selector)) index.state_selectors = true;
+                try selectors.collectAttributeNames(data, selector, &index.tested_attributes, allocator);
+                switch (key) {
+                    .id => |id| {
+                        const gop = try index.id_index.getOrPut(allocator, id);
+                        if (!gop.found_existing) gop.value_ptr.* = .{};
+                        try gop.value_ptr.append(allocator, entry);
+                    },
+                    .class => |cls| {
+                        const gop = try index.class_index.getOrPut(allocator, cls);
+                        if (!gop.found_existing) gop.value_ptr.* = .{};
+                        try gop.value_ptr.append(allocator, entry);
+                    },
+                    .type_name => |tn| {
+                        const gop = try index.type_index.getOrPut(allocator, tn);
+                        if (!gop.found_existing) gop.value_ptr.* = .{};
+                        try gop.value_ptr.append(allocator, entry);
+                    },
+                    .universal => try index.universal.append(allocator, entry),
+                }
+            }
+        }
+        return index;
+    }
+
+    /// The entries that can match `node` (by its type, classes and ID, and
+    /// the universal ones) in `out`, in cascade order: important before
+    /// normal, then by order of appearance (the source's lists are sorted
+    /// winner-first).
+    fn candidates(index: *const RuleIndex, env: *const Environment, node: Environment.NodeId, out: *std.ArrayListUnmanaged(SelectorEntry), allocator: Allocator) !void {
+        out.clearRetainingCapacity();
+        if (index.type_index.get(env.getNodeProperty(.type, node).name)) |entries| try out.appendSlice(allocator, entries.items);
+        if (env.nodes_to_classes.get(node)) |classes| {
+            for (classes) |cls| {
+                if (index.class_index.get(cls)) |entries| try out.appendSlice(allocator, entries.items);
+            }
+        }
+        if (env.nodes_to_ids.get(node)) |id| {
+            if (index.id_index.get(id)) |entries| try out.appendSlice(allocator, entries.items);
+        }
+        try out.appendSlice(allocator, index.universal.items);
+        std.mem.sortUnstable(SelectorEntry, out.items, {}, struct {
+            fn lessThan(_: void, a: SelectorEntry, b: SelectorEntry) bool {
+                if (a.importance != b.importance)
+                    return @intFromEnum(a.importance) > @intFromEnum(b.importance);
+                return a.source_order < b.source_order;
+            }
+        }.lessThan);
+    }
+};
+
 const RunContext = struct {
     arena: std.heap.ArenaAllocator,
     element_to_decl_block_list: std.AutoArrayHashMapUnmanaged(Environment.NodeId, std.ArrayListUnmanaged(BlockImportance)) = .empty,
@@ -1400,6 +1523,16 @@ const RunContext = struct {
     document_node_stack: zss.Stack(?Environment.NodeId) = .{},
     doc_hashes: DocHashes = .empty,
     doc_hashes_built: bool = false,
+    /// The attributes the matcher's pseudo-classes read (:checked, :lang(),
+    /// :link, :placeholder-shown, ...), interned by `run`.
+    pseudo_class_attributes: [pseudo_class_attribute_names.len]Environment.AttributeName = undefined,
+
+    const pseudo_class_attribute_names = [_][]const u8{ "checked", "selected", "disabled", "href", "placeholder", "value", "readonly", "required", "lang", "type", "contenteditable" };
+
+    fn readByPseudoClasses(ctx: *const RunContext, name: Environment.AttributeName) bool {
+        for (ctx.pseudo_class_attributes) |a| if (a == name) return true;
+        return false;
+    }
 
     const BlockImportance = struct {
         block: Block,
@@ -1452,6 +1585,7 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
     const t0 = std.time.milliTimestamp();
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
+    for (RunContext.pseudo_class_attribute_names, &ctx.pseudo_class_attributes) |name, *id| id.* = try env.addAttributeNameFromString(name);
 
     // CSS Cascading §6.1 cascade order (highest to lowest priority):
     // 1. UA important
@@ -1476,9 +1610,7 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
 
         // Custom properties inherit in `zss.custom_properties.resolve`,
         // which visits the document in tree order.
-        for (entry.value_ptr.*.items) |item| {
-            try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
-        }
+        try applyInCascadeOrder(env, cascaded_values, entry.value_ptr.items);
     }
 
     const t_apply = std.time.milliTimestamp();
@@ -1489,9 +1621,7 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         const key = entry.key_ptr.*;
         const cascaded_values = try env.cascade_db.addPseudoStorage(env.allocator, key.node, key.pseudo);
         cascaded_values.reset();
-        for (entry.value_ptr.*.items) |item| {
-            try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
-        }
+        try applyInCascadeOrder(env, cascaded_values, entry.value_ptr.items);
     }
     const t_end = std.time.milliTimestamp();
     std.debug.print("[CASCADE] traverse={d}ms apply={d}ms pseudo={d}ms total={d}ms elements={d}\n", .{
@@ -1501,6 +1631,115 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         t_end - t0,
         ctx.element_to_decl_block_list.count(),
     });
+}
+
+/// Recompute the cascaded values of `nodes` and of their ::before / ::after,
+/// keeping every other element's (after a document change, with the
+/// elements it can affect — `selectors.InvalidationFeatures`). Each gets the
+/// declaration blocks `run` would give it, in the same order; non-elements
+/// are skipped. The caller removes the elements' ::before / ::after nodes
+/// beforehand (`Environment.discardPseudoNodesOf`) and creates them again
+/// after (`Environment.createPseudoNodes`).
+pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator) !void {
+    var ctx = RunContext{ .arena = .init(temp_allocator) };
+    defer ctx.arena.deinit();
+    const allocator = ctx.arena.allocator();
+
+    // The origins in the order `run` traverses them.
+    const Phase = struct { origin: Origin, importances: []const Importance };
+    const phases = [_]Phase{
+        .{ .origin = .user_agent, .importances = &.{.important} },
+        .{ .origin = .user, .importances = &.{.important} },
+        .{ .origin = .author, .importances = &.{ .important, .normal } },
+        .{ .origin = .user, .importances = &.{.normal} },
+        .{ .origin = .user_agent, .importances = &.{.normal} },
+    };
+    var sources: std.ArrayListUnmanaged(*const Source) = .{};
+    var candidates: std.ArrayListUnmanaged(SelectorEntry) = .{};
+    for (phases) |phase| {
+        sources.clearRetainingCapacity();
+        const roots = switch (phase.origin) {
+            .user => list.user,
+            .author => list.author,
+            .user_agent => list.user_agent,
+        };
+        for (roots) |root| try collectSources(root, &sources, allocator);
+        for (sources.items) |source| {
+            const index = try RuleIndex.build(source, phase.importances, allocator);
+            const data = source.selector_data.items;
+            for (nodes) |node| {
+                if (env.getNodeProperty(.category, node) != .element) continue;
+                // As in `applySourceImpl`: style attributes, then rules,
+                // then presentational hints.
+                for (phase.importances) |importance| {
+                    const style_attrs = switch (importance) {
+                        .important => source.style_attrs_important,
+                        .normal => source.style_attrs_normal,
+                    };
+                    if (style_attrs.get(node)) |block| try ctx.appendDeclBlock(node, block, importance);
+                }
+                try index.candidates(env, node, &candidates, allocator);
+                for (candidates.items) |entry| {
+                    if (!zss.selectors.matchElement(data, entry.selector, env, node, allocator)) continue;
+                    switch (entry.pseudo) {
+                        .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
+                        .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
+                        .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
+                        .unrecognized => {},
+                    }
+                }
+                for (phase.importances) |importance| {
+                    if (importance != .normal) continue;
+                    if (source.presentational_attrs_normal.get(node)) |block| try ctx.appendDeclBlock(node, block, importance);
+                }
+            }
+        }
+    }
+
+    try env.cascade_db.ensureNodes(env.allocator, env.node_count);
+    for (nodes) |node| {
+        if (env.getNodeProperty(.category, node) != .element) continue;
+        const storage = try env.cascade_db.addStorage(env.allocator, node);
+        storage.reset();
+        if (ctx.element_to_decl_block_list.getPtr(node)) |blocks| try applyInCascadeOrder(env, storage, blocks.items);
+        inline for (.{ .before, .after }) |pseudo| {
+            const key: Database.PseudoKey = .{ .node = node, .pseudo = pseudo };
+            if (ctx.pseudo_to_decl_block_list.getPtr(key)) |blocks| {
+                const pseudo_storage = try env.cascade_db.addPseudoStorage(env.allocator, node, pseudo);
+                pseudo_storage.reset();
+                try applyInCascadeOrder(env, pseudo_storage, blocks.items);
+            } else if (env.cascade_db.pseudo_map.fetchRemove(key)) |removed| {
+                var storage_copy = removed.value;
+                storage_copy.custom_properties.deinit(env.allocator);
+            }
+        }
+    }
+}
+
+/// The leaf sources under `node`, in the order `traverseList` visits them.
+fn collectSources(node: *const Node, out: *std.ArrayListUnmanaged(*const Source), allocator: Allocator) !void {
+    switch (node.*) {
+        .leaf => |source| try out.append(allocator, source),
+        .inner => |children| for (children) |child| try collectSources(child, out, allocator),
+    }
+}
+
+/// Apply one element's declaration blocks, collected origin by origin (UA
+/// important, user important, author, user normal, UA normal) and within an
+/// origin style attributes, then rules in specificity order, then
+/// presentational hints. Applying is first-wins, so the blocks go in
+/// cascade order (CSS Cascade 4 §6.1): important ones before normal ones —
+/// an author `!important` rule beats a normal style attribute. The sort is
+/// stable, so the order within each importance is kept.
+fn applyInCascadeOrder(env: *Environment, storage: *Database.Storage, items: []RunContext.BlockImportance) !void {
+    std.sort.insertion(RunContext.BlockImportance, items, {}, struct {
+        fn lessThan(_: void, a: RunContext.BlockImportance, b: RunContext.BlockImportance) bool {
+            return a.importance == .important and b.importance == .normal;
+        }
+    }.lessThan);
+    for (items) |item| {
+        try storage.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
+    }
 }
 
 fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin, importance: Importance) !void {
@@ -1597,66 +1836,13 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     const allocator = ctx.arena.allocator();
     const data = source.selector_data.items;
 
-    var id_index = std.AutoArrayHashMapUnmanaged(Environment.IdName, std.ArrayListUnmanaged(SelectorEntry)).empty;
-    var class_index = std.AutoArrayHashMapUnmanaged(Environment.ClassName, std.ArrayListUnmanaged(SelectorEntry)).empty;
-    var type_index = std.AutoArrayHashMapUnmanaged(Environment.TypeName, std.ArrayListUnmanaged(SelectorEntry)).empty;
-    var universal = std.ArrayListUnmanaged(SelectorEntry){};
-    // Whether any selector's verdict for an element depends on where the
-    // element sits among its siblings (see rightmostCompoundIsPositional).
-    // When it does, the L1 sibling-sharing key must carry the position.
-    var positional_selectors = false;
-    // Likewise for host-owned element state (see rightmostCompoundHasElementState).
-    var state_selectors = false;
-
-    for (importances) |importance| {
-        const selector_list = switch (importance) {
-            .important => source.selectors_important,
-            .normal => source.selectors_normal,
-        };
-        const sel_items = selector_list.items(.selector);
-        const blk_items = selector_list.items(.block);
-
-        for (sel_items, blk_items, 0..) |selector, block, i| {
-            if (!canMatchStatic(data, selector)) continue;
-            const pe = selectors.extractPseudoElement(data, selector);
-            const key = extractRightmostKey(data, selector);
-            const ah = extractAncestorHashes(data, selector);
-            const entry = SelectorEntry{
-                .selector = selector,
-                .block = block,
-                .source_order = @intCast(i),
-                .pseudo = if (pe) |p| switch (p) {
-                    .before => .before,
-                    .after => .after,
-                    .unrecognized => .unrecognized,
-                } else .none,
-                .fast_match = isFastMatch(data, selector, key),
-                .importance = importance,
-                .ancestor_hashes = ah,
-                .alt_ancestor_hashes = if (ah == null) try extractAltAncestorHashes(data, selector, allocator) else null,
-            };
-            if (!entry.fast_match and rightmostCompoundIsPositional(data, selector)) positional_selectors = true;
-            if (rightmostCompoundHasElementState(data, selector)) state_selectors = true;
-            switch (key) {
-                .id => |id| {
-                    const gop = try id_index.getOrPut(allocator, id);
-                    if (!gop.found_existing) gop.value_ptr.* = .{};
-                    try gop.value_ptr.append(allocator, entry);
-                },
-                .class => |cls| {
-                    const gop = try class_index.getOrPut(allocator, cls);
-                    if (!gop.found_existing) gop.value_ptr.* = .{};
-                    try gop.value_ptr.append(allocator, entry);
-                },
-                .type_name => |tn| {
-                    const gop = try type_index.getOrPut(allocator, tn);
-                    if (!gop.found_existing) gop.value_ptr.* = .{};
-                    try gop.value_ptr.append(allocator, entry);
-                },
-                .universal => try universal.append(allocator, entry),
-            }
-        }
-    }
+    var rule_index = try RuleIndex.build(source, importances, allocator);
+    const id_index = &rule_index.id_index;
+    const class_index = &rule_index.class_index;
+    const type_index = &rule_index.type_index;
+    const universal = &rule_index.universal;
+    const positional_selectors = rule_index.positional_selectors;
+    const state_selectors = rule_index.state_selectors;
 
     const t_index = std.time.milliTimestamp();
 
@@ -1665,7 +1851,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     try ctx.ensureDocHashes(env);
     var killed_total: usize = 0;
     {
-        killed_total += filterDeadSelectors(&universal, data, &ctx.doc_hashes);
+        killed_total += filterDeadSelectors(universal, data, &ctx.doc_hashes);
         var cls_it = class_index.iterator();
         while (cls_it.next()) |entry| {
             killed_total += filterDeadSelectors(entry.value_ptr, data, &ctx.doc_hashes);
@@ -1764,11 +1950,13 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
         // L1 shares the *whole* verdict between siblings, including the
         // dependent (non-fast) selectors — so two siblings may share only if
-        // everything those selectors can look at is equal: their attributes
-        // ([attr], :checked, :lang, …) and, when the sheet has sibling-
-        // sensitive selectors, their position among their siblings.
+        // everything those selectors can look at is equal: the attributes
+        // they test ([attr], and the ones pseudo-classes such as :checked
+        // and :lang read) and, when the sheet has sibling-sensitive
+        // selectors, their position among their siblings.
         if (env.nodes_to_attributes.get(node)) |attrs| {
             for (attrs) |attr| {
+                if (!rule_index.tested_attributes.contains(attr.name) and !ctx.readByPseudoClasses(attr.name)) continue;
                 full_key = full_key *% 0x100000001b3 +% (@as(u64, @intFromEnum(attr.name)) << 32) +% @intFromEnum(attr.value);
             }
         }
@@ -1862,31 +2050,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
         }
 
         // Full miss: collect candidates and match
-        merged.clearRetainingCapacity();
-        if (type_index.get(element_type.name)) |candidates| {
-            try merged.appendSlice(allocator, candidates.items);
-        }
-        if (env.nodes_to_classes.get(node)) |classes| {
-            for (classes) |cls| {
-                if (class_index.get(cls)) |candidates| {
-                    try merged.appendSlice(allocator, candidates.items);
-                }
-            }
-        }
-        if (has_id) {
-            if (id_index.get(env.nodes_to_ids.get(node).?)) |candidates| {
-                try merged.appendSlice(allocator, candidates.items);
-            }
-        }
-        try merged.appendSlice(allocator, universal.items);
-
-        std.mem.sortUnstable(SelectorEntry, merged.items, {}, struct {
-            fn lessThan(_: void, a: SelectorEntry, b: SelectorEntry) bool {
-                if (a.importance != b.importance)
-                    return @intFromEnum(a.importance) > @intFromEnum(b.importance);
-                return a.source_order < b.source_order;
-            }
-        }.lessThan);
+        try rule_index.candidates(env, node, &merged, allocator);
 
         element_collect.clearRetainingCapacity();
         pseudo_before_collect.clearRetainingCapacity();

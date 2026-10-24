@@ -33,16 +33,46 @@ pub fn resolve(env: *Environment) !void {
     const root = env.root_node orelse return;
     var resolver: Resolver = .{ .env = env, .arena = env.cascade_db.custom_arena.promote(env.allocator) };
     defer resolver.deinit();
+    try resolveSubtree(&resolver, root, null);
+}
 
+/// `resolve` for the subtrees of `roots` only (the elements a restyle gave
+/// new cascaded values, `cascade.restyle`): their descendants inherit from
+/// them. Each subtree starts from its parent's computed custom properties;
+/// a root inside another root's subtree is covered by that one.
+pub fn resolveSubtrees(env: *Environment, roots: []const NodeId) !void {
+    var resolver: Resolver = .{ .env = env, .arena = env.cascade_db.custom_arena.promote(env.allocator) };
+    defer resolver.deinit();
+    var root_set: std.AutoHashMapUnmanaged(NodeId, void) = .empty;
+    defer root_set.deinit(env.allocator);
+    for (roots) |r| try root_set.put(env.allocator, r, {});
+    outer: for (roots) |r| {
+        if (env.getNodeProperty(.category, r) != .element) continue;
+        var ancestor = r.parent(env);
+        while (ancestor) |a| : (ancestor = a.parent(env)) {
+            if (root_set.contains(a)) continue :outer;
+        }
+        const parent_map: ?*const Map = if (r.parent(env)) |p| (if (env.cascade_db.getStorage(p)) |ps| ps.computed_custom else null) else null;
+        try resolveSubtree(&resolver, r, parent_map);
+    }
+}
+
+fn resolveSubtree(resolver: *Resolver, root: NodeId, root_parent_map: ?*const Map) !void {
+    const env = resolver.env;
     const Entry = struct { node: NodeId, parent_map: ?*const Map };
     var stack: std.ArrayListUnmanaged(Entry) = .empty;
     defer stack.deinit(env.allocator);
-    try stack.append(env.allocator, .{ .node = root, .parent_map = null });
+    try stack.append(env.allocator, .{ .node = root, .parent_map = root_parent_map });
     while (stack.pop()) |entry| {
         if (env.getNodeProperty(.category, entry.node) != .element) continue;
         const map = if (env.cascade_db.getStorage(entry.node)) |storage| try resolver.element(storage, entry.parent_map) else entry.parent_map;
         inline for (.{ .before, .after }) |pseudo| {
-            if (env.cascade_db.getPseudoStorage(entry.node, pseudo)) |pseudo_storage| _ = try resolver.element(pseudo_storage, map);
+            // Before `Environment.createPseudoNodes` the values are keyed by
+            // element; after it (an element a restyle kept), they are the
+            // pseudo-element node's.
+            const pseudo_storage = env.cascade_db.getPseudoStorage(entry.node, pseudo) orelse
+                if (env.pseudoElementNode(entry.node, pseudo)) |pseudo_node| env.cascade_db.getStorage(pseudo_node) else null;
+            if (pseudo_storage) |ps| _ = try resolver.element(ps, map);
         }
         // Children in reverse so they pop in document order.
         var child = entry.node.lastChild(env);

@@ -56,6 +56,9 @@ node_count: u32 = 0,
 pseudo_group: ?NodeGroup = null,
 pseudo_nodes: std.AutoHashMapUnmanaged(cascade.Database.PseudoKey, NodeId) = .empty,
 pseudo_links: std.AutoHashMapUnmanaged(usize, PseudoLink) = .empty,
+/// NodeId values of discarded ::before / ::after nodes and their text
+/// nodes, reused by `createPseudoNodes`.
+free_pseudo_values: std.ArrayListUnmanaged(usize) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 
@@ -185,6 +188,7 @@ pub fn deinit(env: *Environment) void {
     env.node_properties.deinit(env.allocator);
     env.pseudo_nodes.deinit(env.allocator);
     env.pseudo_links.deinit(env.allocator);
+    env.free_pseudo_values.deinit(env.allocator);
     env.ids_to_nodes.deinit(env.allocator);
     env.nodes_to_ids.deinit(env.allocator);
     // Free the class name slices stored in nodes_to_classes, then the map itself.
@@ -755,6 +759,8 @@ pub fn createPseudoNodes(env: *Environment) !void {
     for (keys.items) |key| {
         if (!env.pseudo_nodes.contains(key)) new_count += 2;
     }
+    // At most this many values beyond `node_count` (fewer when discarded
+    // ones are reused).
     const total = env.node_count + new_count;
     if (env.node_properties.nodes.len < total) {
         const old = env.node_properties.nodes.len;
@@ -769,9 +775,8 @@ pub fn createPseudoNodes(env: *Environment) !void {
 
     for (keys.items, texts.items) |key, text| {
         const element: NodeId = env.pseudo_nodes.get(key) orelse blk: {
-            const element: NodeId = .{ .group = group, .value = env.node_count };
-            const text_node: NodeId = .{ .group = group, .value = env.node_count + 1 };
-            env.node_count += 2;
+            const element: NodeId = .{ .group = group, .value = env.allocPseudoValue() };
+            const text_node: NodeId = .{ .group = group, .value = env.allocPseudoValue() };
             try env.pseudo_nodes.put(allocator, key, element);
             try env.pseudo_links.put(allocator, element.value, .{
                 .parent = key.node,
@@ -960,15 +965,38 @@ pub fn resetNodeProperties(env: *Environment, node: NodeId) void {
     if (index < env.node_properties.nodes.len) env.node_properties.nodes[index] = .{};
 }
 
-/// Remove the ::before / ::after nodes `createPseudoNodes` made, so the
-/// document's own node values continue from `env.node_count` again. A host
-/// that keeps the environment across mutations calls this before mapping
-/// new document nodes and re-running the cascade (which creates the pseudo
-/// nodes anew).
-pub fn discardPseudoNodes(env: *Environment, document_node_count: u32) void {
+/// Remove every ::before / ::after node `createPseudoNodes` made (before a
+/// full cascade over a retained environment; the cascade creates them
+/// anew). Their NodeId values are reused.
+pub fn discardAllPseudoNodes(env: *Environment) void {
+    var it = env.pseudo_nodes.valueIterator();
+    while (it.next()) |element| env.freePseudoNode(element.*);
     env.pseudo_nodes.clearRetainingCapacity();
-    env.pseudo_links.clearRetainingCapacity();
-    env.node_count = document_node_count;
+}
+
+/// Remove `element`'s ::before / ::after nodes (before restyling it,
+/// `cascade.restyle`).
+pub fn discardPseudoNodesOf(env: *Environment, element: NodeId) void {
+    inline for (.{ .before, .after }) |pseudo| {
+        if (env.pseudo_nodes.fetchRemove(.{ .node = element, .pseudo = pseudo })) |kv| env.freePseudoNode(kv.value);
+    }
+}
+
+fn freePseudoNode(env: *Environment, element: NodeId) void {
+    const link = env.pseudo_links.fetchRemove(element.value) orelse return;
+    if (link.value.child) |text| {
+        _ = env.pseudo_links.remove(text.value);
+        env.free_pseudo_values.append(env.allocator, text.value) catch {};
+    }
+    env.free_pseudo_values.append(env.allocator, element.value) catch {};
+}
+
+/// A NodeId value for a pseudo-element node: a discarded one, else the next
+/// free value (the host's document nodes take values from `node_count` too).
+fn allocPseudoValue(env: *Environment) usize {
+    if (env.free_pseudo_values.pop()) |value| return value;
+    defer env.node_count += 1;
+    return env.node_count;
 }
 
 /// Discard every cascaded value so the cascade can run again over the
