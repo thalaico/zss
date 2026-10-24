@@ -24,6 +24,7 @@ const initial = @import("initial.zig");
 const @"inline" = @import("inline.zig");
 const solve = @import("solve.zig");
 const stf = @import("shrink_to_fit.zig");
+const positioned = @import("positioned.zig");
 const table = @import("table.zig");
 pub const Absolute = @import("AbsoluteContainingBlocks.zig");
 pub const StackingContextTreeBuilder = @import("StackingContextTreeBuilder.zig");
@@ -134,14 +135,9 @@ pub fn run(box_gen: *BoxGen) !void {
     const t_analyze = Layout.now();
     try analyzeAllNodes(box_gen);
     Layout.profile.analyze_ns += Layout.now() - t_analyze;
-    // Absolutely-positioned elements with children are laid out inline as
-    // out-of-flow blocks in analyzeAllNodes (see dispatch .absolute branch).
-    // Leaf absolute elements (no children — e.g. <img>) still go through
-    // layoutAbsoluteBlocks, which creates an empty leaf box. That preserves
-    // the pre-existing behavior for replaced elements whose intrinsic size
-    // ZSS can't resolve at layout time.
+    // Absolutely positioned boxes: final sizes and positions.
     const t_abs = Layout.now();
-    try layoutAbsoluteBlocks(box_gen);
+    positioned.run(box_gen.getLayout());
     Layout.profile.abs_ns += Layout.now() - t_abs;
     box_gen.sct_builder.endFrame();
 }
@@ -175,154 +171,6 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
     }
 
     try box_gen.dispatchNullNode(.root, {});
-}
-
-fn layoutAbsoluteBlocks(box_gen: *BoxGen) !void {
-    // Layout absolutely positioned elements that were collected during analyzeAllNodes
-    const absolute_blocks = box_gen.absolute.blocks.items;
-
-    if (absolute_blocks.len == 0) return;
-
-    const layout = box_gen.getLayout();
-
-    for (absolute_blocks) |block| {
-        // Find the containing block for this absolute element
-        const containing_block_ref = findContainingBlockRef(&box_gen.absolute, block.containing_block) orelse {
-            std.log.warn("[layoutAbsoluteBlocks] Could not find containing block for node", .{});
-            continue;
-        };
-
-        // Get containing block size
-        const containing_subtree = layout.box_tree.ptr.getSubtree(containing_block_ref.subtree);
-        const containing_slice = containing_subtree.blocks.slice();
-        const containing_box_offsets = containing_slice.items(.box_offsets)[containing_block_ref.index];
-        const containing_block_size = containing_box_offsets.border_size;
-
-        // Get element's computed styles and compute sizes
-        try layout.computer.setCurrentNode(.box_gen, block.node);
-
-        // Compute sizes using the same function as normal flow
-        const containing_block_width = containing_block_size.w;
-        const containing_block_height = containing_block_size.h;
-        const sizes = flow.solveAllSizes(
-            &layout.computer,
-            block.position,
-            .{ .normal = containing_block_width },
-            containing_block_height,
-            false,
-        );
-
-        // Pre-read the cosmetic values into box_gen_stage and commit, exactly as
-        // flow.blockElement does for in-flow blocks. Leaf absolutes (childless
-        // out-of-flow boxes — e.g. an empty `position:absolute` div) bypass the
-        // normal flow path, so without this box_gen_stage.nodes[node] stays empty
-        // and writeBlockCosmetic's `orelse return`s skip BOTH inset resolution
-        // (box stuck at 0,0) and background painting (transparent → invisible).
-        // solveAllSizes above already staged `.insets`; this commit flushes them
-        // together with color/border/background/opacity.
-        const computer = &layout.computer;
-        const font_specified = computer.computedFont(.box_gen);
-        computer.setComputedValue(.box_gen, .font, font_specified);
-        computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
-        computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-        computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
-        computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
-        computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
-        computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
-        computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
-        computer.commitNode(.box_gen);
-
-        // Get the computed width and height (these return optionals)
-        const width = sizes.get(.inline_size) orelse containing_block_width;
-        const height = sizes.get(.block_size) orelse containing_block_height;
-
-        // Position (left/top) is resolved by the cosmetic pass into insets.
-        // We don't compute it here to avoid double-counting.
-        // Create block box at the computed position and size
-        // We can't use newBlock() because it requires stacks to be set up
-        // Instead, manually create the block in the containing block's subtree (reuse from earlier)
-        const index = try layout.box_tree.appendBlockBox(containing_subtree);
-        const ref = BlockRef{ .subtree = containing_block_ref.subtree, .index = index };
-
-        // Re-get the slice since appendBlockBox might have reallocated
-        const blocks = containing_subtree.blocks.slice();
-
-        // Offset is zero: the cosmetic pass writes CSS left/top into insets,
-        // and the renderer sums offset + insets. Setting both would double-count.
-        blocks.items(.offset)[index] = .{ .x = 0, .y = 0 };
-
-        // Set the size
-        blocks.items(.box_offsets)[index] = .{
-            .border_pos = .{ .x = 0, .y = 0 },
-            .border_size = .{ .w = width, .h = height },
-            .content_pos = .{
-                .x = sizes.border_inline_start + sizes.padding_inline_start,
-                .y = sizes.border_block_start + sizes.padding_block_start,
-            },
-            .content_size = .{
-                .w = width - sizes.border_inline_start - sizes.border_inline_end - sizes.padding_inline_start - sizes.padding_inline_end,
-                .h = height - sizes.border_block_start - sizes.border_block_end - sizes.padding_block_start - sizes.padding_block_end,
-            },
-        };
-
-        // Set borders and margins
-        blocks.items(.borders)[index] = .{
-            .left = sizes.border_inline_start,
-            .right = sizes.border_inline_end,
-            .top = sizes.border_block_start,
-            .bottom = sizes.border_block_end,
-        };
-
-        blocks.items(.margins)[index] = .{
-            .left = sizes.margin_inline_start_untagged,
-            .right = sizes.margin_inline_end_untagged,
-            .top = sizes.margin_block_start,
-            .bottom = sizes.margin_block_end,
-        };
-
-        // Initialize all required fields
-        blocks.items(.skip)[index] = 1; // Absolute blocks are leaf nodes
-        blocks.items(.type)[index] = .block; // Regular block type
-        blocks.items(.out_of_flow)[index] = true;
-        blocks.items(.node)[index] = block.node;
-        blocks.items(.stacking_context)[index] = null; // TODO: May need stacking context
-        blocks.items(.insets)[index] = .{ .x = 0, .y = 0 }; // No relative positioning
-        blocks.items(.border_colors)[index] = .{ .top = .transparent, .bottom = .transparent, .left = .transparent, .right = .transparent };
-        blocks.items(.background)[index] = .{ .color = .transparent, .color_clip = .border, .images = .invalid, .gradient = null };
-        blocks.items(.overflow)[index] = .visible;
-        blocks.items(.opacity)[index] = 1.0;
-        blocks.items(.float_side)[index] = .none;
-        blocks.items(.clear_side)[index] = .none;
-        blocks.items(.visibility)[index] = .visible;
-        blocks.items(.flex_grow)[index] = 0.0;
-        blocks.items(.flex_shrink)[index] = 1.0;
-        blocks.items(.flex_basis_px)[index] = -1;
-        blocks.items(.align_self)[index] = .auto;
-        blocks.items(.list_style_type)[index] = .none;
-
-        blocks.items(.border_radii)[index] = .{};
-        blocks.items(.creates_absolute_cb)[index] = true;
-
-        // Register the generated box for this node
-        try layout.box_tree.setGeneratedBox(block.node, .{ .block_ref = ref });
-
-        try writeBlockCosmetic(layout, containing_subtree.view(), index, block.node, containing_block_width, containing_block_height, block.position);
-    }
-}
-
-fn findContainingBlockRef(absolute: *const Absolute, id: Absolute.ContainingBlock.Id) ?BlockRef {
-    const slice = absolute.containing_blocks.slice();
-    const ids = slice.items(.id);
-    const refs = slice.items(.ref);
-
-    for (ids, refs, 0..) |containing_id, ref, i| {
-        _ = i;
-        if (containing_id == id) {
-            return ref;
-        }
-    }
-
-    return null;
 }
 
 /// Returns the next node and its box style, or `null` if there is no next node.
@@ -375,34 +223,15 @@ fn dispatch(
         .block => try box_gen.dispatchBlockElement(is_root, current_mode, node, box_style),
         .@"inline" => try box_gen.dispatchInlineElement(is_root, current_mode, node, box_style),
         .absolute => {
-            // CSS §9.6: absolutely-positioned elements establish a new BFC
-            // and lay out their children. For *container* absolutes, we
-            // dispatch as a regular block so descendants lay out — pushBlock
-            // sets out_of_flow=true based on position=.absolute, the parent's
-            // flow layout skips us when stacking (flow.zig:894), the cosmetic
-            // pass writes CSS left/top into insets, and the renderer sums
-            // offset + insets at paint time to position us.
-            //
-            // For *leaf* absolutes (no children — typically replaced elements
-            // like <img>), we keep the pre-existing empty-leaf path. Dispatching
-            // a replaced element via the regular block path trips up width:auto
-            // resolution (no intrinsic size available at layout time) and blows
-            // the box up to the parent's full width, which covers content below
-            // it — this is exactly what Heroku's "Fork me on GitHub" ribbon was
-            // doing before the has_children guard was added.
-            const has_children = node.firstChild(box_gen.getLayout().inputs.env) != null;
-            const inner_box_style = box_style.outer.absolute;
-            if (has_children) {
-                const block_box_style: BoxTree.BoxStyle = .{
-                    .outer = .{ .block = inner_box_style },
-                    .position = box_style.position,
-                };
-                try box_gen.dispatchBlockElement(is_root, current_mode, node, block_box_style);
-            } else {
-                const allocator = box_gen.getLayout().allocator;
-                try box_gen.absolute.addBlock(allocator, node, inner_box_style, box_style.position);
-                box_gen.getLayout().advanceNode();
-            }
+            // An absolutely positioned box (CSS 2.1 §9.6) is generated like
+            // a block in flow, out of flow for its parent; its size and
+            // position are finished by `positioned.run` once every
+            // containing block is laid out.
+            const block_box_style: BoxTree.BoxStyle = .{
+                .outer = .{ .block = box_style.outer.absolute },
+                .position = box_style.position,
+            };
+            try box_gen.dispatchBlockElement(is_root, current_mode, node, block_box_style);
         },
     }
 }
@@ -592,6 +421,31 @@ pub const ContainingBlockSize = struct {
 
 pub fn containingBlockSize(box_gen: *BoxGen) ContainingBlockSize {
     return box_gen.stacks.containing_block_size.top.?;
+}
+
+/// The containing block of an absolutely positioned (or fixed) box being
+/// generated (CSS 2.1 §10.1): the padding box of the nearest positioned
+/// ancestor, else (and for `fixed`) the viewport. Its height is null while
+/// the ancestor's height is auto (it is known only after its layout; see
+/// `positioned.run`).
+pub fn absoluteContainingBlockSize(box_gen: *BoxGen, position: BoxTree.BoxStyle.Position) ContainingBlockSize {
+    const viewport = box_gen.getLayout().viewport;
+    const icb: ContainingBlockSize = .{ .width = viewport.w, .height = viewport.h };
+    if (position == .fixed) return icb;
+    const stack = &box_gen.stacks.block_info;
+    var i: usize = stack.rest.items.len + 1;
+    while (i > 0) {
+        i -= 1;
+        const info: *const BlockInfo = if (i == stack.rest.items.len) &(stack.top orelse return icb) else &stack.rest.items[i];
+        if (info.position == .static) continue;
+        const sizes = info.sizes;
+        const width = sizes.get(.inline_size) orelse return box_gen.containingBlockSize();
+        return .{
+            .width = width + sizes.padding_inline_start + sizes.padding_inline_end,
+            .height = if (sizes.get(.block_size)) |h| h + sizes.padding_block_start + sizes.padding_block_end else null,
+        };
+    }
+    return icb;
 }
 
 const Block = struct {
@@ -1145,9 +999,6 @@ pub fn fixupAbsoluteContainingBlock(box_gen: *BoxGen, id: Absolute.ContainingBlo
     return box_gen.absolute.fixupContainingBlock(id, ref);
 }
 
-pub fn addAbsoluteBlock(box_gen: *BoxGen, node: NodeId, inner_box_style: BoxTree.BoxStyle.InnerBlock, position: BoxTree.BoxStyle.Position) !void {
-    return box_gen.absolute.addBlock(box_gen.getLayout().allocator, node, inner_box_style, position);
-}
 
 pub const BlockComputedSizes = struct {
     content_width: ComputedValues(.content_width),

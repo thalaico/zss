@@ -44,7 +44,12 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
     const computer = &box_gen.getLayout().computer;
     switch (inner_block) {
         .flow, .flex, .grid => {
-            const containing_block_size = box_gen.containingBlockSize();
+            // An absolutely positioned box is sized against its containing
+            // block (CSS 2.1 §10.3.7), not its parent.
+            const containing_block_size = switch (position) {
+                .absolute, .fixed => box_gen.absoluteContainingBlockSize(position),
+                else => box_gen.containingBlockSize(),
+            };
             const parent_is_flex_row = if (box_gen.stacks.block_info.top) |parent_info|
                 parent_info.is_flex_container and !parent_info.flex_is_column
             else
@@ -1068,7 +1073,9 @@ pub fn offsetChildBlocks(
 
     while (child < end) {
         if (out_of_flow_flags[child]) {
-            subtree.items(.offset)[child] = .{ .x = 0, .y = 0 };
+            // The static position (CSS 2.1 §10.3.7): where the box's margin
+            // box would start in flow; `positioned.run` reads it.
+            subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin };
         } else if (float_sides[child] == .none) {
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
