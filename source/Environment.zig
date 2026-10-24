@@ -74,6 +74,9 @@ custom_font_names: []const []const u8 = &.{},
 /// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
 font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,
 font_family_list_ids: std.StringHashMapUnmanaged(u32) = .empty,
+/// The math-function values (calc(), min(), ...) that did not fold to a
+/// plain length or percentage at parse time.
+calc: zss.values.calc.Table = .{},
 testing: Testing,
 
 pub const CaseOptions = struct {
@@ -198,6 +201,7 @@ pub fn deinit(env: *Environment) void {
     for (env.font_family_lists.items) |text| env.allocator.free(text);
     env.font_family_lists.deinit(env.allocator);
     env.font_family_list_ids.deinit(env.allocator);
+    env.calc.deinit(env.allocator);
 }
 
 /// The id of the serialized font-family list `text`, interning it.

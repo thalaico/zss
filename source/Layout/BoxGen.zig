@@ -1202,7 +1202,7 @@ pub const BlockUsedSizes = struct {
     /// Specified width / inline margin kinds, copied to the box for
     /// intrinsic contributions. Set by every size solver.
     intrinsic: BoxTree.Subtree.IntrinsicFlags = .{},
-    percent_width: f32 = 0,
+    percent_width: BoxTree.Subtree.PercentWidth = .{ .percentage = 0 },
     specified_margins: [2]math.Unit = .{ 0, 0 },
 
     pub const Flags = packed struct {
@@ -1454,16 +1454,16 @@ fn writeBlockCosmetic(
         .static => {},
         .relative => {
             const insets_spec = bgc.insets orelse return;
-            solveInsetsRelative(insets_spec, cb_size, font_size_px, used_insets);
+            solveInsetsRelative(layout.inputs.env, insets_spec, cb_size, font_size_px, used_insets);
         },
         .absolute => {
             const insets_spec = bgc.insets orelse return;
-            solveInsetsAbsolute(insets_spec, cb_size, font_size_px, used_insets);
+            solveInsetsAbsolute(layout.inputs.env, insets_spec, cb_size, font_size_px, used_insets);
         },
         .fixed => {
             const insets_spec = bgc.insets orelse return;
             const icb_size = layout.viewport;
-            solveInsetsAbsolute(insets_spec, icb_size, font_size_px, used_insets);
+            solveInsetsAbsolute(layout.inputs.env, insets_spec, icb_size, font_size_px, used_insets);
         },
     }
 
@@ -1488,6 +1488,7 @@ fn writeBlockCosmetic(
 }
 
 fn solveInsetsRelative(
+    env: *const zss.Environment,
     specified: zss.values.groups.Tag.SpecifiedValues(.insets),
     containing_block_size: math.Size,
     font_size_px: f32,
@@ -1496,24 +1497,28 @@ fn solveInsetsRelative(
     const left: ?math.Unit = switch (specified.left) {
         .px => |v| solve.length(.px, v),
         .percentage => |v| solve.percentage(v, containing_block_size.w),
+        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
     };
     const right: ?math.Unit = switch (specified.right) {
         .px => |v| -solve.length(.px, v),
         .percentage => |v| -solve.percentage(v, containing_block_size.w),
+        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
     };
     const top: ?math.Unit = switch (specified.top) {
         .px => |v| solve.length(.px, v),
         .percentage => |v| solve.percentage(v, containing_block_size.h),
+        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
     };
     const bottom: ?math.Unit = switch (specified.bottom) {
         .px => |v| -solve.length(.px, v),
         .percentage => |v| -solve.percentage(v, containing_block_size.h),
+        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
     };
@@ -1524,6 +1529,7 @@ fn solveInsetsRelative(
 }
 
 fn solveInsetsAbsolute(
+    env: *const zss.Environment,
     specified: zss.values.groups.Tag.SpecifiedValues(.insets),
     containing_block_size: math.Size,
     font_size_px: f32,
@@ -1534,12 +1540,14 @@ fn solveInsetsAbsolute(
     switch (specified.left) {
         .px => |v| left = solve.length(.px, v),
         .percentage => |v| left = solve.percentage(v, containing_block_size.w),
+        .calc => |v| left = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => {},
         .em => |v| left = solve.length(.px, v * font_size_px),
     }
     switch (specified.top) {
         .px => |v| top = solve.length(.px, v),
         .percentage => |v| top = solve.percentage(v, containing_block_size.h),
+        .calc => |v| top = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => {},
         .em => |v| top = solve.length(.px, v * font_size_px),
     }

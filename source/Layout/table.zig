@@ -429,7 +429,7 @@ fn measure(layout: *Layout, subtree: Subtree.View, t: *Table) !Measured {
             } else if (!col.constrained) {
                 col.max = @max(col.max, m.max);
             }
-            if (flags.width == .percentage) col.percent = @max(col.percent, subtree.items(.percent_width)[cell.block]);
+            if (flags.width == .percentage) col.percent = @max(col.percent, subtree.items(.percent_width)[cell.block].fraction());
             col.max = @max(col.max, col.min);
         }
     }

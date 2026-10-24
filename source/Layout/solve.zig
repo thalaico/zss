@@ -34,6 +34,26 @@ pub fn positivePercentage(value: f32, unit: Unit) Unit {
     return percentage(value, unit);
 }
 
+/// A math-function length (CSS Values 4 §10) in layout units, with its
+/// percentages taken of `base`; null if it has a percentage and `base` is
+/// null (indefinite).
+pub fn calc(env: *const zss.Environment, value: types.Calc, base: ?Unit) ?Unit {
+    const base_px: ?f32 = if (base) |b| @as(f32, @floatFromInt(b)) / units_per_pixel else null;
+    const px = env.calc.eval(value.id, value.font_size, base_px) orelse return null;
+    return @intFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
+}
+
+/// `calc` for properties that take no negative values: the result is
+/// clamped to zero (CSS Values 4 §10.12).
+pub fn positiveCalc(env: *const zss.Environment, value: types.Calc, base: ?Unit) ?Unit {
+    return @max(0, calc(env, value, base) orelse return null);
+}
+
+/// Whether a math-function length depends on its percentage base.
+pub fn calcHasPercentage(env: *const zss.Environment, value: types.Calc) bool {
+    return env.calc.hasPercentage(value.id);
+}
+
 pub fn clampSize(size: Unit, min_size: Unit, max_size: Unit) Unit {
     return @max(min_size, @min(size, max_size));
 }
@@ -237,6 +257,7 @@ pub fn insets(specified: SpecifiedValues(.insets)) ComputedValues(.insets) {
         @field(computed, field_info.name) = switch (@field(specified, field_info.name)) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
+            .calc => |value| .{ .calc = value },
             .auto => .auto,
             .em => unreachable,
         };

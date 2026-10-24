@@ -885,6 +885,7 @@ fn setDataRootInlineBox(ifc: *const Ifc, inline_box_index: Ifc.Size) void {
 
 fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: Ifc.Size, node: NodeId, percentage_base_unit: Unit) void {
     // TODO: Also use the logical properties ('padding-inline-start', 'border-block-end', etc.).
+    const env = computer.env;
     // Resolve em values in edges using element's computed font-size.
     const font_size_px = computer.resolvedFontSizePx(.box_gen);
     const specified = .{
@@ -920,6 +921,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.margin_left = .{ .percentage = value };
             used.margin_inline_start = solve.percentage(value, percentage_base_unit);
         },
+        .calc => |value| {
+            computed.horizontal_edges.margin_left = .{ .calc = value };
+            used.margin_inline_start = solve.calc(env, value, percentage_base_unit).?;
+        },
         .auto => {
             computed.horizontal_edges.margin_left = .auto;
             used.margin_inline_start = 0;
@@ -950,6 +955,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.padding_left = .{ .percentage = value };
             used.padding_inline_start = solve.positivePercentage(value, percentage_base_unit);
         },
+        .calc => |value| {
+            computed.horizontal_edges.padding_left = .{ .calc = value };
+            used.padding_inline_start = solve.positiveCalc(env, value, percentage_base_unit).?;
+        },
         .em => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
@@ -960,6 +969,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
         .percentage => |value| {
             computed.horizontal_edges.margin_right = .{ .percentage = value };
             used.margin_inline_end = solve.percentage(value, percentage_base_unit);
+        },
+        .calc => |value| {
+            computed.horizontal_edges.margin_right = .{ .calc = value };
+            used.margin_inline_end = solve.calc(env, value, percentage_base_unit).?;
         },
         .auto => {
             computed.horizontal_edges.margin_right = .auto;
@@ -991,6 +1004,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.horizontal_edges.padding_right = .{ .percentage = value };
             used.padding_inline_end = solve.positivePercentage(value, percentage_base_unit);
         },
+        .calc => |value| {
+            computed.horizontal_edges.padding_right = .{ .calc = value };
+            used.padding_inline_end = solve.positiveCalc(env, value, percentage_base_unit).?;
+        },
         .em => unreachable,
     }
 
@@ -1018,6 +1035,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             computed.vertical_edges.padding_top = .{ .percentage = value };
             used.padding_block_start = solve.positivePercentage(value, percentage_base_unit);
         },
+        .calc => |value| {
+            computed.vertical_edges.padding_top = .{ .calc = value };
+            used.padding_block_start = solve.positiveCalc(env, value, percentage_base_unit).?;
+        },
         .em => unreachable,
     }
     {
@@ -1043,6 +1064,10 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
         .percentage => |value| {
             computed.vertical_edges.padding_bottom = .{ .percentage = value };
             used.padding_block_end = solve.positivePercentage(value, percentage_base_unit);
+        },
+        .calc => |value| {
+            computed.vertical_edges.padding_bottom = .{ .calc = value };
+            used.padding_block_end = solve.positiveCalc(env, value, percentage_base_unit).?;
         },
         .em => unreachable,
     }
@@ -1109,12 +1134,13 @@ fn inlineBlockSolveSizes(
         .insets = computer.getSpecifiedValue(.box_gen, .insets),
     }, font_size_px);
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
+    const env = computer.env;
     var computed: BlockComputedSizes = undefined;
     var used: BlockUsedSizes = undefined;
     used.was_auto_inline_size = false;
-    used.intrinsic = flow.intrinsicFlags(specified);
-    used.percent_width = flow.percentWidth(specified);
-    used.specified_margins = flow.specifiedMargins(specified);
+    used.intrinsic = flow.intrinsicFlags(env, specified);
+    used.percent_width = flow.percentWidth(env, specified);
+    used.specified_margins = flow.specifiedMargins(env, specified);
 
     // TODO: Also use the logical properties ('padding-inline-start', 'border-block-end', etc.).
 
@@ -1157,6 +1183,10 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.padding_left = .{ .percentage = value };
             used.padding_inline_start = solve.positivePercentage(value, containing_block_size.width);
         },
+        .calc => |value| {
+            computed.horizontal_edges.padding_left = .{ .calc = value };
+            used.padding_inline_start = solve.positiveCalc(env, value, containing_block_size.width).?;
+        },
         .em => unreachable,
     }
     switch (specified.horizontal_edges.padding_right) {
@@ -1168,6 +1198,10 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.padding_right = .{ .percentage = value };
             used.padding_inline_end = solve.positivePercentage(value, containing_block_size.width);
         },
+        .calc => |value| {
+            computed.horizontal_edges.padding_right = .{ .calc = value };
+            used.padding_inline_end = solve.positiveCalc(env, value, containing_block_size.width).?;
+        },
         .em => unreachable,
     }
     switch (specified.horizontal_edges.margin_left) {
@@ -1178,6 +1212,10 @@ fn inlineBlockSolveSizes(
         .percentage => |value| {
             computed.horizontal_edges.margin_left = .{ .percentage = value };
             used.setValue(.margin_inline_start, solve.percentage(value, containing_block_size.width));
+        },
+        .calc => |value| {
+            computed.horizontal_edges.margin_left = .{ .calc = value };
+            used.setValue(.margin_inline_start, solve.calc(env, value, containing_block_size.width).?);
         },
         .auto => {
             computed.horizontal_edges.margin_left = .auto;
@@ -1194,6 +1232,10 @@ fn inlineBlockSolveSizes(
             computed.horizontal_edges.margin_right = .{ .percentage = value };
             used.setValue(.margin_inline_end, solve.percentage(value, containing_block_size.width));
         },
+        .calc => |value| {
+            computed.horizontal_edges.margin_right = .{ .calc = value };
+            used.setValue(.margin_inline_end, solve.calc(env, value, containing_block_size.width).?);
+        },
         .auto => {
             computed.horizontal_edges.margin_right = .auto;
             used.setValue(.margin_inline_end, 0);
@@ -1209,6 +1251,10 @@ fn inlineBlockSolveSizes(
             computed.content_width.min_width = .{ .percentage = value };
             used.min_inline_size = solve.positivePercentage(value, containing_block_size.width);
         },
+        .calc => |value| {
+            computed.content_width.min_width = .{ .calc = value };
+            used.min_inline_size = solve.positiveCalc(env, value, containing_block_size.width).?;
+        },
         .em => unreachable,
     }
     switch (specified.content_width.max_width) {
@@ -1219,6 +1265,10 @@ fn inlineBlockSolveSizes(
         .percentage => |value| {
             computed.content_width.max_width = .{ .percentage = value };
             used.max_inline_size = solve.positivePercentage(value, containing_block_size.width);
+        },
+        .calc => |value| {
+            computed.content_width.max_width = .{ .calc = value };
+            used.max_inline_size = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .none => {
             computed.content_width.max_width = .none;
@@ -1235,6 +1285,10 @@ fn inlineBlockSolveSizes(
         .percentage => |value| {
             computed.content_width.width = .{ .percentage = value };
             used.setValue(.inline_size, solve.positivePercentage(value, containing_block_size.width));
+        },
+        .calc => |value| {
+            computed.content_width.width = .{ .calc = value };
+            used.setValue(.inline_size, solve.positiveCalc(env, value, containing_block_size.width).?);
         },
         .auto => {
             computed.content_width.width = .auto;
@@ -1282,6 +1336,10 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.padding_top = .{ .percentage = value };
             used.padding_block_start = solve.positivePercentage(value, containing_block_size.width);
         },
+        .calc => |value| {
+            computed.vertical_edges.padding_top = .{ .calc = value };
+            used.padding_block_start = solve.positiveCalc(env, value, containing_block_size.width).?;
+        },
         .em => unreachable,
     }
     switch (specified.vertical_edges.padding_bottom) {
@@ -1293,6 +1351,10 @@ fn inlineBlockSolveSizes(
             computed.vertical_edges.padding_bottom = .{ .percentage = value };
             used.padding_block_end = solve.positivePercentage(value, containing_block_size.width);
         },
+        .calc => |value| {
+            computed.vertical_edges.padding_bottom = .{ .calc = value };
+            used.padding_block_end = solve.positiveCalc(env, value, containing_block_size.width).?;
+        },
         .em => unreachable,
     }
     switch (specified.vertical_edges.margin_top) {
@@ -1303,6 +1365,10 @@ fn inlineBlockSolveSizes(
         .percentage => |value| {
             computed.vertical_edges.margin_top = .{ .percentage = value };
             used.margin_block_start = solve.percentage(value, containing_block_size.width);
+        },
+        .calc => |value| {
+            computed.vertical_edges.margin_top = .{ .calc = value };
+            used.margin_block_start = solve.calc(env, value, containing_block_size.width).?;
         },
         .auto => {
             computed.vertical_edges.margin_top = .auto;
@@ -1318,6 +1384,10 @@ fn inlineBlockSolveSizes(
         .percentage => |value| {
             computed.vertical_edges.margin_bottom = .{ .percentage = value };
             used.margin_block_end = solve.percentage(value, containing_block_size.width);
+        },
+        .calc => |value| {
+            computed.vertical_edges.margin_bottom = .{ .calc = value };
+            used.margin_block_end = solve.calc(env, value, containing_block_size.width).?;
         },
         .auto => {
             computed.vertical_edges.margin_bottom = .auto;
@@ -1337,6 +1407,10 @@ fn inlineBlockSolveSizes(
             else
                 0;
         },
+        .calc => |value| {
+            computed.content_height.min_height = .{ .calc = value };
+            used.min_block_size = solve.positiveCalc(env, value, containing_block_size.height) orelse 0;
+        },
         .em => unreachable,
     }
     switch (specified.content_height.max_height) {
@@ -1350,6 +1424,10 @@ fn inlineBlockSolveSizes(
                 solve.positivePercentage(value, h)
             else
                 std.math.maxInt(Unit);
+        },
+        .calc => |value| {
+            computed.content_height.max_height = .{ .calc = value };
+            used.max_block_size = solve.positiveCalc(env, value, containing_block_size.height) orelse std.math.maxInt(Unit);
         },
         .none => {
             computed.content_height.max_height = .none;
@@ -1366,6 +1444,13 @@ fn inlineBlockSolveSizes(
             computed.content_height.height = .{ .percentage = value };
             if (containing_block_size.height) |h|
                 used.setValue(.block_size, solve.positivePercentage(value, h))
+            else
+                used.setAuto(.block_size);
+        },
+        .calc => |value| {
+            computed.content_height.height = .{ .calc = value };
+            if (solve.positiveCalc(env, value, containing_block_size.height)) |h|
+                used.setValue(.block_size, h)
             else
                 used.setAuto(.block_size);
         },

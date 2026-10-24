@@ -35,6 +35,7 @@ const Subtree = BoxTree.Subtree;
 const BoxGen = Layout.BoxGen;
 
 const flow = @import("./flow.zig");
+const solve = @import("./solve.zig");
 const grid = @import("./grid.zig");
 const table = @import("./table.zig");
 const bfc = @import("./bfc.zig");
@@ -51,7 +52,7 @@ pub const InlineSize = struct {
 /// of inline size `cb_width`, per CSS 2.1 §10.3.3 (block-level, non-replaced,
 /// in normal flow). Grid items with `justify-self: normal` resolve the same
 /// way against their grid area (CSS Grid 1 §6.2, CSS Box Alignment 3 §6.1).
-pub fn usedInlineSize(subtree: Subtree.View, index: Subtree.Size, cb_width: Unit) InlineSize {
+pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index: Subtree.Size, cb_width: Unit) InlineSize {
     const bo = subtree.items(.box_offsets)[index];
     const margins = subtree.items(.margins)[index];
     const flags = subtree.items(.intrinsic)[index];
@@ -66,7 +67,10 @@ pub fn usedInlineSize(subtree: Subtree.View, index: Subtree.Size, cb_width: Unit
     const content_w: Unit = switch (flags.width) {
         .fixed => bo.content_size.w,
         .percentage => blk: {
-            const resolved: Unit = @intFromFloat(@round(subtree.items(.percent_width)[index] * @as(f32, @floatFromInt(cb_width))));
+            const resolved: Unit = switch (subtree.items(.percent_width)[index]) {
+                .percentage => |p| @intFromFloat(@round(p * @as(f32, @floatFromInt(cb_width)))),
+                .calc => |c| solve.positiveCalc(env, c, cb_width).?,
+            };
             break :blk @max(0, if (flags.border_box) resolved - edges else resolved);
         },
         .auto => @max(0, cb_width - edges - margin_left - margin_right),
@@ -92,7 +96,7 @@ pub fn usedInlineSize(subtree: Subtree.View, index: Subtree.Size, cb_width: Unit
 /// out again when the content box width changed (it depends on nothing
 /// else that a relayout can change).
 pub fn relayoutBlock(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, cb_width: Unit) void {
-    const used = usedInlineSize(subtree, index, cb_width);
+    const used = usedInlineSize(layout.inputs.env, subtree, index, cb_width);
     const bo = &subtree.items(.box_offsets)[index];
     const margins = &subtree.items(.margins)[index];
     const edges = bo.border_size.w - bo.content_size.w;

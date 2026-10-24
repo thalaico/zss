@@ -279,7 +279,7 @@ const Pass = struct {
     fn block(pass: *Pass, index: Subtree.Size, x0: Unit, width: Unit) !void {
         const subtree = pass.subtree;
         const bo = &subtree.items(.box_offsets)[index];
-        const used = relayout.usedInlineSize(subtree, index, width);
+        const used = relayout.usedInlineSize(pass.layout.inputs.env, subtree, index, width);
         const edges_w = bo.border_size.w - bo.content_size.w;
         const margins = &subtree.items(.margins)[index];
         margins.left = used.margin_left;
@@ -422,7 +422,7 @@ const Pass = struct {
                     break :blk @min(@max(sizes.min, available), sizes.max);
                 },
                 .fixed => bo.border_size.w,
-                .percentage => relayout.usedInlineSize(subtree, index, width).content_w + edges,
+                .percentage => relayout.usedInlineSize(pass.layout.inputs.env, subtree, index, width).content_w + edges,
             };
             relayout.resizeItem(pass.layout, subtree, pass.subtree_id, index, border_w);
         }

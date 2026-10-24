@@ -312,10 +312,19 @@ pub const Clear = enum {
     none,
 };
 
+/// A math-function value: a node of the Environment's calc table, and the
+/// element's font size for its `em` terms (0 until computed: `resolveEm`).
+pub const Calc = struct {
+    id: @import("calc.zig").Id,
+    font_size: f32,
+};
+
 pub const LengthPercentageAuto = union(enum) {
     px: f32,
     em: f32,
     percentage: f32,
+    /// A math function that did not fold (CSS Values 4 §10).
+    calc: Calc,
     auto,
 
     /// Resolve em to px using the element's computed font-size.
@@ -323,6 +332,7 @@ pub const LengthPercentageAuto = union(enum) {
     pub fn resolveEm(self: LengthPercentageAuto, font_size_px: f32) LengthPercentageAuto {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };
     }
@@ -336,10 +346,13 @@ pub const LengthPercentage = union(enum) {
     px: f32,
     em: f32,
     percentage: f32,
+    /// A math function that did not fold (CSS Values 4 §10).
+    calc: Calc,
 
     pub fn resolveEm(self: LengthPercentage, font_size_px: f32) LengthPercentage {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };
     }
@@ -352,11 +365,14 @@ pub const MaxSize = union(enum) {
     px: f32,
     em: f32,
     percentage: f32,
+    /// A math function that did not fold (CSS Values 4 §10).
+    calc: Calc,
     none,
 
     pub fn resolveEm(self: MaxSize, font_size_px: f32) MaxSize {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };
     }

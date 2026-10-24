@@ -78,6 +78,9 @@ pub const Context = struct {
     font_size_px: f32 = 16.0,
     /// Lowercase names of @font-face registered custom fonts. Set from env.custom_font_names.
     custom_font_names: []const []const u8 = &.{},
+    /// Where math functions that do not fold are stored; without it they are
+    /// not accepted.
+    env: ?*Environment = null,
 
     pub const State = struct {
         mode: Mode,
@@ -410,6 +413,9 @@ pub fn integer(ctx: *Context) ?i32 {
 // <length>
 pub fn length(ctx: *Context, comptime Type: type) ?Type {
     const item = ctx.next() orelse return null;
+    if (item.tag == .function) {
+        if (mathFunction(ctx, Type, item.index, false)) |result| return result;
+    }
     if (item.tag == .token_dimension) {
         if (genericLength(ctx, Type, item.index)) |result| return result;
     }
@@ -439,19 +445,58 @@ pub fn percentage(ctx: *Context, comptime Type: type) ?Type {
 // Spec: CSS 2.2
 // <length> | <percentage>
 pub fn lengthPercentage(ctx: *Context, comptime Type: type) ?Type {
-    return length(ctx, Type) orelse percentage(ctx, Type);
+    return mathLengthPercentage(ctx, Type) orelse length(ctx, Type) orelse percentage(ctx, Type);
+}
+
+/// A math function (CSS Values 4 §10) as a <length-percentage> of `Type`.
+fn mathLengthPercentage(ctx: *Context, comptime Type: type) ?Type {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .function) {
+        if (mathFunction(ctx, Type, item.index, true)) |result| return result;
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
+/// calc()/min()/max()/clamp() at `index` as a value of `Type`: a plain
+/// px/em/percentage when it folds to one, else `.calc` (if `Type` has it).
+fn mathFunction(ctx: *Context, comptime Type: type, index: Ast.Index, percentages: bool) ?Type {
+    if (!zss.values.calc.isMathFunction(ctx.source_code, ctx.ast, index)) return null;
+    const env = ctx.env orelse return null;
+    const value = (zss.values.calc.parseLength(ctx.ast, ctx.source_code, &env.calc, env.allocator, index, .{
+        .percentages = percentages and @hasField(Type, "percentage"),
+        .viewport_width_px = ctx.viewport_width_px,
+        .viewport_height_px = ctx.viewport_height_px,
+    }) catch return null) orelse return null;
+    switch (value) {
+        .linear => |l| {
+            if (l.em == 0 and l.percentage == 0) return .{ .px = zss.values.calc.clampPx(l.px) };
+            if (l.px == 0 and l.percentage == 0) {
+                if (@hasField(Type, "em")) return .{ .em = l.em };
+                return .{ .px = l.em * ctx.font_size_px };
+            }
+            if (@hasField(Type, "percentage") and l.px == 0 and l.em == 0) return .{ .percentage = l.percentage };
+        },
+        .node => {},
+    }
+    if (!@hasField(Type, "calc")) return null;
+    const id = switch (value) {
+        .node => |id| id,
+        .linear => |l| env.calc.addLinear(env.allocator, l) catch return null,
+    };
+    return .{ .calc = .{ .id = id, .font_size = 0 } };
 }
 
 // Spec: CSS 2.2
 // <length> | <percentage> | auto
 pub fn lengthPercentageAuto(ctx: *Context, comptime Type: type) ?Type {
-    return length(ctx, Type) orelse percentage(ctx, Type) orelse keyword(ctx, Type, &.{.{ "auto", .auto }});
+    return mathLengthPercentage(ctx, Type) orelse length(ctx, Type) orelse percentage(ctx, Type) orelse keyword(ctx, Type, &.{.{ "auto", .auto }});
 }
 
 // Spec: CSS 2.2
 // <length> | <percentage> | none
 pub fn lengthPercentageNone(ctx: *Context, comptime Type: type) ?Type {
-    return length(ctx, Type) orelse percentage(ctx, Type) orelse keyword(ctx, Type, &.{.{ "none", .none }});
+    return mathLengthPercentage(ctx, Type) orelse length(ctx, Type) orelse percentage(ctx, Type) orelse keyword(ctx, Type, &.{.{ "none", .none }});
 }
 
 pub fn string(ctx: *Context) ?Location {

@@ -102,6 +102,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                             // Wikipedia's .mw-header (width:100%) to shrink to its
                             // intrinsic content width inside .vector-header-container.
                             .percentage => |pct| @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct))),
+                            .calc => |c| solve.positiveCalc(computer.env, .{ .id = c.id, .font_size = computer.resolvedFontSizePx(.box_gen) }, containing_block_size.width) orelse -1,
                             .auto => @as(i32, -1),
                         };
                     },
@@ -296,11 +297,14 @@ pub fn alignToParentTextAlign(sizes: *BlockUsedSizes, cb_width: Unit, parent_ali
 /// The specified-value kinds `Layout/intrinsic.zig` needs: whether `width`
 /// is auto, a fixed length or a percentage, and which inline margins are
 /// auto (they contribute zero).
-pub fn intrinsicFlags(specified: BlockComputedSizes) BoxTree.Subtree.IntrinsicFlags {
+pub fn intrinsicFlags(env: *const zss.Environment, specified: BlockComputedSizes) BoxTree.Subtree.IntrinsicFlags {
     return .{
         .width = switch (specified.content_width.width) {
             .auto => .auto,
             .percentage => .percentage,
+            // A math function with a percentage is cyclic like one (CSS
+            // Sizing 3 §5.2.1).
+            .calc => |c| if (solve.calcHasPercentage(env, c)) .percentage else .fixed,
             else => .fixed,
         },
         .margin_start_auto = specified.horizontal_edges.margin_left == .auto,
@@ -313,22 +317,33 @@ pub fn intrinsicFlags(specified: BlockComputedSizes) BoxTree.Subtree.IntrinsicFl
 /// Specified inline margins in layout units; auto and percentages are 0
 /// (CSS Sizing 3 §5.2.1: percentage margins contribute zero to intrinsic
 /// sizes).
-pub fn specifiedMargins(specified: BlockComputedSizes) [2]Unit {
+pub fn specifiedMargins(env: *const zss.Environment, specified: BlockComputedSizes) [2]Unit {
     const conv = struct {
-        fn f(m: zss.values.types.Margin) Unit {
+        fn f(e: *const zss.Environment, m: zss.values.types.Margin) Unit {
             return switch (m) {
                 .px => |px| @intFromFloat(@round(px * @as(f32, @floatFromInt(zss.math.units_per_pixel)))),
+                // Percentages resolve against zero here.
+                .calc => |c| solve.calc(e, c, 0).?,
                 else => 0,
             };
         }
     };
-    return .{ conv.f(specified.horizontal_edges.margin_left), conv.f(specified.horizontal_edges.margin_right) };
+    return .{ conv.f(env, specified.horizontal_edges.margin_left), conv.f(env, specified.horizontal_edges.margin_right) };
 }
 
-pub fn percentWidth(specified: BlockComputedSizes) f32 {
+pub fn percentWidth(env: *const zss.Environment, specified: BlockComputedSizes) BoxTree.Subtree.PercentWidth {
     return switch (specified.content_width.width) {
-        .percentage => |p| p,
-        else => 0,
+        .percentage => |p| .{ .percentage = p },
+        .calc => |c| if (solve.calcHasPercentage(env, c)) .{ .calc = c } else .{ .percentage = 0 },
+        else => .{ .percentage = 0 },
+    };
+}
+
+/// The percentage base of a containing block width: none while shrinking to fit.
+fn cbwBase(containing_block_width: ContainingBlockWidth) ?Unit {
+    return switch (containing_block_width) {
+        .normal => |cbw| cbw,
+        .stf => null,
     };
 }
 
@@ -359,13 +374,14 @@ pub fn solveAllSizes(
     var computed_sizes: BlockComputedSizes = undefined;
     var sizes: BlockUsedSizes = undefined;
     sizes.was_auto_inline_size = false;
-    sizes.intrinsic = intrinsicFlags(specified_sizes);
-    sizes.percent_width = percentWidth(specified_sizes);
-    sizes.specified_margins = specifiedMargins(specified_sizes);
-    solveWidthAndHorizontalMargins(specified_sizes, containing_block_width, &computed_sizes, &sizes);
-    solveHorizontalBorderPadding(specified_sizes.horizontal_edges, percentage_base_unit, border_styles, &computed_sizes.horizontal_edges, &sizes);
-    solveHeight(specified_sizes.content_height, containing_block_height, &computed_sizes.content_height, &sizes);
-    solveVerticalEdges(specified_sizes.vertical_edges, percentage_base_unit, border_styles, &computed_sizes.vertical_edges, &sizes);
+    sizes.intrinsic = intrinsicFlags(computer.env, specified_sizes);
+    sizes.percent_width = percentWidth(computer.env, specified_sizes);
+    sizes.specified_margins = specifiedMargins(computer.env, specified_sizes);
+    const env = computer.env;
+    solveWidthAndHorizontalMargins(env, specified_sizes, containing_block_width, &computed_sizes, &sizes);
+    solveHorizontalBorderPadding(env, specified_sizes.horizontal_edges, percentage_base_unit, border_styles, &computed_sizes.horizontal_edges, &sizes);
+    solveHeight(env, specified_sizes.content_height, containing_block_height, &computed_sizes.content_height, &sizes);
+    solveVerticalEdges(env, specified_sizes.vertical_edges, percentage_base_unit, border_styles, &computed_sizes.vertical_edges, &sizes);
     // box-sizing: border-box — specified width/height includes padding and border.
     // Subtract them to get content-box dimensions that the layout engine uses internally.
     if (specified_sizes.content_width.box_sizing == .border_box) {
@@ -451,6 +467,7 @@ pub fn solveAllSizes(
 /// Solves the following list of properties according to CSS2§10.2, CSS2§10.3.3, and CSS2§10.4.
 /// Properties: 'min-width', 'max-width', 'width', 'margin-left', 'margin-right'
 fn solveWidthAndHorizontalMargins(
+    env: *const zss.Environment,
     specified: BlockComputedSizes,
     containing_block_width: ContainingBlockWidth,
     computed: *BlockComputedSizes,
@@ -475,6 +492,10 @@ fn solveWidthAndHorizontalMargins(
                 .stf => 0,
             };
         },
+        .calc => |value| {
+            computed.content_width.min_width = .{ .calc = value };
+            sizes.min_inline_size = solve.positiveCalc(env, value, cbwBase(containing_block_width)) orelse 0;
+        },
         .em => unreachable,
     }
     switch (specified.content_width.max_width) {
@@ -488,6 +509,10 @@ fn solveWidthAndHorizontalMargins(
                 .normal => |cbw| solve.positivePercentage(value, cbw),
                 .stf => std.math.maxInt(Unit),
             };
+        },
+        .calc => |value| {
+            computed.content_width.max_width = .{ .calc = value };
+            sizes.max_inline_size = solve.positiveCalc(env, value, cbwBase(containing_block_width)) orelse std.math.maxInt(Unit);
         },
         .none => {
             computed.content_width.max_width = .none;
@@ -508,6 +533,13 @@ fn solveWidthAndHorizontalMargins(
                 .stf => sizes.setAuto(.inline_size),
             }
         },
+        .calc => |value| {
+            computed.content_width.width = .{ .calc = value };
+            if (solve.positiveCalc(env, value, cbwBase(containing_block_width))) |w|
+                sizes.setValue(.inline_size, w)
+            else
+                sizes.setAuto(.inline_size);
+        },
         .auto => {
             computed.content_width.width = .auto;
             sizes.setAuto(.inline_size);
@@ -525,6 +557,13 @@ fn solveWidthAndHorizontalMargins(
                 .normal => |cbw| sizes.setValue(.margin_inline_start, solve.percentage(value, cbw)),
                 .stf => sizes.setAuto(.margin_inline_start),
             }
+        },
+        .calc => |value| {
+            computed.horizontal_edges.margin_left = .{ .calc = value };
+            if (solve.calc(env, value, cbwBase(containing_block_width))) |m|
+                sizes.setValue(.margin_inline_start, m)
+            else
+                sizes.setAuto(.margin_inline_start);
         },
         .auto => {
             computed.horizontal_edges.margin_left = .auto;
@@ -544,6 +583,13 @@ fn solveWidthAndHorizontalMargins(
                 .stf => sizes.setAuto(.margin_inline_end),
             }
         },
+        .calc => |value| {
+            computed.horizontal_edges.margin_right = .{ .calc = value };
+            if (solve.calc(env, value, cbwBase(containing_block_width))) |m|
+                sizes.setValue(.margin_inline_end, m)
+            else
+                sizes.setAuto(.margin_inline_end);
+        },
         .auto => {
             computed.horizontal_edges.margin_right = .auto;
             sizes.setAuto(.margin_inline_end);
@@ -553,6 +599,7 @@ fn solveWidthAndHorizontalMargins(
 }
 
 fn solveHorizontalBorderPadding(
+    env: *const zss.Environment,
     specified: SpecifiedValues(.horizontal_edges),
     containing_block_width: Unit,
     border_styles: SpecifiedValues(.border_styles),
@@ -601,6 +648,10 @@ fn solveHorizontalBorderPadding(
             computed.padding_left = .{ .percentage = value };
             sizes.padding_inline_start = solve.positivePercentage(value, containing_block_width);
         },
+        .calc => |value| {
+            computed.padding_left = .{ .calc = value };
+            sizes.padding_inline_start = solve.positiveCalc(env, value, containing_block_width).?;
+        },
         .em => unreachable,
     }
     switch (specified.padding_right) {
@@ -612,11 +663,16 @@ fn solveHorizontalBorderPadding(
             computed.padding_right = .{ .percentage = value };
             sizes.padding_inline_end = solve.positivePercentage(value, containing_block_width);
         },
+        .calc => |value| {
+            computed.padding_right = .{ .calc = value };
+            sizes.padding_inline_end = solve.positiveCalc(env, value, containing_block_width).?;
+        },
         .em => unreachable,
     }
 }
 
 fn solveHeight(
+    env: *const zss.Environment,
     specified: SpecifiedValues(.content_height),
     containing_block_height: ?Unit,
     computed: *ComputedValues(.content_height),
@@ -637,6 +693,10 @@ fn solveHeight(
             else
                 0;
         },
+        .calc => |value| {
+            computed.min_height = .{ .calc = value };
+            sizes.min_block_size = solve.positiveCalc(env, value, containing_block_height) orelse 0;
+        },
         .em => unreachable,
     }
     switch (specified.max_height) {
@@ -650,6 +710,10 @@ fn solveHeight(
                 solve.positivePercentage(value, s)
             else
                 std.math.maxInt(Unit);
+        },
+        .calc => |value| {
+            computed.max_height = .{ .calc = value };
+            sizes.max_block_size = solve.positiveCalc(env, value, containing_block_height) orelse std.math.maxInt(Unit);
         },
         .none => {
             computed.max_height = .none;
@@ -669,6 +733,13 @@ fn solveHeight(
             else
                 sizes.setAuto(.block_size);
         },
+        .calc => |value| {
+            computed.height = .{ .calc = value };
+            if (solve.positiveCalc(env, value, containing_block_height)) |h|
+                sizes.setValue(.block_size, h)
+            else
+                sizes.setAuto(.block_size);
+        },
         .auto => {
             computed.height = .auto;
             sizes.setAuto(.block_size);
@@ -679,6 +750,7 @@ fn solveHeight(
 
 /// This is an implementation of CSS2§10.5 and CSS2§10.6.3.
 fn solveVerticalEdges(
+    env: *const zss.Environment,
     specified: SpecifiedValues(.vertical_edges),
     containing_block_width: Unit,
     border_styles: SpecifiedValues(.border_styles),
@@ -728,6 +800,10 @@ fn solveVerticalEdges(
             computed.padding_top = .{ .percentage = value };
             sizes.padding_block_start = solve.positivePercentage(value, containing_block_width);
         },
+        .calc => |value| {
+            computed.padding_top = .{ .calc = value };
+            sizes.padding_block_start = solve.positiveCalc(env, value, containing_block_width).?;
+        },
         .em => unreachable,
     }
     switch (specified.padding_bottom) {
@@ -739,6 +815,10 @@ fn solveVerticalEdges(
             computed.padding_bottom = .{ .percentage = value };
             sizes.padding_block_end = solve.positivePercentage(value, containing_block_width);
         },
+        .calc => |value| {
+            computed.padding_bottom = .{ .calc = value };
+            sizes.padding_block_end = solve.positiveCalc(env, value, containing_block_width).?;
+        },
         .em => unreachable,
     }
     switch (specified.margin_top) {
@@ -749,6 +829,10 @@ fn solveVerticalEdges(
         .percentage => |value| {
             computed.margin_top = .{ .percentage = value };
             sizes.margin_block_start = solve.percentage(value, containing_block_width);
+        },
+        .calc => |value| {
+            computed.margin_top = .{ .calc = value };
+            sizes.margin_block_start = solve.calc(env, value, containing_block_width).?;
         },
         .auto => {
             computed.margin_top = .auto;
@@ -764,6 +848,10 @@ fn solveVerticalEdges(
         .percentage => |value| {
             computed.margin_bottom = .{ .percentage = value };
             sizes.margin_block_end = solve.percentage(value, containing_block_width);
+        },
+        .calc => |value| {
+            computed.margin_bottom = .{ .calc = value };
+            sizes.margin_block_end = solve.calc(env, value, containing_block_width).?;
         },
         .auto => {
             computed.margin_bottom = .auto;
@@ -799,6 +887,10 @@ pub fn solveInsets(
                 switch (@field(computed, pair[0])) {
                     .px => |value| sizes.setValue(pair[1], solve.length(.px, value)),
                     .percentage => |percentage| sizes.setPercentage(pair[1], percentage),
+                    // Insets are positioned from the specified values
+                    // (BoxGen.solveInsets*); a math function is recorded like
+                    // a percentage.
+                    .calc => sizes.setPercentage(pair[1], 0),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
                 }
@@ -815,6 +907,10 @@ pub fn solveInsets(
                 switch (@field(computed, pair[0])) {
                     .px => |value| sizes.setValue(pair[1], solve.length(.px, value)),
                     .percentage => |percentage| sizes.setPercentage(pair[1], percentage),
+                    // Insets are positioned from the specified values
+                    // (BoxGen.solveInsets*); a math function is recorded like
+                    // a percentage.
+                    .calc => sizes.setPercentage(pair[1], 0),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
                 }
@@ -1186,7 +1282,7 @@ pub fn offsetChildBlocksFlex(
                 else
                     @min(available, intrinsic.blockBorderBoxSizes(layout, subtree, subtree_id, child_idx).max),
                 .fixed => bo.border_size.w,
-                .percentage => relayout.usedInlineSize(subtree, child_idx, container_width).content_w + (bo.border_size.w - bo.content_size.w),
+                .percentage => relayout.usedInlineSize(layout.inputs.env, subtree, child_idx, container_width).content_w + (bo.border_size.w - bo.content_size.w),
             };
             subtree.items(.margins)[child_idx].left = margins[0];
             subtree.items(.margins)[child_idx].right = margins[1];
