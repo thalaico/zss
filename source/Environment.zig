@@ -832,6 +832,10 @@ pub const NodeProperty = struct {
     rowspan: u16 = 1,
     aspect_ratio_w: u16 = 0,
     aspect_ratio_h: u16 = 0,
+    /// The natural size of a replaced element (a loaded image) in CSS px,
+    /// set by the host; 0 = none (Layout/replaced.zig).
+    natural_width: f32 = 0,
+    natural_height: f32 = 0,
 };
 
 const NodeProperties = struct {

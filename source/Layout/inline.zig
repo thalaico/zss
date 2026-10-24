@@ -24,6 +24,7 @@ const flow = @import("./flow.zig");
 const form_controls = @import("./form_controls.zig");
 const stf = @import("./shrink_to_fit.zig");
 const solve = @import("./solve.zig");
+const replaced = @import("./replaced.zig");
 
 const groups = zss.values.groups;
 const ComputedValues = groups.Tag.ComputedValues;
@@ -1482,6 +1483,8 @@ fn inlineBlockSolveSizes(
             used.setValue(.block_size, @max(0, h - v_adjustment));
         }
     }
+    // An atomic inline replaced element (CSS 2.1 §10.3.2, §10.6.2).
+    replaced.applyNaturalSize(env, computer.current.node, &used, used.isAuto(.inline_size));
 
     computer.setComputedValue(.box_gen, .content_width, computed.content_width);
     computer.setComputedValue(.box_gen, .horizontal_edges, computed.horizontal_edges);

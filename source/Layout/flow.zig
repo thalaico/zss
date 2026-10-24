@@ -16,6 +16,7 @@ const SizeMode = BoxGen.SizeMode;
 const BlockInfo = BoxGen.BlockInfo;
 
 const solve = @import("./solve.zig");
+const replaced = @import("./replaced.zig");
 const @"inline" = @import("./inline.zig");
 const form_controls = @import("./form_controls.zig");
 const relayout = @import("./relayout.zig");
@@ -396,6 +397,9 @@ pub fn solveAllSizes(
             sizes.setValue(.block_size, @max(0, h - v_adjustment));
         }
     }
+    // A replaced element's auto sizes come from its natural size (CSS 2.1
+    // §10.3.2, §10.6.2), before auto margins are resolved (§10.3.4).
+    replaced.applyNaturalSize(computer.env, computer.current.node, &sizes, sizes.isAuto(.inline_size));
     switch (containing_block_width) {
         .normal => {
             // Save auto flags before adjustWidthAndMargins clears them
