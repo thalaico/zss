@@ -33,8 +33,8 @@ pub const Inputs = struct {
 };
 
 /// Coarse per-run profile counters (nanoseconds / calls), reset by `run`
-/// and read by the host after layout. Two clock reads per shaped run is
-/// ~1 ms per 25k runs — cheap enough to leave on.
+/// and read by the host after layout, while `profile_enabled` is set (the
+/// clock reads in the per-node dispatch loop were ~5% of layout).
 pub const Profile = struct {
     shape_ns: u64 = 0,
     shape_calls: u64 = 0,
@@ -52,12 +52,15 @@ pub const Profile = struct {
     pop_flow_calls: u64 = 0,
 };
 pub var profile: Profile = .{};
+/// Collect `profile` (the host turns it on for diagnostics).
+pub var profile_enabled: bool = false;
 
 /// Profile clock: the CPU timestamp counter on x86_64 (a few ns; the
 /// libc-less `std.time.nanoTimestamp` is a real syscall here and 100k of
 /// them tripled layout time). Ticks are converted to ns by `run` against
 /// one wall-clock pair per layout.
 pub inline fn now() u64 {
+    if (!profile_enabled) return 0;
     if (@import("builtin").cpu.arch == .x86_64) {
         var lo: u32 = undefined;
         var hi: u32 = undefined;
