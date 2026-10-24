@@ -564,64 +564,129 @@ pub fn color(ctx: *Context) ?types.Color {
                 return light;
             }
 
-            const is_rgb = ctx.source_code.mapIdentifierValue(fn_loc, enum { rgb, rgba }, &.{
+            const kind = ctx.source_code.mapIdentifierValue(fn_loc, enum { rgb, hsl }, &.{
                 .{ "rgb", .rgb },
-                .{ "rgba", .rgba },
+                .{ "rgba", .rgb },
+                .{ "hsl", .hsl },
+                .{ "hsla", .hsl },
             });
-            if (is_rgb != null) {
-                // Enter the function's argument sequence so the parser cursor
-                // advances past the closing paren when we're done.
+            if (kind) |k| {
                 const state = ctx.enterSequence(item.index);
                 defer ctx.resetState(state);
-
-                var r_val: ?f32 = null;
-                var g_val: ?f32 = null;
-                var b_val: ?f32 = null;
-                var a_val: f32 = 255.0;
-                var arg_count: u8 = 0;
-                while (true) {
-                    const arg = ctx.next() orelse break;
-                    const tag = arg.tag;
-                    if (tag == .token_comma) continue;
-                    if (tag == .token_integer or tag == .token_number) {
-                        const num: f32 = if (tag == .token_integer)
-                            if (arg.index.extra(ctx.ast).integer) |i| @floatFromInt(i) else continue
-                        else
-                            arg.index.extra(ctx.ast).number orelse continue;
-                        switch (arg_count) {
-                            0 => r_val = num,
-                            1 => g_val = num,
-                            2 => b_val = num,
-                            3 => a_val = if (num <= 1.0) num * 255.0 else num,
-                            else => {},
-                        }
-                        arg_count += 1;
-                    } else if (tag == .token_percentage) {
-                        const num = arg.index.extra(ctx.ast).number orelse continue;
-                        switch (arg_count) {
-                            0 => r_val = num * 2.55,
-                            1 => g_val = num * 2.55,
-                            2 => b_val = num * 2.55,
-                            3 => a_val = num * 2.55,
-                            else => {},
-                        }
-                        arg_count += 1;
-                    } else break;
-                }
-                if (r_val != null and g_val != null and b_val != null) {
-                    const r: u8 = @intFromFloat(std.math.clamp(r_val.?, 0.0, 255.0));
-                    const g: u8 = @intFromFloat(std.math.clamp(g_val.?, 0.0, 255.0));
-                    const b: u8 = @intFromFloat(std.math.clamp(b_val.?, 0.0, 255.0));
-                    const a: u8 = @intFromFloat(std.math.clamp(a_val, 0.0, 255.0));
-                    const rgba: u32 = (@as(u32, r) << 24) | (@as(u32, g) << 16) | (@as(u32, b) << 8) | @as(u32, a);
-                    return .{ .rgba = rgba };
-                }
+                if (colorFunction(ctx, k == .hsl)) |rgba| return .{ .rgba = rgba };
+                return null;
             }
         }
         ctx.resetPoint(item.index);
     }
 
     return null;
+}
+
+/// One argument of rgb() / hsl(): a number, a percentage, or an angle.
+const ColorArg = union(enum) { number: f32, percentage: f32, degrees: f32 };
+
+fn colorArg(ctx: *Context) ?ColorArg {
+    const arg = ctx.next() orelse return null;
+    switch (arg.tag) {
+        .token_integer => return .{ .number = @floatFromInt(arg.index.extra(ctx.ast).integer orelse return null) },
+        .token_number => return .{ .number = arg.index.extra(ctx.ast).number orelse return null },
+        // Percentage tokens hold the fraction (50% = 0.5).
+        .token_percentage => return .{ .percentage = arg.index.extra(ctx.ast).number orelse return null },
+        .token_dimension => {
+            var children = arg.index.children(ctx.ast);
+            const unit_index = children.nextSkipSpaces(ctx.ast) orelse return null;
+            const number = arg.index.extra(ctx.ast).number orelse return null;
+            const unit_loc = unit_index.location(ctx.ast);
+            const factor: f32 = ctx.source_code.mapIdentifierValue(unit_loc, f32, &.{
+                .{ "deg", 1.0 },
+                .{ "grad", 0.9 },
+                .{ "rad", 180.0 / std.math.pi },
+                .{ "turn", 360.0 },
+            }) orelse return null;
+            return .{ .degrees = number * factor };
+        },
+        else => {
+            ctx.resetPoint(arg.index);
+            return null;
+        },
+    }
+}
+
+/// CSS Color 4 §4.1 / §7: the arguments of rgb()/rgba() or hsl()/hsla() in
+/// the legacy comma syntax or the modern space syntax with an optional
+/// `/ alpha`. Out-of-range channels clamp. Returns RGBA8 packed as 0xRRGGBBAA.
+fn colorFunction(ctx: *Context, is_hsl: bool) ?u32 {
+    var args: [4]ColorArg = undefined;
+    var count: usize = 3;
+    args[0] = colorArg(ctx) orelse return null;
+    // The legacy syntax separates every argument with a comma; the modern
+    // one uses spaces and takes the alpha after a slash.
+    const save = ctx.savePoint();
+    const legacy = if (ctx.next()) |sep| sep.tag == .token_comma else false;
+    if (!legacy) ctx.resetPoint(save);
+    args[1] = colorArg(ctx) orelse return null;
+    if (legacy) {
+        const sep = ctx.next() orelse return null;
+        if (sep.tag != .token_comma) return null;
+    }
+    args[2] = colorArg(ctx) orelse return null;
+    if (ctx.next()) |sep| {
+        const is_slash = sep.tag == .token_delim and ctx.source_code.text[@intFromEnum(sep.index.location(ctx.ast))] == '/';
+        if (if (legacy) sep.tag != .token_comma else !is_slash) return null;
+        args[3] = colorArg(ctx) orelse return null;
+        count = 4;
+    }
+    if (!ctx.empty()) return null;
+
+    const alpha: f32 = if (count == 4) switch (args[3]) {
+        .number => |n| n,
+        .percentage => |p| p,
+        .degrees => return null,
+    } else 1.0;
+
+    var rgb: [3]f32 = undefined;
+    if (is_hsl) {
+        const hue: f32 = switch (args[0]) {
+            .number => |n| n,
+            .degrees => |d| d,
+            .percentage => return null,
+        };
+        const sat: f32 = switch (args[1]) {
+            .percentage => |p| p,
+            .number => |n| n / 100.0,
+            .degrees => return null,
+        };
+        const light: f32 = switch (args[2]) {
+            .percentage => |p| p,
+            .number => |n| n / 100.0,
+            .degrees => return null,
+        };
+        rgb = hslToRgb(hue, std.math.clamp(sat, 0, 1), std.math.clamp(light, 0, 1));
+    } else {
+        for (0..3) |i| rgb[i] = switch (args[i]) {
+            .number => |n| n / 255.0,
+            .percentage => |p| p,
+            .degrees => return null,
+        };
+    }
+    var out: u32 = 0;
+    for (rgb) |channel| out = (out << 8) | @as(u32, @intFromFloat(@round(std.math.clamp(channel, 0, 1) * 255.0)));
+    return (out << 8) | @as(u32, @intFromFloat(@round(std.math.clamp(alpha, 0, 1) * 255.0)));
+}
+
+/// CSS Color 4 §7.1 hsl → sRGB.
+fn hslToRgb(hue_degrees: f32, sat: f32, light: f32) [3]f32 {
+    var h = @mod(hue_degrees, 360.0);
+    if (h < 0) h += 360.0;
+    const f = struct {
+        fn f(n: f32, hh: f32, s: f32, l: f32) f32 {
+            const k = @mod(n + hh / 30.0, 12.0);
+            const a = s * @min(l, 1 - l);
+            return l - a * @max(-1, @min(@min(k - 3, 9 - k), 1));
+        }
+    }.f;
+    return .{ f(0, h, sat, light), f(8, h, sat, light), f(4, h, sat, light) };
 }
 
 // Syntax:

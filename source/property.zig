@@ -392,6 +392,67 @@ pub fn parseDeclarationsFromAst(
     return block;
 }
 
+/// Whether the component sequence contains a var() function (at any depth).
+fn containsVar(ctx: *ValueContext, sequence: Ast.Sequence) bool {
+    var seq = sequence;
+    while (seq.nextKeepSpaces(ctx.ast)) |index| {
+        switch (index.tag(ctx.ast)) {
+            .function => {
+                if (ctx.source_code.identifierEqlIgnoreCase(index.location(ctx.ast), "var")) return true;
+                if (containsVar(ctx, index.children(ctx.ast))) return true;
+            },
+            .simple_block_curly, .simple_block_square, .simple_block_paren => {
+                if (containsVar(ctx, index.children(ctx.ast))) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// The source text of a declaration's value: from its first component to
+/// the `;` or `}` ending the declaration (outside strings, comments and
+/// nested blocks), without `!important` and surrounding white space.
+pub fn declarationValueText(ctx: *ValueContext, declaration_index: Ast.Index) ?[]const u8 {
+    var children = declaration_index.children(ctx.ast);
+    const first = children.nextSkipSpaces(ctx.ast) orelse return null;
+    const text = ctx.source_code.text;
+    const start: usize = @intFromEnum(first.location(ctx.ast));
+    var i = start;
+    var depth: usize = 0;
+    scan: while (i < text.len) : (i += 1) {
+        switch (text[i]) {
+            '"', '\'' => |quote| {
+                i += 1;
+                while (i < text.len and text[i] != quote) : (i += 1) {
+                    if (text[i] == '\\') i += 1;
+                }
+            },
+            '\\' => i += 1,
+            '/' => if (i + 1 < text.len and text[i + 1] == '*') {
+                const close = std.mem.indexOfPos(u8, text, i + 2, "*/") orelse break :scan;
+                i = close + 1;
+            },
+            '(', '[', '{' => depth += 1,
+            ')', ']' => depth -|= 1,
+            '}' => {
+                if (depth == 0) break :scan;
+                depth -= 1;
+            },
+            ';' => if (depth == 0) break :scan,
+            else => {},
+        }
+    }
+    var value = std.mem.trim(u8, text[start..@min(i, text.len)], " \t\r\n\x0c");
+    // `! important` ends the declaration (CSS Syntax 3 §5.4.6).
+    if (value.len >= "important".len and std.ascii.eqlIgnoreCase(value[value.len - "important".len ..], "important")) {
+        const before = std.mem.trimRight(u8, value[0 .. value.len - "important".len], " \t\r\n\x0c");
+        if (before.len > 0 and before[before.len - 1] == '!') value = std.mem.trimRight(u8, before[0 .. before.len - 1], " \t\r\n\x0c");
+    }
+    if (value.len == 0) return null;
+    return value;
+}
+
 fn parseCustomProperty(
     env: *Environment,
     ctx: *ValueContext,
@@ -420,29 +481,8 @@ fn parseCustomProperty(
     }
     if (name_len == 0) return; // Invalid custom property
     
-    // Get the value sequence
-    ctx.initDecl(declaration_index);
-    
-    // Extract value as raw text from source
-    // We need to find the start and end of the value in the source
-    const children = declaration_index.children(ctx.ast);
-    if (children.start == children.end) return; // No value
-    
-    const first_token_loc = children.start.location(ctx.ast);
-    var last_token_loc = first_token_loc;
-    var seq = children;
-    while (seq.nextKeepSpaces(ctx.ast)) |idx| {
-        last_token_loc = idx.location(ctx.ast);
-    }
-    
-    // Approximate: use location range
-    const value_start = @intFromEnum(first_token_loc);
-    const value_end = @intFromEnum(last_token_loc) + 10; // +10 to include last token
-    const value_slice = if (value_end <= ctx.source_code.text.len)
-        ctx.source_code.text[value_start..value_end]
-    else
-        ctx.source_code.text[value_start..];
-    
+    const value_slice = declarationValueText(ctx, declaration_index) orelse return;
+
     // Add to current declaration block
     try env.decls.addCustomProperty(
         env.allocator,
@@ -478,6 +518,30 @@ fn parseDeclaration(
     const property = ctx.source_code.mapIdentifierEnum(location, Property) orelse {
         return;
     };
+    // CSS Variables 1 §3: a value containing var() is parsed only after
+    // substitution, per element; until then it claims the property's
+    // fields with `unset` in the cascade (`zss.custom_properties`).
+    if (property != .all and containsVar(ctx, declaration_index.children(ctx.ast))) {
+        switch (property) {
+            .all => unreachable,
+            inline else => |comptime_property| {
+                var mask: u32 = 0;
+                var bit: u5 = 0;
+                inline for (comptime comptime_property.affectedFields()) |group_fields| {
+                    inline for (group_fields[1]) |field| {
+                        const group = group_fields[0];
+                        if (!env.decls.currentHasValue(group, comptime std.enums.nameCast(group.FieldEnum(), field), importance)) mask |= @as(u32, 1) << bit;
+                        bit +%= 1;
+                    }
+                }
+                if (mask == 0) return;
+                const text = declarationValueText(ctx, declaration_index) orelse return;
+                try env.decls.addPending(env.allocator, .{ .property = comptime_property, .text = text, .importance = importance, .mask = mask });
+                try env.decls.addValues(env.allocator, importance, comptime_property.declaredValueFromCwk(.unset));
+            },
+        }
+        return;
+    }
     switch (property) {
         .all => {
             const cwk = parse.all(ctx, declaration_index) orelse return;
