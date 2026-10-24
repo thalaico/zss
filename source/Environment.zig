@@ -670,6 +670,12 @@ pub fn pseudoLink(env: *const Environment, node: NodeId) ?PseudoLink {
     return env.pseudo_links.get(node.value);
 }
 
+/// The ::before / ::after pseudo-element node generated for `element`, if
+/// it has one (its `content` computes to something other than none).
+pub fn pseudoElementNode(env: *const Environment, element: NodeId, pseudo: zss.selectors.PseudoElement) ?NodeId {
+    return env.pseudo_nodes.get(.{ .node = element, .pseudo = pseudo });
+}
+
 /// Whether `node` is a ::before / ::after pseudo-element node.
 pub fn isPseudoElement(env: *const Environment, node: NodeId) bool {
     const link = env.pseudoLink(node) orelse return false;
