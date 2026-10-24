@@ -154,6 +154,7 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
     @import("Layout/inline.zig").resetShapeCache();
     var box_tree = BoxTree{ .allocator = allocator, .viewport = layout.viewport };
     errdefer box_tree.deinit();
+    try box_tree.node_to_generated_box.ensureNodes(allocator, layout.inputs.env.node_count);
     layout.box_tree = .{ .ptr = &box_tree };
     // The previous tree's remaining parts are freed whatever happens.
     defer if (layout.incremental) |inc| {
@@ -166,8 +167,7 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         layout.computer.active_stage = .box_gen;
         if (layout.incremental) |inc| {
             if (std.meta.eql(inc.previous.viewport, layout.viewport)) {
-                try layout.reuse_state.begin(layout.allocator, inc.previous);
-                try box_tree.node_to_generated_box.ensureTotalCapacity(allocator, inc.previous.node_to_generated_box.count());
+                try layout.reuse_state.begin(layout.allocator, inc.previous, layout.inputs.env.node_count);
                 try layout.computer.adoptTable(.box_gen, allocator, &inc.previous.computed_styles, layout.inputs.env.node_count, inc.blocked);
             } else {
                 layout.reuse_state.active = false;

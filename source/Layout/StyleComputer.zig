@@ -37,7 +37,8 @@ pub const NodeComputedValues = BoxGenComputedValues;
 /// `NodeId.value`. Owned by the `BoxTree` that layout produced; freed by
 /// `BoxTree.deinit`. Slices inside the values (multi-value groups such as
 /// `background`) point into the `Environment`'s cascade storage, so the
-/// table is only valid while that `Environment` is alive.
+/// table is only valid while that `Environment` is alive. It may be longer
+/// than the document's node count (empty entries; `adoptTable`).
 pub const ComputedStyles = struct {
     nodes: []NodeComputedValues = &.{},
 
@@ -168,18 +169,20 @@ pub fn adoptTable(sc: *StyleComputer, comptime stage: Stage, allocator: Allocato
     const s = sc.stagePtr(stage);
     var nodes = previous.nodes;
     previous.nodes = &.{};
+    // The table may be longer than the document (entries past the node
+    // count are empty); it grows by a quarter at a time, as mutations add
+    // nodes a few at a time and each growth copies it (~1 KB per node).
     if (nodes.len < count) {
         const old_len = nodes.len;
-        nodes = allocator.realloc(nodes, count) catch |err| {
+        const new_len = @max(count, old_len + old_len / 4);
+        nodes = allocator.realloc(nodes, new_len) catch |err| {
             allocator.free(nodes);
             return err;
         };
         @memset(nodes[old_len..], .{});
-    } else if (nodes.len > count) {
-        nodes = allocator.realloc(nodes, count) catch nodes[0..count];
     }
     s.nodes = nodes;
-    for (nodes, 0..) |*entry, value| {
+    for (nodes[0..count], 0..) |*entry, value| {
         if (value >= blocked.len or blocked[value]) entry.* = .{};
     }
     try s.visited.resize(sc.allocator, count, false);
@@ -330,7 +333,7 @@ fn completeComputedValues(sc: *StyleComputer, comptime stage: Stage) void {
 /// parent on the fly, so node order does not matter.
 pub fn completeTable(sc: *StyleComputer, comptime stage: Stage, group: Environment.NodeGroup) !void {
     const s = sc.stagePtr(stage);
-    for (0..s.nodes.len) |index| {
+    for (0..@min(s.nodes.len, sc.env.node_count)) |index| {
         const node: NodeId = .{ .group = group, .value = index };
         // A retained table: an entry layout neither visited nor reset is
         // the previous layout's complete one, still valid.

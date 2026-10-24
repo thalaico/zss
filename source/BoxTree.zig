@@ -16,7 +16,7 @@ subtrees: ArrayListUnmanaged(*Subtree) = .{},
 initial_containing_block: BlockRef = undefined, // TODO: make this `?BlockRef`
 ifcs: ArrayListUnmanaged(*InlineFormattingContext) = .{},
 sct: StackingContextTree = .{},
-node_to_generated_box: std.AutoHashMapUnmanaged(NodeId, GeneratedBox) = .{},
+node_to_generated_box: NodeBoxes = .{},
 background_images: BackgroundImages = .{},
 /// Per-element computed values from the layout that produced this tree.
 /// See `Layout.StyleComputer.ComputedStyles` for lifetime and coverage.
@@ -697,6 +697,43 @@ pub const StackingContextTree = struct {
             try zss.debug.skipArrayIterate(Size, context.view.items(.skip), context, callback, allocator);
         }
     };
+};
+
+/// The box(es) each node generated, by node value (node values are dense
+/// and shared by all node groups).
+pub const NodeBoxes = struct {
+    entries: []?GeneratedBox = &.{},
+    len: u32 = 0,
+
+    pub fn deinit(nb: *NodeBoxes, allocator: Allocator) void {
+        allocator.free(nb.entries);
+        nb.* = .{};
+    }
+
+    /// Room for nodes with values below `count`.
+    pub fn ensureNodes(nb: *NodeBoxes, allocator: Allocator, node_count: usize) !void {
+        if (nb.entries.len >= node_count) return;
+        const old_len = nb.entries.len;
+        nb.entries = try allocator.realloc(nb.entries, @max(node_count, old_len + old_len / 4));
+        @memset(nb.entries[old_len..], null);
+    }
+
+    pub fn get(nb: *const NodeBoxes, node: NodeId) ?GeneratedBox {
+        if (node.value >= nb.entries.len) return null;
+        return nb.entries[node.value];
+    }
+
+    pub fn putNoClobber(nb: *NodeBoxes, allocator: Allocator, node: NodeId, generated_box: GeneratedBox) !void {
+        try nb.ensureNodes(allocator, node.value + 1);
+        assert(nb.entries[node.value] == null);
+        nb.entries[node.value] = generated_box;
+        nb.len += 1;
+    }
+
+    /// The number of nodes with an entry.
+    pub fn count(nb: *const NodeBoxes) u32 {
+        return nb.len;
+    }
 };
 
 /// The type of box(es) that a node generates.

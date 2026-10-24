@@ -135,6 +135,7 @@ pub fn run(box_gen: *BoxGen) !void {
     box_gen.table_context = table.Context.init(allocator);
     const t_analyze = Layout.now();
     try analyzeAllNodes(box_gen);
+    reuse.finish(box_gen.getLayout());
     Layout.profile.analyze_ns += Layout.now() - t_analyze;
     // Absolutely positioned boxes: final sizes and positions.
     const t_abs = Layout.now();

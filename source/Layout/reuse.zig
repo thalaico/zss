@@ -66,15 +66,32 @@ pub const State = struct {
     /// Elements taken over in this layout (statistics for the host).
     reused_elements: u32 = 0,
     reused_blocks: u32 = 0,
+    /// The elements whose boxes were taken over, and their blocks in the
+    /// new tree. Hosts that keep derived geometry can move it with them.
+    ranges: std.ArrayListUnmanaged(Range) = .empty,
+    /// By node value: 1 + the index in `ranges` of the range whose boxes
+    /// the node's boxes are part of, or 0.
+    node_range: std.ArrayListUnmanaged(u32) = .empty,
+    /// By old IFC id: 1 + the index of the range it was taken with.
+    ifc_range: std.ArrayListUnmanaged(u32) = .empty,
+
+    pub const Range = struct { root: NodeId, block: BlockRef };
 
     pub fn deinit(state: *State, allocator: Allocator) void {
+        state.ranges.deinit(allocator);
+        state.node_range.deinit(allocator);
+        state.ifc_range.deinit(allocator);
         state.taken_ifcs.deinit(allocator);
         state.new_ifc.deinit(allocator);
         state.taken_subtrees.deinit(allocator);
         state.new_subtree.deinit(allocator);
     }
 
-    pub fn begin(state: *State, allocator: Allocator, previous: *const BoxTree) !void {
+    pub fn begin(state: *State, allocator: Allocator, previous: *const BoxTree, node_count: usize) !void {
+        state.ranges.clearRetainingCapacity();
+        try state.node_range.resize(allocator, node_count);
+        @memset(state.node_range.items, 0);
+        try state.ifc_range.resize(allocator, previous.ifcs.items.len);
         try state.taken_ifcs.resize(allocator, previous.ifcs.items.len);
         @memset(state.taken_ifcs.items, false);
         try state.new_ifc.resize(allocator, previous.ifcs.items.len);
@@ -248,8 +265,8 @@ pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bo
         @memcpy(new_view.items(field)[start..][0..skip], old_view.items(field)[ref.index..][0..skip]);
     }
     const delta: i32 = @as(i32, @intCast(start)) - @as(i32, ref.index);
-    try takeBlocks(box_gen, previous, new_subtree, @intCast(start), skip, delta);
-    try remapGeneratedBoxes(layout, previous, node, ref.subtree, delta, new_subtree.id);
+    try state.ranges.append(layout.allocator, .{ .root = node, .block = .{ .subtree = new_subtree.id, .index = @intCast(start) } });
+    try takeBlocks(box_gen, previous, ref.subtree, new_subtree, @intCast(start), skip, delta);
 
     layout.computer.keepCurrentNode(.box_gen);
     box_gen.addSkip(skip);
@@ -283,14 +300,18 @@ fn rangeIsSelfContained(previous: *const BoxTree, view: Subtree.View, index: Sub
 /// Renumber what the blocks [start, start + count) of `subtree` (copied
 /// from the previous tree, `delta` places later) refer to, moving their
 /// inline formatting contexts and child subtrees to the new tree.
-fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, subtree: *Subtree, start: Subtree.Size, count: Subtree.Size, delta: i32) !void {
+fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, old_subtree: Subtree.Id, subtree: *Subtree, start: Subtree.Size, count: Subtree.Size, delta: i32) !void {
     const layout = box_gen.getLayout();
     const new_tree = layout.box_tree.ptr;
     const state = &layout.reuse_state;
+    // Nothing below resizes `subtree`'s blocks.
+    const view = subtree.view();
+    const types = view.items(.type);
+    const nodes = view.items(.node);
+    const backgrounds = view.items(.background);
     for (start..start + count) |i| {
-        const view = subtree.view();
         const here: BlockRef = .{ .subtree = subtree.id, .index = @intCast(i) };
-        switch (view.items(.type)[i]) {
+        switch (types[i]) {
             .block => {},
             .ifc_container => |old_id| {
                 const ifc = previous.getIfc(old_id);
@@ -298,11 +319,12 @@ fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, subtree: *Subtree, start: Su
                 try new_tree.ifcs.append(new_tree.allocator, ifc);
                 state.taken_ifcs.items[@intFromEnum(old_id)] = true;
                 state.new_ifc.items[@intFromEnum(old_id)] = @enumFromInt(new_id_int);
+                state.ifc_range.items[@intFromEnum(old_id)] = @intCast(state.ranges.items.len);
                 ifc.id = @enumFromInt(new_id_int);
                 ifc.parent_block = here;
                 if (delta != 0) shiftInlineBlocks(ifc, delta);
                 try box_gen.sct_builder.addIfc(new_tree, ifc.id);
-                view.items(.type)[i] = .{ .ifc_container = ifc.id };
+                types[i] = .{ .ifc_container = ifc.id };
             },
             .subtree_proxy => |old_id| {
                 const child = previous.getSubtree(old_id);
@@ -312,13 +334,24 @@ fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, subtree: *Subtree, start: Su
                 state.new_subtree.items[@intFromEnum(old_id)] = @enumFromInt(new_id_int);
                 child.id = @enumFromInt(new_id_int);
                 child.parent = here;
-                view.items(.type)[i] = .{ .subtree_proxy = child.id };
-                try takeBlocks(box_gen, previous, child, 0, child.size(), 0);
+                types[i] = .{ .subtree_proxy = child.id };
+                try takeBlocks(box_gen, previous, old_id, child, 0, child.size(), 0);
             },
         }
-        // The background is active on ordinary blocks only.
-        if (subtree.view().items(.type)[i] != .block) continue;
-        const background = &subtree.view().items(.background)[i];
+        // The background and node are active on ordinary blocks only.
+        if (types[i] != .block) continue;
+        if (nodes[i]) |n| {
+            // The node's entry, if it names this block.
+            const old_ref: BlockRef = .{ .subtree = old_subtree, .index = @intCast(@as(i32, @intCast(i)) - delta) };
+            if (previous.node_to_generated_box.get(n)) |old| switch (old) {
+                .block_ref => |r| if (std.meta.eql(r, old_ref)) {
+                    try layout.box_tree.ptr.node_to_generated_box.putNoClobber(new_tree.allocator, n, .{ .block_ref = here });
+                    if (n.value < state.node_range.items.len) state.node_range.items[n.value] = @intCast(state.ranges.items.len);
+                },
+                else => {},
+            };
+        }
+        const background = &backgrounds[i];
         if (previous.background_images.get(background.images)) |images| {
             const handle, const copy = try layout.box_tree.allocBackgroundImages(@intCast(images.len));
             @memcpy(copy, images);
@@ -346,21 +379,24 @@ fn shiftInlineBlocks(ifc: *Ifc, delta: i32) void {
     }
 }
 
-/// Carry the node-to-box entries of `root` and its descendants over to the
-/// new tree, renumbered.
-fn remapGeneratedBoxes(layout: *Layout, previous: *const BoxTree, root: NodeId, old_subtree: Subtree.Id, delta: i32, new_subtree: Subtree.Id) !void {
+/// After box generation: the node-to-box entries of the inline boxes and
+/// text in the inline formatting contexts taken over, renumbered (block
+/// entries are carried over as their blocks are copied, `takeBlocks`).
+pub fn finish(layout: *Layout) void {
     const state = &layout.reuse_state;
+    if (!state.active) return;
+    const previous = layout.incremental.?.previous;
+    const new_entries = layout.box_tree.ptr.node_to_generated_box.entries;
     const map = &layout.box_tree.ptr.node_to_generated_box;
-    var it = SubtreeIterator{ .env = layout.inputs.env, .root = root, .next_node = root };
-    while (it.next()) |n| {
-        const old = previous.node_to_generated_box.get(n) orelse continue;
+    for (previous.node_to_generated_box.entries, 0..) |maybe_old, value| {
+        const old = maybe_old orelse continue;
+        const old_ifc: Ifc.Id = switch (old) {
+            .block_ref => continue,
+            .inline_box => |b| b.ifc_id,
+            .text => |id| id,
+        };
         const new: GeneratedBox = switch (old) {
-            .block_ref => |r| if (r.subtree == old_subtree)
-                .{ .block_ref = .{ .subtree = new_subtree, .index = @intCast(@as(i32, r.index) + delta) } }
-            else if (state.taken_subtrees.items[@intFromEnum(r.subtree)])
-                .{ .block_ref = .{ .subtree = state.new_subtree.items[@intFromEnum(r.subtree)], .index = r.index } }
-            else
-                continue,
+            .block_ref => unreachable,
             .inline_box => |b| if (state.taken_ifcs.items[@intFromEnum(b.ifc_id)])
                 .{ .inline_box = .{ .ifc_id = state.new_ifc.items[@intFromEnum(b.ifc_id)], .index = b.index } }
             else
@@ -370,10 +406,13 @@ fn remapGeneratedBoxes(layout: *Layout, previous: *const BoxTree, root: NodeId, 
             else
                 continue,
         };
-        try map.put(layout.box_tree.ptr.allocator, n, new);
+        // Taken-over content is never generated again in the same layout.
+        if (value >= new_entries.len or new_entries[value] != null) continue;
+        new_entries[value] = new;
+        map.len += 1;
+        if (value < state.node_range.items.len) state.node_range.items[value] = state.ifc_range.items[@intFromEnum(old_ifc)];
     }
 }
-
 
 test "an incremental layout takes over unchanged boxes and matches a fresh one" {
     const allocator = std.testing.allocator;
@@ -450,10 +489,9 @@ test "an incremental layout takes over unchanged boxes and matches a fresh one" 
             try std.testing.expectEqual(f.parent_block, i.parent_block);
         }
         try std.testing.expectEqual(fresh.node_to_generated_box.count(), incremental.node_to_generated_box.count());
-        var it = fresh.node_to_generated_box.iterator();
-        while (it.next()) |entry| {
-            const other = incremental.node_to_generated_box.get(entry.key_ptr.*) orelse return error.TestFailure;
-            try std.testing.expect(std.meta.eql(entry.value_ptr.*, other));
+        for (fresh.node_to_generated_box.entries, 0..) |entry, value| {
+            const node: NodeId = .{ .group = root.group, .value = value };
+            try std.testing.expect(std.meta.eql(entry, incremental.node_to_generated_box.get(node)));
         }
         const fresh_a = fresh.computed_styles.get(a) orelse return error.TestFailure;
         const inc_a = incremental.computed_styles.get(a) orelse return error.TestFailure;
