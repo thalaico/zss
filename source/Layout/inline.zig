@@ -2253,6 +2253,9 @@ pub fn splitIntoLineBoxes(
 /// item), synthesized from the item's bottom border edge when the item has
 /// none.
 fn inlineBlockBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size) ?Unit {
+    if (subtree.items(.node)[index]) |node| {
+        if (form_controls.baseline(layout, node, subtree.items(.box_offsets)[index])) |b| return b;
+    }
     return switch (subtree.items(.inner_block)[index]) {
         .flex, .grid => boxBaseline(layout, subtree, index, .first),
         .flow => if (subtree.items(.overflow)[index] != .visible) null else boxBaseline(layout, subtree, index, .last),

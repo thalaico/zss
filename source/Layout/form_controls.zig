@@ -50,28 +50,78 @@ const Kind = enum { text_input, textarea, select };
 /// input types that have no text entry widget (hidden, checkbox, radio,
 /// buttons, file, range, color: their boxes come from the UA stylesheet or
 /// their content).
+/// A control's font and its normal line metrics.
+const ControlFont = struct {
+    props: zss.values.groups.Tag.SpecifiedValues(.font),
+    handle: Fonts.Handle,
+    size_px: f32,
+    /// CSS `line-height: normal` the way Blink computes it: ascent, descent
+    /// and line gap each rounded to whole pixels, then summed.
+    line_height_px: f32,
+    /// The rounded ascent: the baseline's distance below the line's top.
+    ascent_px: f32,
+};
+
+fn controlFont(layout: *Layout, node: NodeId) ?ControlFont {
+    const computer = &layout.computer;
+    const font_props = computer.getSpecifiedValueForNode(.box_gen, .font, node);
+    if (font_props.font == .none) return null;
+    const font_size_px = computer.resolvedFontSizePxForNode(.box_gen, node);
+    const fonts = layout.inputs.fonts;
+    const handle = fonts.queryFamily(font_props.font_family);
+    if (handle == .invalid) return null;
+    const design = fonts.getDesignMetrics(handle);
+    if (design.units_per_em == 0) return null;
+    const scale = font_size_px / @as(f32, @floatFromInt(design.units_per_em));
+    const ascent_px = @round(@as(f32, @floatFromInt(design.ascender)) * scale);
+    return .{
+        .props = font_props,
+        .handle = handle,
+        .size_px = font_size_px,
+        .line_height_px = ascent_px +
+            @round(@as(f32, @floatFromInt(design.descender)) * scale) +
+            @round(@as(f32, @floatFromInt(design.line_gap)) * scale),
+        .ascent_px = ascent_px,
+    };
+}
+
+/// The baseline of a form control as an inline-level box, from its
+/// border-box top; null for other elements. Blink aligns a
+/// control by its inner text's baseline, which is a line of the control's
+/// font centred in the content box — empty or not (CSS 2.1 §10.8.1 would
+/// give an empty control no baseline; HTML Rendering leaves controls to
+/// the UA).
+pub fn baseline(layout: *Layout, node: NodeId, box_offsets: zss.BoxTree.BoxOffsets) ?zss.math.Unit {
+    const env = layout.inputs.env;
+    // A checkbox or radio button aligns by its border-box bottom, its
+    // bottom margin below the baseline (Blink `LayoutTheme::BaselinePosition`).
+    if (env.nodeTagEql(node, "input")) {
+        var buf: [32]u8 = undefined;
+        if (attributeString(env, node, "type", &buf)) |t| {
+            if (std.ascii.eqlIgnoreCase(t, "checkbox") or std.ascii.eqlIgnoreCase(t, "radio")) return box_offsets.border_size.h;
+        }
+    }
+    const kind = kindOf(env, node) orelse return null;
+    if (kind == .textarea) return null;
+    const font = controlFont(layout, node) orelse return null;
+    const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
+    const line_h: zss.math.Unit = @intFromFloat(font.line_height_px * upp);
+    const ascent: zss.math.Unit = @intFromFloat(font.ascent_px * upp);
+    return box_offsets.content_pos.y + @divFloor(box_offsets.content_size.h - line_h, 2) + ascent;
+}
+
 pub fn applyIntrinsicSizes(layout: *Layout, node: NodeId, sizes: *BlockUsedSizes) void {
     const env = layout.inputs.env;
     const kind = kindOf(env, node) orelse return;
     if (sizes.get(.inline_size) != null and !sizes.was_auto_inline_size and sizes.get(.block_size) != null) return;
 
-    const computer = &layout.computer;
-    const font_props = computer.getSpecifiedValueForNode(.box_gen, .font, node);
-    if (font_props.font == .none) return;
-    const font_size_px = computer.resolvedFontSizePxForNode(.box_gen, node);
+    const font = controlFont(layout, node) orelse return;
+    const font_props = font.props;
+    const font_size_px = font.size_px;
     const fonts = layout.inputs.fonts;
-    const handle = fonts.queryFamily(font_props.font_family);
-    if (handle == .invalid) return;
-
-    const design = fonts.getDesignMetrics(handle);
-    if (design.units_per_em == 0) return;
+    const handle = font.handle;
     const chars = fonts.getCharWidthMetrics(handle, font_size_px);
-    // CSS `line-height: normal` the way Blink computes it: ascent, descent
-    // and line gap each rounded to whole pixels, then summed.
-    const scale = font_size_px / @as(f32, @floatFromInt(design.units_per_em));
-    const line_height_px = @round(@as(f32, @floatFromInt(design.ascender)) * scale) +
-        @round(@as(f32, @floatFromInt(design.descender)) * scale) +
-        @round(@as(f32, @floatFromInt(design.line_gap)) * scale);
+    const line_height_px = font.line_height_px;
 
     var width_px: f32 = 0;
     var height_px: f32 = 0;
@@ -99,11 +149,18 @@ pub fn applyIntrinsicSizes(layout: *Layout, node: NodeId, sizes: *BlockUsedSizes
     // the containing block's width by `adjustWidthAndMargins`; the flag says
     // it was auto. Controls do not stretch (Chromium: a `display: block`
     // input keeps its intrinsic width, left-aligned).
+    // The sizes are the control's own, not its content's: its intrinsic
+    // contributions (shrink-to-fit floats and absolutely positioned boxes,
+    // flex and table sizing) are that width, and relayout keeps the height.
     if (sizes.get(.inline_size) == null or sizes.was_auto_inline_size) {
         sizes.setValue(.inline_size, solve.positiveLength(.px, width_px));
         sizes.was_auto_inline_size = false;
+        sizes.intrinsic.width = .fixed;
     }
-    if (sizes.get(.block_size) == null) sizes.setValue(.block_size, solve.positiveLength(.px, height_px));
+    if (sizes.get(.block_size) == null) {
+        sizes.setValue(.block_size, solve.positiveLength(.px, height_px));
+        sizes.intrinsic.height_auto = false;
+    }
 }
 
 fn kindOf(env: *const Environment, node: NodeId) ?Kind {

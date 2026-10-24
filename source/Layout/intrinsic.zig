@@ -135,7 +135,7 @@ fn contentSizesTo(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
                 if (flex_row != null and !ifc.has_visible_content) continue;
                 break :blk ifcSizes(layout, ifc, subtree, subtree_id);
             },
-            .subtree_proxy => |child_id| blockContribution(layout, box_tree.getSubtree(child_id).view(), child_id, 0),
+            .subtree_proxy => |child_id| subtreeSizes(layout, child_id),
             else => blockContribution(layout, subtree, subtree_id, child),
         };
         if (flex_row) |info| {
@@ -147,6 +147,26 @@ fn contentSizesTo(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
             result.min = if (info.flex_wrap == .nowrap) result.min + sizes.min + gap else @max(result.min, sizes.min);
             items += 1;
         } else result.include(sizes);
+    }
+    return result;
+}
+
+/// The content a subtree proxy stands for: the widest contribution among
+/// the subtree's top-level entries (inline formatting contexts, blocks and
+/// further proxies).
+fn subtreeSizes(layout: *Layout, subtree_id: Subtree.Id) Sizes {
+    const box_tree = layout.box_tree.ptr;
+    const view = box_tree.getSubtree(subtree_id).view();
+    const skips = view.items(.skip);
+    var result: Sizes = .{};
+    var entry: Subtree.Size = 0;
+    while (entry < view.len) : (entry += skips[entry]) {
+        if (view.items(.out_of_flow)[entry]) continue;
+        result.include(switch (view.items(.type)[entry]) {
+            .ifc_container => |ifc_id| ifcSizes(layout, box_tree.getIfc(ifc_id), view, subtree_id),
+            .subtree_proxy => |child_id| subtreeSizes(layout, child_id),
+            else => blockContribution(layout, view, subtree_id, entry),
+        });
     }
     return result;
 }
