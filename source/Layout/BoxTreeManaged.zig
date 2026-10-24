@@ -38,6 +38,8 @@ pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size
     subtree.blocks.items(.min_block_size)[new_len - 1] = 0;
     subtree.blocks.items(.max_block_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
     subtree.blocks.items(.bfc_floats)[new_len - 1] = false;
+    subtree.blocks.items(.containing_block)[new_len - 1] = .{ -1, -1 };
+    subtree.blocks.items(.creates_absolute_cb)[new_len - 1] = false;
     return new_len - 1;
 }
 

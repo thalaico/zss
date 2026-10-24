@@ -214,7 +214,9 @@ fn pushBlock(
     // The operations here must have corresponding reverse operations in `popBlock`.
     box_gen.bfc_stack.top.? += 1;
     const box_style = BoxStyle{ .outer = .{ .block = .flow }, .position = position };
+    const cb = box_gen.containingBlockSize();
     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+    box_gen.getLayout().box_tree.ptr.getSubtree(ref.subtree).blocks.items(.containing_block)[ref.index] = .{ cb.width, cb.height orelse -1 };
     try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
     try box_gen.getLayout().pushNode();
 }

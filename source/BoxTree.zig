@@ -21,17 +21,28 @@ background_images: BackgroundImages = .{},
 /// Per-element computed values from the layout that produced this tree.
 /// See `Layout.StyleComputer.ComputedStyles` for lifetime and coverage.
 computed_styles: zss.Layout.StyleComputer.ComputedStyles = .empty,
+/// The viewport the tree was laid out for.
+viewport: math.Size = .{ .w = 0, .h = 0 },
 allocator: Allocator,
 debug: Debug = .{},
 
 pub fn deinit(box_tree: *BoxTree) void {
+    box_tree.deinitExcept(&.{}, &.{});
+}
+
+/// `deinit`, but the subtrees and inline formatting contexts flagged in
+/// `kept_subtrees` / `kept_ifcs` (by id) are left alone: a later layout
+/// took them over (`Layout/reuse.zig`).
+pub fn deinitExcept(box_tree: *BoxTree, kept_subtrees: []const bool, kept_ifcs: []const bool) void {
     box_tree.computed_styles.deinit(box_tree.allocator);
-    for (box_tree.subtrees.items) |subtree| {
+    for (box_tree.subtrees.items, 0..) |subtree, i| {
+        if (i < kept_subtrees.len and kept_subtrees[i]) continue;
         subtree.deinit(box_tree.allocator);
         box_tree.allocator.destroy(subtree);
     }
     box_tree.subtrees.deinit(box_tree.allocator);
-    for (box_tree.ifcs.items) |ctx| {
+    for (box_tree.ifcs.items, 0..) |ctx, i| {
+        if (i < kept_ifcs.len and kept_ifcs[i]) continue;
         ctx.deinit(box_tree.allocator);
         box_tree.allocator.destroy(ctx);
     }
@@ -346,6 +357,12 @@ pub const IntrinsicFlags = packed struct(u8) {
         /// This block is a BFC root with floats in its formatting context:
         /// its content is laid out by `Layout/bfc.zig`.
         bfc_floats: bool = false,
+        /// The containing block (width, height; -1 = auto height) a block
+        /// in normal flow was generated against, or -1s for other blocks.
+        /// A later layout may take over the block's boxes when it is
+        /// unchanged and generated against the same containing block
+        /// (`Layout/reuse.zig`).
+        containing_block: [2]math.Unit = .{ -1, -1 },
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

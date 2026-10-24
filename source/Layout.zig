@@ -15,6 +15,8 @@ const NodeId = Environment.NodeId;
 pub const BoxGen = @import("Layout/BoxGen.zig");
 pub const BoxTreeManaged = @import("Layout/BoxTreeManaged.zig");
 pub const StyleComputer = @import("Layout/StyleComputer.zig");
+pub const reuse = @import("Layout/reuse.zig");
+pub const Incremental = reuse.Incremental;
 
 box_tree: BoxTreeManaged,
 computer: StyleComputer,
@@ -23,6 +25,11 @@ inputs: Inputs,
 allocator: Allocator,
 node_stack: zss.Stack(?NodeId),
 box_gen: BoxGen,
+/// Lay out again from the previous layout of the same document: unchanged
+/// elements take over their boxes (`Layout/reuse.zig`). Set before `run`,
+/// which consumes `previous`.
+incremental: ?Incremental = null,
+reuse_state: reuse.State = .{},
 
 pub const Inputs = struct {
     width: u32,
@@ -121,6 +128,7 @@ pub fn init(
 }
 
 pub fn deinit(layout: *Layout) void {
+    layout.reuse_state.deinit(layout.allocator);
     layout.computer.deinit();
     layout.node_stack.deinit(layout.allocator);
     layout.box_gen.deinit();
@@ -144,14 +152,28 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
         if (ticks > 0) ns_per_tick = wall / @as(f64, @floatFromInt(ticks));
     }
     @import("Layout/inline.zig").resetShapeCache();
-    var box_tree = BoxTree{ .allocator = allocator };
+    var box_tree = BoxTree{ .allocator = allocator, .viewport = layout.viewport };
     errdefer box_tree.deinit();
     layout.box_tree = .{ .ptr = &box_tree };
+    // The previous tree's remaining parts are freed whatever happens.
+    defer if (layout.incremental) |inc| {
+        layout.reuse_state.releasePrevious(inc.previous);
+        layout.incremental = null;
+    };
 
     {
         layout.node_stack.top = layout.inputs.env.root_node;
         layout.computer.active_stage = .box_gen;
-        try layout.computer.ensureCapacity(.box_gen, allocator, layout.inputs.env.node_count);
+        if (layout.incremental) |inc| {
+            if (std.meta.eql(inc.previous.viewport, layout.viewport)) {
+                try layout.reuse_state.begin(layout.allocator, inc.previous);
+                try box_tree.node_to_generated_box.ensureTotalCapacity(allocator, inc.previous.node_to_generated_box.count());
+                try layout.computer.adoptTable(.box_gen, allocator, &inc.previous.computed_styles, layout.inputs.env.node_count, inc.blocked);
+            } else {
+                layout.reuse_state.active = false;
+                try layout.computer.ensureCapacity(.box_gen, allocator, layout.inputs.env.node_count);
+            }
+        } else try layout.computer.ensureCapacity(.box_gen, allocator, layout.inputs.env.node_count);
         errdefer layout.computer.deinitStage(.box_gen, allocator);
         try layout.box_gen.run();
         if (layout.inputs.env.root_node) |root| {

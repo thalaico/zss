@@ -26,6 +26,7 @@ const solve = @import("solve.zig");
 const stf = @import("shrink_to_fit.zig");
 const positioned = @import("positioned.zig");
 const table = @import("table.zig");
+const reuse = @import("reuse.zig");
 pub const Absolute = @import("AbsoluteContainingBlocks.zig");
 pub const StackingContextTreeBuilder = @import("StackingContextTreeBuilder.zig");
 
@@ -90,7 +91,7 @@ pub const FlexContainerInfo = struct {
     flex_wrap: zss.values.types.FlexWrap,
 };
 
-const Stacks = struct {
+pub const Stacks = struct {
     mode: zss.Stack(Mode) = .{},
     subtree: zss.Stack(struct {
         id: Subtree.Id,
@@ -102,7 +103,7 @@ const Stacks = struct {
     containing_block_size: zss.Stack(ContainingBlockSize) = .{},
 };
 
-const Mode = enum {
+pub const Mode = enum {
     flow,
     stf,
     @"inline",
@@ -258,6 +259,8 @@ fn dispatchBlockElement(
         .root => try initial.blockElement(box_gen, node, inner_box_style, box_style.position),
         .not_root => sw: switch (current_mode) {
             .flow => {
+                // An unchanged element takes over its previous boxes.
+                if (try reuse.tryReuse(box_gen, node, box_style)) return;
                 // Table boxes by computed `display` (CSS 2.1 §17.2), not by
                 // tag name — also when the element ends an inline run.
                 if (try table.dispatch(box_gen, node, box_style)) return;
@@ -549,7 +552,7 @@ fn popBlock(box_gen: *BoxGen) Block {
     return block;
 }
 
-fn addSkip(box_gen: *BoxGen, skip: Subtree.Size) void {
+pub fn addSkip(box_gen: *BoxGen, skip: Subtree.Size) void {
     if (box_gen.stacks.subtree.top.?.depth > 0) {
         box_gen.stacks.block.top.?.skip += skip;
     }

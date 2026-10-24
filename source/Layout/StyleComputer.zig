@@ -100,6 +100,16 @@ fn StageData(comptime stage: Stage) type {
         nodes: []stage.ComputedValues() = &.{},
         current_computed: stage.ComputedValues() = undefined,
         current_index: u32 = 0,
+        /// The nodes this layout has visited: their entries were reset on
+        /// the first visit (`setCurrentNode`).
+        visited: std.DynamicBitSetUnmanaged = .{},
+        /// The entry the current node had before its first visit reset it
+        /// (`keepCurrentNode` puts it back).
+        saved: stage.ComputedValues() = undefined,
+        /// A retained table (`adoptTable`): entries not reset are still
+        /// valid, and `completeTable` leaves the unvisited ones alone.
+        /// Indexed by node value; values past its end count as blocked.
+        blocked: ?[]const bool = null,
     };
 }
 
@@ -112,7 +122,7 @@ pub fn init(env: *const Environment, allocator: Allocator) StyleComputer {
 }
 
 pub fn deinit(self: *StyleComputer) void {
-    _ = self;
+    self.box_gen_stage.visited.deinit(self.allocator);
 }
 
 fn stagePtr(sc: *StyleComputer, comptime stage: Stage) *StageData(stage) {
@@ -142,6 +152,48 @@ pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, allocator: Allo
     const bytes = allocator.rawAlloc(@sizeOf(T) * count, .of(T), @returnAddress()) orelse return error.OutOfMemory;
     s.nodes = @as([*]T, @ptrCast(@alignCast(bytes)))[0..count];
     @memset(s.nodes, .{});
+    try s.visited.resize(sc.allocator, count, false);
+    s.visited.unsetAll();
+    s.blocked = null;
+}
+
+/// Start the stage from the table a previous layout of the same document
+/// left (`ComputedStyles`), grown to `count` nodes. The entries of the
+/// `blocked` nodes — those whose computed values may have changed — are
+/// reset; the others are kept as they are for the nodes layout does not
+/// visit again (`Layout/reuse.zig`). Takes ownership of `previous`, which
+/// must have been allocated with `allocator`.
+pub fn adoptTable(sc: *StyleComputer, comptime stage: Stage, allocator: Allocator, previous: *ComputedStyles, count: u32, blocked: []const bool) !void {
+    comptime assert(stage == .box_gen);
+    const s = sc.stagePtr(stage);
+    var nodes = previous.nodes;
+    previous.nodes = &.{};
+    if (nodes.len < count) {
+        const old_len = nodes.len;
+        nodes = allocator.realloc(nodes, count) catch |err| {
+            allocator.free(nodes);
+            return err;
+        };
+        @memset(nodes[old_len..], .{});
+    } else if (nodes.len > count) {
+        nodes = allocator.realloc(nodes, count) catch nodes[0..count];
+    }
+    s.nodes = nodes;
+    for (nodes, 0..) |*entry, value| {
+        if (value >= blocked.len or blocked[value]) entry.* = .{};
+    }
+    try s.visited.resize(sc.allocator, count, false);
+    s.visited.unsetAll();
+    s.blocked = blocked;
+}
+
+/// The current node's boxes were taken over from the previous layout
+/// (`Layout/reuse.zig`): restore its entry from before this layout's visit,
+/// and treat it as not visited (its table entry is complete).
+pub fn keepCurrentNode(sc: *StyleComputer, comptime stage: Stage) void {
+    const s = sc.stagePtr(stage);
+    s.nodes[s.current_index] = s.saved;
+    s.visited.unset(s.current_index);
 }
 
 pub fn deinitStage(sc: *StyleComputer, comptime stage: Stage, allocator: Allocator) void {
@@ -193,7 +245,18 @@ pub fn setCurrentNode(sc: *StyleComputer, comptime stage: Stage, node: NodeId) !
     const index: u32 = @intCast(node.value);
     const s = sc.stagePtr(stage);
     s.current_index = index;
-    s.current_computed = s.nodes[index];
+    if (s.visited.isSet(index)) {
+        s.current_computed = s.nodes[index];
+    } else {
+        // First visit in this layout: start from no computed values, as a
+        // fresh table would (a retained table holds the previous layout's).
+        s.visited.set(index);
+        if (s.blocked != null) {
+            s.saved = s.nodes[index];
+            s.nodes[index] = .{};
+        }
+        s.current_computed = .{};
+    }
 }
 
 pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
@@ -269,6 +332,11 @@ pub fn completeTable(sc: *StyleComputer, comptime stage: Stage, group: Environme
     const s = sc.stagePtr(stage);
     for (0..s.nodes.len) |index| {
         const node: NodeId = .{ .group = group, .value = index };
+        // A retained table: an entry layout neither visited nor reset is
+        // the previous layout's complete one, still valid.
+        if (s.blocked) |blocked| {
+            if (!s.visited.isSet(index) and index < blocked.len and !blocked[index]) continue;
+        }
         if (sc.env.getNodeProperty(.category, node) != .element) continue;
         try sc.setCurrentNode(stage, node);
         if (s.current_computed.box_style == null) {

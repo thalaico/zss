@@ -1,0 +1,462 @@
+//! Incremental layout: box generation takes over an element's boxes from
+//! the previous layout of the same document instead of generating them
+//! again, when nothing that determines them changed (the LayoutNG idea of
+//! reusing a clean subtree's fragments).
+//!
+//! An element's boxes are a contiguous range of blocks in a subtree (the
+//! element's block and its descendants', `skip` long), the inline
+//! formatting contexts of its `ifc_container` blocks and the child subtrees
+//! of its `subtree_proxy` blocks, recursively. Taking them over copies the
+//! block range to the end of the current subtree and moves the inline
+//! formatting contexts and child subtrees to the new tree, renumbering what
+//! refers to them: block indices (an IFC's parent block and its inline-block
+//! glyphs), IFC and subtree ids, background image handles and the
+//! node-to-box map.
+//!
+//! The copy is what generating the element again would produce when:
+//! - neither the element, nor a descendant, nor an ancestor's style changed
+//!   (`Incremental.blocked`, from the host's change records);
+//! - it is generated in normal flow against the same containing block as
+//!   last time, and every ancestor is a plain flow block — no flex, grid or
+//!   table container, float, inline-level or absolutely positioned box,
+//!   whose algorithms resize or relayout their contents after generating
+//!   them (`relayout.zig`, `intrinsic.zig`);
+//! - no float is in its block formatting context, now or in the previous
+//!   layout (`bfc.zig` lays such contexts out again);
+//! - its range holds no stacking context, positioned box or float (their
+//!   registries — `StackingContextTreeBuilder`, `AbsoluteContainingBlocks`
+//!   — are per layout; taking those over is not supported yet).
+//! A parent places its children after generating them
+//! (`flow.offsetChildBlocks`, which only writes their offsets), so the
+//! element's position follows its new siblings.
+const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+
+const zss = @import("../zss.zig");
+const Environment = zss.Environment;
+const NodeId = Environment.NodeId;
+const BoxTree = zss.BoxTree;
+const BlockRef = BoxTree.BlockRef;
+const GeneratedBox = BoxTree.GeneratedBox;
+const Ifc = BoxTree.InlineFormattingContext;
+const Subtree = BoxTree.Subtree;
+
+const Layout = @import("../Layout.zig");
+const BoxGen = Layout.BoxGen;
+
+pub const Incremental = struct {
+    /// The previous layout of the document. `Layout.run` consumes it: the
+    /// parts it takes over move to the new tree, the rest is freed.
+    previous: *BoxTree,
+    /// By node value: the node's boxes or computed values may differ from
+    /// the previous layout's (`markBlocked`). Values past the end count as
+    /// blocked.
+    blocked: []const bool,
+};
+
+/// Per-layout bookkeeping of what was taken from the previous tree.
+pub const State = struct {
+    active: bool = false,
+    /// By old id: moved to the new tree, with its new id.
+    taken_ifcs: std.ArrayListUnmanaged(bool) = .empty,
+    new_ifc: std.ArrayListUnmanaged(Ifc.Id) = .empty,
+    taken_subtrees: std.ArrayListUnmanaged(bool) = .empty,
+    new_subtree: std.ArrayListUnmanaged(Subtree.Id) = .empty,
+    /// Elements taken over in this layout (statistics for the host).
+    reused_elements: u32 = 0,
+    reused_blocks: u32 = 0,
+
+    pub fn deinit(state: *State, allocator: Allocator) void {
+        state.taken_ifcs.deinit(allocator);
+        state.new_ifc.deinit(allocator);
+        state.taken_subtrees.deinit(allocator);
+        state.new_subtree.deinit(allocator);
+    }
+
+    pub fn begin(state: *State, allocator: Allocator, previous: *const BoxTree) !void {
+        try state.taken_ifcs.resize(allocator, previous.ifcs.items.len);
+        @memset(state.taken_ifcs.items, false);
+        try state.new_ifc.resize(allocator, previous.ifcs.items.len);
+        try state.taken_subtrees.resize(allocator, previous.subtrees.items.len);
+        @memset(state.taken_subtrees.items, false);
+        try state.new_subtree.resize(allocator, previous.subtrees.items.len);
+        state.reused_elements = 0;
+        state.reused_blocks = 0;
+        state.active = true;
+    }
+
+    /// Free what the new tree did not take over of `previous`.
+    pub fn releasePrevious(state: *State, previous: *BoxTree) void {
+        if (state.active) {
+            previous.deinitExcept(state.taken_subtrees.items, state.taken_ifcs.items);
+        } else {
+            previous.deinit();
+        }
+        state.active = false;
+    }
+};
+
+/// The nodes whose boxes or computed values may have changed since the
+/// previous layout, for `Incremental.blocked`: `restyled` elements and
+/// their descendants (computed values inherit), and the ancestors of those
+/// and of the `changed` nodes (an element whose children or text changed,
+/// a text node whose data changed). Returns a table indexed by node value.
+pub fn markBlocked(env: *const Environment, allocator: Allocator, restyled: []const NodeId, changed: []const NodeId) ![]bool {
+    const blocked = try allocator.alloc(bool, env.node_count);
+    @memset(blocked, false);
+    for (restyled) |root| {
+        if (root.value >= blocked.len or blocked[root.value]) {
+            markAncestors(env, blocked, root);
+            continue;
+        }
+        var it = SubtreeIterator{ .env = env, .root = root, .next_node = root };
+        while (it.next()) |n| {
+            if (n.value < blocked.len) blocked[n.value] = true;
+        }
+        markAncestors(env, blocked, root);
+    }
+    for (changed) |node| {
+        if (node.value < blocked.len) blocked[node.value] = true;
+        markAncestors(env, blocked, node);
+    }
+    return blocked;
+}
+
+fn markAncestors(env: *const Environment, blocked: []bool, node: NodeId) void {
+    var n = node.parent(env);
+    while (n) |p| : (n = p.parent(env)) {
+        if (p.value >= blocked.len) continue;
+        if (blocked[p.value]) {
+            // Its ancestors were marked with it — unless it was marked as
+            // a descendant of a restyled element, whose own ancestors were
+            // marked too.
+            return;
+        }
+        blocked[p.value] = true;
+    }
+}
+
+/// A node and its descendants in the box tree's view of the document
+/// (::before and ::after included), in tree order.
+const SubtreeIterator = struct {
+    env: *const Environment,
+    root: NodeId,
+    next_node: ?NodeId,
+
+    fn next(it: *SubtreeIterator) ?NodeId {
+        const n = it.next_node orelse return null;
+        it.next_node = it.successor(n);
+        return n;
+    }
+
+    fn successor(it: *const SubtreeIterator, n: NodeId) ?NodeId {
+        if (it.env.boxFirstChild(n)) |child| return child;
+        var cur = n;
+        while (!eqlNode(cur, it.root)) {
+            if (it.env.boxNextSibling(cur)) |sibling| return sibling;
+            cur = cur.parent(it.env) orelse return null;
+        }
+        return null;
+    }
+};
+
+fn eqlNode(a: NodeId, b: NodeId) bool {
+    return a.value == b.value and a.group == b.group;
+}
+
+/// Box generation is at `node`, an element in normal flow about to be
+/// generated as a block: take over its boxes from the previous layout if
+/// that gives the same result. Returns whether it did; the element's node
+/// has then been passed.
+pub fn tryReuse(box_gen: *BoxGen, node: NodeId, box_style: BoxTree.BoxStyle) !bool {
+    const layout = box_gen.getLayout();
+    const state = &layout.reuse_state;
+    if (!state.active) return false;
+    const inc = layout.incremental.?;
+    if (node.value >= inc.blocked.len or inc.blocked[node.value]) return false;
+    if (box_style.position != .static) return false;
+    if (box_style.outer != .block) return false;
+    if (layout.computer.box_gen_stage.current_index != node.value) return false;
+
+    // Every enclosing formatting context is normal flow, and every ancestor
+    // a plain flow block.
+    {
+        const modes = &box_gen.stacks.mode;
+        if (modes.top != .flow) return false;
+        for (modes.rest.items) |m| if (m != .flow) return false;
+    }
+    const infos = &box_gen.stacks.block_info;
+    // [0] is the initial containing block.
+    if (infos.rest.items.len == 0) return false;
+    {
+        var i: usize = 1;
+        while (i <= infos.rest.items.len) : (i += 1) {
+            const info = if (i == infos.rest.items.len) &infos.top.? else &infos.rest.items[i];
+            if (info.table_role != .none or info.is_flex_container or info.is_grid_container or
+                info.out_of_flow or info.float_side != .none or info.fit_content_available != null) return false;
+        }
+    }
+
+    const previous = inc.previous;
+    const ref = switch (previous.node_to_generated_box.get(node) orelse return false) {
+        .block_ref => |r| r,
+        else => return false,
+    };
+    const ref_subtree: usize = @intFromEnum(ref.subtree);
+    if (state.taken_subtrees.items[ref_subtree]) return false;
+    const old_view = previous.getSubtree(ref.subtree).view();
+    if (old_view.items(.type)[ref.index] != .block) return false;
+    const old_node = old_view.items(.node)[ref.index] orelse return false;
+    if (!eqlNode(old_node, node)) return false;
+    const cb = box_gen.containingBlockSize();
+    const old_cb = old_view.items(.containing_block)[ref.index];
+    if (old_cb[0] != cb.width or old_cb[1] != (cb.height orelse -1)) return false;
+
+    // No floats in its block formatting context (that of the nearest BFC
+    // root among its ancestors, as `BoxGen.markFloat` finds it).
+    {
+        var i: usize = infos.rest.items.len + 1;
+        while (i > 1) {
+            i -= 1;
+            const info = if (i == infos.rest.items.len) &infos.top.? else &infos.rest.items[i];
+            if (!(info.is_bfc or i <= 1)) continue;
+            if (info.bfc_has_floats) return false;
+            const root_ref = switch (previous.node_to_generated_box.get(info.node) orelse return false) {
+                .block_ref => |r| r,
+                else => return false,
+            };
+            if (state.taken_subtrees.items[@intFromEnum(root_ref.subtree)]) return false;
+            if (previous.getSubtree(root_ref.subtree).view().items(.bfc_floats)[root_ref.index]) return false;
+            break;
+        }
+    }
+
+    const skip = old_view.items(.skip)[ref.index];
+    if (!rangeIsSelfContained(previous, old_view, ref.index, skip)) return false;
+
+    const new_tree = layout.box_tree.ptr;
+    const new_subtree = new_tree.getSubtree(box_gen.currentSubtree());
+    const start = new_subtree.blocks.len;
+    if (start + skip > std.math.maxInt(Subtree.Size)) return false;
+
+    // Take it over.
+    const allocator = new_tree.allocator;
+    try new_subtree.blocks.resize(allocator, start + skip);
+    const new_view = new_subtree.view();
+    inline for (comptime std.enums.values(Subtree.List.Field)) |field| {
+        @memcpy(new_view.items(field)[start..][0..skip], old_view.items(field)[ref.index..][0..skip]);
+    }
+    const delta: i32 = @as(i32, @intCast(start)) - @as(i32, ref.index);
+    try takeBlocks(box_gen, previous, new_subtree, @intCast(start), skip, delta);
+    try remapGeneratedBoxes(layout, previous, node, ref.subtree, delta, new_subtree.id);
+
+    layout.computer.keepCurrentNode(.box_gen);
+    box_gen.addSkip(skip);
+    layout.advanceNode();
+    state.reused_elements += 1;
+    state.reused_blocks += skip;
+    return true;
+}
+
+/// The blocks [index, index + skip) of `view` and the subtrees their
+/// proxies reach hold no stacking context, positioned box or float.
+fn rangeIsSelfContained(previous: *const BoxTree, view: Subtree.View, index: Subtree.Size, skip: Subtree.Size) bool {
+    const types = view.items(.type);
+    const contexts = view.items(.stacking_context);
+    const cbs = view.items(.creates_absolute_cb);
+    const out_of_flow = view.items(.out_of_flow);
+    const floats = view.items(.float_side);
+    for (index..index + skip) |i| {
+        if (contexts[i] != null or cbs[i] or out_of_flow[i] or floats[i] != .none) return false;
+        switch (types[i]) {
+            .subtree_proxy => |id| {
+                const child = previous.getSubtree(id);
+                if (!rangeIsSelfContained(previous, child.view(), 0, child.size())) return false;
+            },
+            else => {},
+        }
+    }
+    return true;
+}
+
+/// Renumber what the blocks [start, start + count) of `subtree` (copied
+/// from the previous tree, `delta` places later) refer to, moving their
+/// inline formatting contexts and child subtrees to the new tree.
+fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, subtree: *Subtree, start: Subtree.Size, count: Subtree.Size, delta: i32) !void {
+    const layout = box_gen.getLayout();
+    const new_tree = layout.box_tree.ptr;
+    const state = &layout.reuse_state;
+    for (start..start + count) |i| {
+        const view = subtree.view();
+        const here: BlockRef = .{ .subtree = subtree.id, .index = @intCast(i) };
+        switch (view.items(.type)[i]) {
+            .block => {},
+            .ifc_container => |old_id| {
+                const ifc = previous.getIfc(old_id);
+                const new_id_int = std.math.cast(std.meta.Tag(Ifc.Id), new_tree.ifcs.items.len) orelse return error.SizeLimitExceeded;
+                try new_tree.ifcs.append(new_tree.allocator, ifc);
+                state.taken_ifcs.items[@intFromEnum(old_id)] = true;
+                state.new_ifc.items[@intFromEnum(old_id)] = @enumFromInt(new_id_int);
+                ifc.id = @enumFromInt(new_id_int);
+                ifc.parent_block = here;
+                if (delta != 0) shiftInlineBlocks(ifc, delta);
+                try box_gen.sct_builder.addIfc(new_tree, ifc.id);
+                view.items(.type)[i] = .{ .ifc_container = ifc.id };
+            },
+            .subtree_proxy => |old_id| {
+                const child = previous.getSubtree(old_id);
+                const new_id_int = std.math.cast(std.meta.Tag(Subtree.Id), new_tree.subtrees.items.len) orelse return error.SizeLimitExceeded;
+                try new_tree.subtrees.append(new_tree.allocator, child);
+                state.taken_subtrees.items[@intFromEnum(old_id)] = true;
+                state.new_subtree.items[@intFromEnum(old_id)] = @enumFromInt(new_id_int);
+                child.id = @enumFromInt(new_id_int);
+                child.parent = here;
+                view.items(.type)[i] = .{ .subtree_proxy = child.id };
+                try takeBlocks(box_gen, previous, child, 0, child.size(), 0);
+            },
+        }
+        // The background is active on ordinary blocks only.
+        if (subtree.view().items(.type)[i] != .block) continue;
+        const background = &subtree.view().items(.background)[i];
+        if (previous.background_images.get(background.images)) |images| {
+            const handle, const copy = try layout.box_tree.allocBackgroundImages(@intCast(images.len));
+            @memcpy(copy, images);
+            background.images = handle;
+        }
+    }
+}
+
+/// An IFC's inline-block glyphs name their block by index in the IFC's
+/// parent subtree.
+fn shiftInlineBlocks(ifc: *Ifc, delta: i32) void {
+    const indices = ifc.glyphs.items(.index);
+    var g: usize = 0;
+    while (g < indices.len) {
+        if (indices[g] != 0) {
+            g += 1;
+            continue;
+        }
+        var special = Ifc.Special.decode(indices[g + 1]);
+        if (special.kind == .InlineBlock) {
+            special.data = @intCast(@as(i32, special.data) + delta);
+            indices[g + 1] = @bitCast(special);
+        }
+        g += 2;
+    }
+}
+
+/// Carry the node-to-box entries of `root` and its descendants over to the
+/// new tree, renumbered.
+fn remapGeneratedBoxes(layout: *Layout, previous: *const BoxTree, root: NodeId, old_subtree: Subtree.Id, delta: i32, new_subtree: Subtree.Id) !void {
+    const state = &layout.reuse_state;
+    const map = &layout.box_tree.ptr.node_to_generated_box;
+    var it = SubtreeIterator{ .env = layout.inputs.env, .root = root, .next_node = root };
+    while (it.next()) |n| {
+        const old = previous.node_to_generated_box.get(n) orelse continue;
+        const new: GeneratedBox = switch (old) {
+            .block_ref => |r| if (r.subtree == old_subtree)
+                .{ .block_ref = .{ .subtree = new_subtree, .index = @intCast(@as(i32, r.index) + delta) } }
+            else if (state.taken_subtrees.items[@intFromEnum(r.subtree)])
+                .{ .block_ref = .{ .subtree = state.new_subtree.items[@intFromEnum(r.subtree)], .index = r.index } }
+            else
+                continue,
+            .inline_box => |b| if (state.taken_ifcs.items[@intFromEnum(b.ifc_id)])
+                .{ .inline_box = .{ .ifc_id = state.new_ifc.items[@intFromEnum(b.ifc_id)], .index = b.index } }
+            else
+                continue,
+            .text => |id| if (state.taken_ifcs.items[@intFromEnum(id)])
+                .{ .text = state.new_ifc.items[@intFromEnum(id)] }
+            else
+                continue,
+        };
+        try map.put(layout.box_tree.ptr.allocator, n, new);
+    }
+}
+
+
+test "an incremental layout takes over unchanged boxes and matches a fresh one" {
+    const allocator = std.testing.allocator;
+    const source_code = try zss.syntax.SourceCode.init(
+        \\@name(root) * (display: block) {
+        \\  @name(a) * (display: block; padding-top: 3px) {
+        \\    * (display: block; height: 10px) {}
+        \\    "some text"
+        \\  }
+        \\  @name(b) * (display: block; margin-top: 5px) {
+        \\    "more text" * (display: inline; padding-left: 2px) { "inline" }
+        \\  }
+        \\}
+    );
+    var document = try zss.zml.parseAndCreateDocument(allocator, source_code);
+    defer document.deinit(allocator);
+    const cascade_list: zss.cascade.List = .{ .author = &.{&.{ .leaf = &document.cascade_source }} };
+    try zss.cascade.run(&cascade_list, &document.env, allocator);
+
+    var images = zss.Images.init();
+    defer images.deinit(allocator);
+    var fonts = zss.Fonts.init();
+    defer fonts.deinit();
+
+    const named = struct {
+        fn get(doc: *const zss.zml.Document, name: []const u8) NodeId {
+            return doc.named_nodes.get(name).?.toZssNode(doc);
+        }
+    };
+    const root = named.get(&document, "root");
+    const a = named.get(&document, "a");
+
+    for ([_]?NodeId{ null, a }) |restyled| {
+        var fresh_layout = Layout.init(&document.env, allocator, 800, 600, &images, &fonts);
+        defer fresh_layout.deinit();
+        var fresh = try fresh_layout.run(allocator);
+        defer fresh.deinit();
+
+        var first_layout = Layout.init(&document.env, allocator, 800, 600, &images, &fonts);
+        defer first_layout.deinit();
+        var previous = try first_layout.run(allocator);
+
+        const restyled_list: []const NodeId = if (restyled) |r| &.{r} else &.{};
+        const blocked = try markBlocked(&document.env, allocator, restyled_list, &.{});
+        defer allocator.free(blocked);
+        try std.testing.expect(blocked[root.value] == (restyled != null));
+
+        var layout = Layout.init(&document.env, allocator, 800, 600, &images, &fonts);
+        defer layout.deinit();
+        layout.incremental = .{ .previous = &previous, .blocked = blocked };
+        var incremental = try layout.run(allocator);
+        defer incremental.deinit();
+
+        // With nothing changed, the root element's children are taken over;
+        // with `a` restyled, `b` still is.
+        try std.testing.expect(layout.reuse_state.reused_elements >= 1);
+
+        try std.testing.expectEqual(fresh.subtrees.items.len, incremental.subtrees.items.len);
+        try std.testing.expectEqual(fresh.ifcs.items.len, incremental.ifcs.items.len);
+        for (fresh.subtrees.items, incremental.subtrees.items) |f, i| {
+            const fv = f.view();
+            const iv = i.view();
+            try std.testing.expectEqual(fv.len, iv.len);
+            for (0..fv.len) |k| {
+                try std.testing.expectEqual(fv.items(.skip)[k], iv.items(.skip)[k]);
+                try std.testing.expectEqual(fv.items(.offset)[k], iv.items(.offset)[k]);
+                try std.testing.expectEqual(fv.items(.box_offsets)[k], iv.items(.box_offsets)[k]);
+                try std.testing.expectEqual(std.meta.activeTag(fv.items(.type)[k]), std.meta.activeTag(iv.items(.type)[k]));
+            }
+        }
+        for (fresh.ifcs.items, incremental.ifcs.items) |f, i| {
+            try std.testing.expectEqual(f.line_boxes.items.len, i.line_boxes.items.len);
+            try std.testing.expectEqual(f.glyphs.len, i.glyphs.len);
+            try std.testing.expectEqual(f.parent_block, i.parent_block);
+        }
+        try std.testing.expectEqual(fresh.node_to_generated_box.count(), incremental.node_to_generated_box.count());
+        var it = fresh.node_to_generated_box.iterator();
+        while (it.next()) |entry| {
+            const other = incremental.node_to_generated_box.get(entry.key_ptr.*) orelse return error.TestFailure;
+            try std.testing.expect(std.meta.eql(entry.value_ptr.*, other));
+        }
+        const fresh_a = fresh.computed_styles.get(a) orelse return error.TestFailure;
+        const inc_a = incremental.computed_styles.get(a) orelse return error.TestFailure;
+        try std.testing.expectEqual(fresh_a.vertical_edges.?.padding_top.px, inc_a.vertical_edges.?.padding_top.px);
+    }
+}
