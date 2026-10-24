@@ -188,6 +188,10 @@ pub const Database = struct {
         /// fields of their property (those fields hold `unset` until
         /// `zss.custom_properties.resolve` substitutes and parses them).
         pending: std.ArrayListUnmanaged(PendingValue) = .{},
+        /// A hash of the declaration blocks applied, in cascade order (0:
+        /// none). The same blocks give the same cascaded values, so
+        /// `restyle` reports an element as changed only when this changes.
+        applied_hash: u64 = 0,
 
         pub const PendingValue = struct {
             property: zss.property.Property,
@@ -1640,7 +1644,10 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
 /// are skipped. The caller removes the elements' ::before / ::after nodes
 /// beforehand (`Environment.discardPseudoNodesOf`) and creates them again
 /// after (`Environment.createPseudoNodes`).
-pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator) !void {
+/// `changed`, if not null, receives the elements among `nodes` whose
+/// cascaded values may differ from before: their applied declaration
+/// blocks changed, or they have or had ::before / ::after values.
+pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator, changed: ?*std.ArrayListUnmanaged(Environment.NodeId)) !void {
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
     const allocator = ctx.arena.allocator();
@@ -1700,8 +1707,18 @@ pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.
     for (nodes) |node| {
         if (env.getNodeProperty(.category, node) != .element) continue;
         const storage = try env.cascade_db.addStorage(env.allocator, node);
+        const old_hash = storage.applied_hash;
+        var pseudo_values = env.cascade_db.getPseudoStorage(node, .before) != null or env.cascade_db.getPseudoStorage(node, .after) != null;
         storage.reset();
+        storage.applied_hash = 0;
         if (ctx.element_to_decl_block_list.getPtr(node)) |blocks| try applyInCascadeOrder(env, storage, blocks.items);
+        inline for (.{ .before, .after }) |pseudo| {
+            const key: Database.PseudoKey = .{ .node = node, .pseudo = pseudo };
+            if (ctx.pseudo_to_decl_block_list.contains(key)) pseudo_values = true;
+        }
+        if (changed) |list_out| {
+            if (pseudo_values or storage.applied_hash != old_hash) try list_out.append(temp_allocator, node);
+        }
         inline for (.{ .before, .after }) |pseudo| {
             const key: Database.PseudoKey = .{ .node = node, .pseudo = pseudo };
             if (ctx.pseudo_to_decl_block_list.getPtr(key)) |blocks| {
@@ -1737,9 +1754,14 @@ fn applyInCascadeOrder(env: *Environment, storage: *Database.Storage, items: []R
             return a.importance == .important and b.importance == .normal;
         }
     }.lessThan);
+    var hasher = std.hash.Wyhash.init(0);
     for (items) |item| {
         try storage.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
+        hasher.update(std.mem.asBytes(&@as(u64, @intFromEnum(item.block))));
+        hasher.update(&.{@intFromEnum(item.importance)});
     }
+    // 0 is reserved for "no blocks".
+    storage.applied_hash = if (items.len == 0) 0 else hasher.final() | 1;
 }
 
 fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin, importance: Importance) !void {

@@ -665,9 +665,15 @@ test "parsing properties from a stylesheet" {
             decls.apply(group, block, .normal, &values);
 
             inline for (std.meta.fields(Values)) |field| {
-                const expected_field = @field(expected, field.name);
+                var expected_field = @field(expected, field.name);
+                // `all: unset` (the block's second `all` is invalid) covers
+                // every property the block does not declare.
+                if (expected_field == .undeclared) expected_field = .unset;
                 const actual_field = @field(values, field.name);
-                try actual_field.expectEqual(expected_field);
+                actual_field.expectEqual(expected_field) catch |err| {
+                    std.debug.print("field {s}.{s}\n", .{ @tagName(group), field.name });
+                    return err;
+                };
             }
         }
     };
@@ -701,7 +707,8 @@ test "parsing properties from a stylesheet" {
     });
 
     try ns.expectEqual(.horizontal_edges, &env.decls, block, .{
-        .padding_left = .unset,
+        // Unitless zero is a length (CSS Values 4 §6.2).
+        .padding_left = .{ .declared = .{ .px = 0 } },
         .padding_right = .{ .declared = .{ .px = 0 } },
         .border_left = .{ .declared = .{ .px = 100 } },
         .border_right = .{ .declared = .thin },

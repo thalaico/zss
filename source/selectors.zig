@@ -293,36 +293,141 @@ pub const InvalidationFeatures = struct {
     /// :has() in some selector: a change can restyle ancestors and earlier
     /// siblings.
     has: bool = false,
+    /// The compounds with a user-action pseudo-class and a combinator to
+    /// their right (`.menu:hover .item`, `.tab:focus-within + .panel`): a
+    /// state change on an element can restyle more than the element only
+    /// when the element may match such a compound (`UserActionAnchor`).
+    user_action_anchors: std.ArrayListUnmanaged(UserActionAnchor) = .empty,
 
     pub fn deinit(f: *InvalidationFeatures, allocator: Allocator) void {
         f.classes.deinit(allocator);
         f.ids.deinit(allocator);
         f.attributes.deinit(allocator);
+        for (f.user_action_anchors.items) |*a| a.deinit(allocator);
+        f.user_action_anchors.deinit(allocator);
+    }
+
+    /// A compound with a user-action pseudo-class and a combinator to its
+    /// right, reduced to the type, ID, class and attribute-presence tests it
+    /// makes; every other simple selector (pseudo-classes, attribute values,
+    /// nested lists) is taken to match, so `mayMatch` never misses an
+    /// element the compound matches in some state.
+    pub const UserActionAnchor = struct {
+        element_type: ?ElementType = null,
+        ids: []IdName = &.{},
+        classes: []ClassName = &.{},
+        attributes: []AttributeName = &.{},
+        /// What its combinators reach from a matching element: descendants
+        /// (a descendant or child combinator to its right), following
+        /// siblings (`+` or `~`), the following siblings' descendants (a
+        /// descendant or child combinator right of a sibling one).
+        descendants: bool,
+        siblings: bool,
+        sibling_descendants: bool,
+
+        fn deinit(a: *UserActionAnchor, allocator: Allocator) void {
+            allocator.free(a.ids);
+            allocator.free(a.classes);
+            allocator.free(a.attributes);
+        }
+
+        pub fn mayMatch(a: *const UserActionAnchor, env: *const Environment, node: NodeId) bool {
+            if (a.element_type) |t| if (!matchTypeSelector(t, env.getNodeProperty(.type, node))) return false;
+            for (a.ids) |id| if (!env.nodeHasId(node, id)) return false;
+            for (a.classes) |class| if (!env.nodeHasClass(node, class)) return false;
+            for (a.attributes) |name| if (!env.nodeHasAttribute(node, name)) return false;
+            return true;
+        }
+    };
+
+    fn addUserActionAnchor(f: *InvalidationFeatures, allocator: Allocator, data: []const Data, start: Data.ListIndex, end: Data.ListIndex, right: Right) !void {
+        var ids: std.ArrayListUnmanaged(IdName) = .empty;
+        defer ids.deinit(allocator);
+        var classes: std.ArrayListUnmanaged(ClassName) = .empty;
+        defer classes.deinit(allocator);
+        var attributes: std.ArrayListUnmanaged(AttributeName) = .empty;
+        defer attributes.deinit(allocator);
+        var anchor: UserActionAnchor = .{ .descendants = right.descendants, .siblings = right.siblings, .sibling_descendants = right.sibling_descendants };
+        var idx = start;
+        while (idx < end) : (idx += 1) {
+            switch (data[idx].simple_selector_tag) {
+                .type => {
+                    idx += 1;
+                    anchor.element_type = data[idx].type_selector;
+                },
+                .id => {
+                    idx += 1;
+                    try ids.append(allocator, data[idx].id_selector);
+                },
+                .class => {
+                    idx += 1;
+                    try classes.append(allocator, data[idx].class_selector);
+                },
+                .attribute => |op_case| {
+                    idx += 1;
+                    try attributes.append(allocator, data[idx].attribute_selector.name);
+                    if (op_case != null) idx += 1;
+                },
+                .pseudo_class => {
+                    idx += 1;
+                    idx += pseudoClassPayload(data[idx].pseudo_class_selector);
+                },
+                .pseudo_element => idx += 1,
+                .has_anchor => {},
+                inline .is, .where, .not, .has => |_, tag| {
+                    idx += 1;
+                    const list = nestedList(data[idx], tag);
+                    var sel_idx = list.start;
+                    for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+                    idx = sel_idx - 1;
+                },
+            }
+        }
+        anchor.ids = try ids.toOwnedSlice(allocator);
+        errdefer allocator.free(anchor.ids);
+        anchor.classes = try classes.toOwnedSlice(allocator);
+        errdefer allocator.free(anchor.classes);
+        anchor.attributes = try attributes.toOwnedSlice(allocator);
+        errdefer allocator.free(anchor.attributes);
+        try f.user_action_anchors.append(allocator, anchor);
     }
 
     /// Add what the complex selector at `complex_selector_index` observes.
     pub fn addSelector(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, complex_selector_index: Data.ListIndex) anyerror!void {
         const reach = complexHasCombinator(data, complex_selector_index);
-        try f.addComplex(allocator, env, data, complex_selector_index, reach);
+        try f.addComplex(allocator, env, data, complex_selector_index, reach, .{});
     }
 
-    fn addComplex(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, complex_selector_index: Data.ListIndex, reach: bool) anyerror!void {
+    /// The combinators to the right of a compound (in its complex selector,
+    /// and in the selectors whose argument lists it is nested in).
+    const Right = struct { descendants: bool = false, siblings: bool = false, sibling_descendants: bool = false };
+
+    fn addComplex(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, complex_selector_index: Data.ListIndex, reach: bool, outer_right: Right) anyerror!void {
         const first_compound: Data.ListIndex = complex_selector_index + 1;
         const last_trailing = data[complex_selector_index].next_complex_selector - 1;
         var trailing_idx = last_trailing;
+        var right = outer_right;
         while (true) {
             const start = data[trailing_idx].trailing.compound_selector_start;
             if (trailing_idx != last_trailing) switch (data[trailing_idx].trailing.combinator) {
-                .next_sibling, .subsequent_sibling => f.sibling_combinator = true,
-                else => {},
+                .next_sibling, .subsequent_sibling => {
+                    f.sibling_combinator = true;
+                    right.siblings = true;
+                    // A descendant combinator further right.
+                    if (right.descendants) right.sibling_descendants = true;
+                },
+                else => right.descendants = true,
             };
-            try f.addCompound(allocator, env, data, start, trailing_idx, reach);
+            try f.addCompound(allocator, env, data, start, trailing_idx, reach, right);
             if (start <= first_compound) break;
             trailing_idx = start - 1;
         }
     }
 
-    fn addCompound(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, start: Data.ListIndex, end: Data.ListIndex, reach: bool) anyerror!void {
+    fn addCompound(f: *InvalidationFeatures, allocator: Allocator, env: *Environment, data: []const Data, start: Data.ListIndex, end: Data.ListIndex, reach: bool, right: Right) anyerror!void {
+        if ((right.descendants or right.siblings) and compoundUserActionMask(data, start, end).any()) {
+            try f.addUserActionAnchor(allocator, data, start, end, right);
+        }
         var idx = start;
         while (idx < end) : (idx += 1) {
             switch (data[idx].simple_selector_tag) {
@@ -361,7 +466,7 @@ pub const InvalidationFeatures = struct {
                     const list = nestedList(data[idx], tag);
                     var sel_idx = list.start;
                     for (0..list.count) |_| {
-                        try f.addComplex(allocator, env, data, sel_idx, reach);
+                        try f.addComplex(allocator, env, data, sel_idx, reach, right);
                         sel_idx = data[sel_idx].next_complex_selector;
                     }
                     idx = sel_idx - 1;
