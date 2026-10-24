@@ -57,20 +57,7 @@ const Exclusion = struct {
     bottom: Unit,
 };
 
-/// Adjoining margins collapse to the largest positive plus the most
-/// negative one (CSS 2.1 §8.3.1).
-const MarginStrut = struct {
-    positive: Unit = 0,
-    negative: Unit = 0,
-
-    fn append(strut: *MarginStrut, margin: Unit) void {
-        if (margin > 0) strut.positive = @max(strut.positive, margin) else strut.negative = @min(strut.negative, margin);
-    }
-
-    fn sum(strut: MarginStrut) Unit {
-        return strut.positive + strut.negative;
-    }
-};
+const MarginStrut = flow.MarginStrut;
 
 const unresolved = std.math.minInt(Unit);
 

@@ -1008,14 +1008,55 @@ pub fn solveUsedHeight(sizes: BlockUsedSizes, auto_height: Unit) Unit {
     return sizes.get(.block_size) orelse solve.clampSize(auto_height, sizes.min_block_size, sizes.max_block_size);
 }
 
-/// Result of offsetChildBlocks: auto_height plus first-child's escaped margin
-/// (for parent-child margin collapsing, CSS 2.1 Section 8.3.1).
-pub const OffsetResult = struct {
-    auto_height: Unit,
-    /// Margin that escapes through the parent's top edge when the parent has
-    /// no border-top or padding-top. Caller must adjust parent's margin.
-    escaped_margin_top: Unit,
+/// Adjoining margins collapse to the largest positive one plus the most
+/// negative one (CSS 2.1 §8.3.1).
+pub const MarginStrut = struct {
+    positive: Unit = 0,
+    negative: Unit = 0,
+
+    pub fn append(strut: *MarginStrut, margin: Unit) void {
+        if (margin > 0) strut.positive = @max(strut.positive, margin) else strut.negative = @min(strut.negative, margin);
+    }
+
+    pub fn sum(strut: MarginStrut) Unit {
+        return strut.positive + strut.negative;
+    }
+
+    /// `strut` with `margin` added.
+    pub fn with(strut: MarginStrut, margin: Unit) MarginStrut {
+        var result = strut;
+        result.append(margin);
+        return result;
+    }
 };
+
+/// Result of offsetChildBlocks (CSS 2.1 §8.3.1, §10.6.3).
+pub const OffsetResult = struct {
+    /// The auto height when the last child's bottom margin stays inside.
+    auto_height: Unit,
+    /// The margins that collapse through the parent's top edge when it has
+    /// no top border or padding: the first in-flow child's top margin and
+    /// those of the self-collapsing boxes before it. The caller collapses
+    /// them with the parent's own top margin.
+    escaped_top: MarginStrut,
+    /// The bottom of the last in-flow border box: the auto height when the
+    /// last child's bottom margin collapses with the parent's
+    /// (`collapsesBottomMargin`).
+    content_end: Unit,
+    /// The last in-flow child's bottom margin, collapsed with the
+    /// self-collapsing boxes after it; empty without in-flow content.
+    trailing: MarginStrut,
+};
+
+/// Whether a block's last in-flow child's bottom margin collapses with the
+/// block's own bottom margin (CSS 2.1 §8.3.1): the block does not establish
+/// a formatting context, its height is auto with no bottom border or
+/// padding, it has in-flow content, and min/max-height leave that content's
+/// height as the used height.
+pub fn collapsesBottomMargin(is_bfc: bool, height_auto: bool, block_end_edges: Unit, result: OffsetResult, min_height: Unit, max_height: Unit) bool {
+    if (is_bfc or !height_auto or block_end_edges != 0 or result.content_end <= 0) return false;
+    return solve.clampSize(result.content_end, min_height, max_height) == result.content_end;
+}
 
 /// The floats beside one inline formatting context, for line-box
 /// shortening (CSS 2.1 §9.5): float margin boxes in the IFC's coordinates
@@ -1081,85 +1122,78 @@ pub fn offsetChildBlocks(
     const end = index + skip;
 
     // CSS 2.1 Section 8.3.1: Collapsing margins.
-    // `cursor` tracks the bottom of the last border box; `prev_margin`
-    // holds the previous sibling's bottom margin for collapsing.
+    // `cursor` tracks the bottom of the last border box; `strut` holds the
+    // margins adjoining the next child's top margin (the previous sibling's
+    // bottom margin and the self-collapsing boxes since).
     var cursor: Unit = 0;
-    var prev_margin: Unit = 0;
-    var first_normal_child = true;
-    var escaped_margin_top: Unit = 0;
+    var strut: MarginStrut = .{};
+    // Still at the parent's top edge: margins here can escape through it.
+    const can_escape = parent_block_start_edge == 0;
+    var at_top_edge = true;
+    var escaped_top: MarginStrut = .{};
 
     while (child < end) {
         if (out_of_flow_flags[child]) {
             // The static position (CSS 2.1 §10.3.7): where the box's margin
             // box would start in flow; `positioned.run` reads it.
-            subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin };
+            subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + strut.sum() };
         } else if (float_sides[child] == .none) {
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
             const margin_top = box_offsets.border_pos.y; // = margin_block_start
             const border_box_h = box_offsets.border_size.h;
             const margin_bottom = margins.bottom;
-            // CSS 2.1 §8.3.1: Empty box margin collapsing.
-            // When a box has zero border-box height (no content, no
-            // padding, no border), its top and bottom margins collapse
-            // through it into a single margin of max(top, bottom).
+            // A box with no border-box height (no content, padding or
+            // border) is self-collapsing: its top and bottom margins
+            // collapse through it, and with the margins on either side.
             const is_empty_box = (border_box_h == 0);
 
-            if (first_normal_child and parent_block_start_edge == 0 and cursor == 0) {
-                // Parent-child margin collapsing: first child's top margin
-                // escapes through the parent (which has no border/padding-top,
-                // no floats above, and no clearance). CSS 2.1 Section 8.3.1.
+            strut.append(margin_top);
+            if (at_top_edge and can_escape) {
+                // Parent-child collapsing: the margins so far escape
+                // through the parent's top edge; the child's border box
+                // sits at the content top.
+                subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
                 if (is_empty_box) {
-                    // Empty first child: its collapsed margin escapes and is
-                    // accumulated into escaped_margin_top. The parent-child
-                    // collapsing opportunity carries forward to the next
-                    // non-empty child, so first_normal_child stays true.
-                    // CSS 2.1 §8.3.1: collapsing is transitive through
-                    // self-collapsing boxes between parent and first content.
-                    escaped_margin_top = @max(escaped_margin_top, margin_top, margin_bottom);
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
-                    // cursor stays at 0, prev_margin = escaped_margin_top so
-                    // the next non-empty child collapses with it.
-                    prev_margin = escaped_margin_top;
-                    // first_normal_child stays true: next child can still escape.
+                    strut.append(margin_bottom);
                 } else {
-                    escaped_margin_top = @max(escaped_margin_top, margin_top);
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = -margin_top };
+                    escaped_top = strut;
                     cursor = border_box_h;
-                    prev_margin = margin_bottom;
-                    first_normal_child = false;
+                    strut = .{};
+                    strut.append(margin_bottom);
+                    at_top_edge = false;
                 }
+            } else if (is_empty_box) {
+                // Its top border edge is where it would be with a bottom
+                // border (§8.3.1); it takes no space.
+                subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + strut.sum() - margin_top };
+                strut.append(margin_bottom);
+                at_top_edge = false;
             } else {
-                if (is_empty_box) {
-                    // Empty box: top and bottom margins collapse through.
-                    // The resulting margin is max(prev, top, bottom) and
-                    // carries forward as prev_margin. Cursor doesn't move.
-                    const self_collapsed = @max(margin_top, margin_bottom);
-                    prev_margin = @max(prev_margin, self_collapsed);
-                    // Place at current cursor so the box occupies zero space.
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = cursor + prev_margin - margin_top };
-                } else {
-                    // Collapse this child's top margin with previous sibling's bottom margin.
-                    const collapsed = @max(prev_margin, margin_top);
-                    const border_box_y = cursor + collapsed;
-                    subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
-                    cursor = border_box_y + border_box_h;
-                    prev_margin = margin_bottom;
-                }
-                first_normal_child = false;
+                const border_box_y = cursor + strut.sum();
+                subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
+                cursor = border_box_y + border_box_h;
+                strut = .{};
+                strut.append(margin_bottom);
+                at_top_edge = false;
             }
         }
         child += skips[child];
     }
+    // Only self-collapsing children at the top edge: all their margins
+    // escape (the parent itself may still collapse through).
+    if (at_top_edge and can_escape) escaped_top = strut;
 
     // Include the last normal-flow child's bottom margin in auto height,
     // but only if at least one child contributed non-zero height. When all
     // children are self-collapsing (cursor == 0), their collapsed margins
     // do not contribute to the parent's content height (CSS 2.1 §10.6.3).
-    const normal_height = if (cursor > 0) cursor + prev_margin else cursor;
+    const has_content = cursor > 0;
     return .{
-        .auto_height = normal_height,
-        .escaped_margin_top = escaped_margin_top,
+        .auto_height = if (has_content) cursor + strut.sum() else cursor,
+        .escaped_top = escaped_top,
+        .content_end = cursor,
+        .trailing = if (has_content) strut else .{},
     };
 }
 

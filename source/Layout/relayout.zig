@@ -217,9 +217,18 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
     // Vertical positions and the auto height (CSS 2.1 §10.6.3). A BFC root's
     // first child margin cannot escape (§8.3.1).
     var parent_edge = bo.content_pos.y;
-    if (subtree.items(.is_bfc)[index] and parent_edge == 0) parent_edge = 1;
+    const bfc_root = subtree.items(.is_bfc)[index] or subtree.items(.out_of_flow)[index];
+    if (bfc_root and parent_edge == 0) parent_edge = 1;
     const result = flow.offsetChildBlocks(subtree, index, skip, content_w, parent_edge, box_tree);
-    if (subtree.items(.intrinsic)[index].height_auto) setContentHeight(subtree, index, result.auto_height);
+    if (!subtree.items(.intrinsic)[index].height_auto) return;
+    // The last child's bottom margin collapses with this block's (§8.3.1).
+    const end_edges = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+    if (flow.collapsesBottomMargin(bfc_root, true, end_edges, result, subtree.items(.min_block_size)[index], subtree.items(.max_block_size)[index])) {
+        setContentHeight(subtree, index, result.content_end);
+        subtree.items(.margins)[index].bottom = result.trailing.with(subtree.items(.block_margins)[index][1]).sum();
+        return;
+    }
+    setContentHeight(subtree, index, result.auto_height);
 }
 
 /// Set the content height of block `index`, keeping its block-axis edges.

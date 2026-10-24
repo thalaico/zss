@@ -741,11 +741,17 @@ pub fn popFlowBlock(
     const block = box_gen.popBlock();
     var block_info = box_gen.stacks.block_info.pop();
     _ = box_gen.stacks.containing_block_size.pop();
-    // The specified top margin, before child margins are folded into it.
+    // The specified block margins, before child margins are folded into them.
     const specified_margin_top = block_info.sizes.margin_block_start;
+    const specified_margin_bottom = block_info.sizes.margin_block_end;
     // The root element establishes the initial formatting context.
     // (Below it on the stack is only the initial containing block.)
     if (box_gen.stacks.block_info.rest.items.len == 0 and !block_info.out_of_flow) block_info.is_bfc = true;
+    // Flex and grid items establish formatting contexts (CSS Flexbox §3,
+    // Grid §3).
+    if (box_gen.stacks.block_info.top) |parent_info| {
+        if (parent_info.is_flex_container or parent_info.is_grid_container) block_info.is_bfc = true;
+    }
 
     // If the parent is a grid container, record this child's grid-area hash.
     // IFC containers (generated for inter-element whitespace) are not grid
@@ -822,17 +828,21 @@ pub fn popFlowBlock(
             .stf => |aw| aw,
         };
         var parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
-        // BFC roots prevent parent-child margin escape (CSS 2.1 §8.3.1)
-        if (block_info.is_bfc and parent_edge == 0) parent_edge = 1;
+        // BFC roots (absolutely positioned boxes among them) prevent
+        // parent-child margin collapsing (CSS 2.1 §8.3.1, §9.4.1).
+        const bfc_root = block_info.is_bfc or block_info.out_of_flow;
+        if (bfc_root and parent_edge == 0) parent_edge = 1;
         const result = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, layout.box_tree.ptr);
         // A formatting context with floats is laid out top-down instead.
         if (block_info.bfc_has_floats) break :blk bfc.layoutBfc(layout, subtree, box_gen.currentSubtree(), block.index, block.skip, container_width);
         // Parent-child margin collapsing: adjust parent's margin to absorb
         // the first child's escaped margin (CSS 2.1 Section 8.3.1).
-        if (!block_info.is_bfc) {
-            if (result.escaped_margin_top > block_info.sizes.margin_block_start) {
-                block_info.sizes.margin_block_start = result.escaped_margin_top;
-            }
+        if (!bfc_root) block_info.sizes.margin_block_start = result.escaped_top.with(block_info.sizes.margin_block_start).sum();
+        // The last child's bottom margin collapses with this block's.
+        const end_edges = block_info.sizes.border_block_end + block_info.sizes.padding_block_end;
+        if (flow.collapsesBottomMargin(bfc_root, block_info.sizes.get(.block_size) == null, end_edges, result, block_info.sizes.min_block_size, block_info.sizes.max_block_size)) {
+            block_info.sizes.margin_block_end = result.trailing.with(block_info.sizes.margin_block_end).sum();
+            break :blk result.content_end;
         }
         break :blk result.auto_height;
     };
@@ -858,7 +868,7 @@ pub fn popFlowBlock(
     const inner_block: BoxTree.BoxStyle.InnerBlock =
         if (block_info.is_flex_container) .flex else if (block_info.is_grid_container) .grid else .flow;
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);
-    subtree.items(.block_margins)[block.index][0] = specified_margin_top;
+    subtree.items(.block_margins)[block.index] = .{ specified_margin_top, specified_margin_bottom };
     subtree.items(.bfc_floats)[block.index] = block_info.bfc_has_floats;
     subtree.items(.float_side)[block.index] = block_info.float_side;
     subtree.items(.clear_side)[block.index] = block_info.clear_side;
