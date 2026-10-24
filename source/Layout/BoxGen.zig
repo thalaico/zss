@@ -136,6 +136,7 @@ pub fn run(box_gen: *BoxGen) !void {
     const t_analyze = Layout.now();
     try analyzeAllNodes(box_gen);
     reuse.finish(box_gen.getLayout());
+    try reuse.repaint(box_gen.getLayout());
     Layout.profile.analyze_ns += Layout.now() - t_analyze;
     // Absolutely positioned boxes: final sizes and positions.
     const t_abs = Layout.now();
@@ -1434,7 +1435,7 @@ fn solveInsetsAbsolute(
     used.* = .{ .x = left, .y = top };
 }
 
-fn resolveBlockBackgrounds(
+pub fn resolveBlockBackgrounds(
     layout: *Layout,
     box_offsets: *const BoxTree.BoxOffsets,
     borders: *const BoxTree.Borders,

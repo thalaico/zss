@@ -27,6 +27,8 @@ viewport: math.Size = .{ .w = 0, .h = 0 },
 /// this one: the next incremental layout's root subtree takes it instead
 /// of growing new storage (`Layout/reuse.zig`).
 spare_blocks: Subtree.List = .{},
+/// Some block's border colors were resolved by the collapsing border model.
+has_collapsed_borders: bool = false,
 allocator: Allocator,
 debug: Debug = .{},
 
@@ -368,6 +370,9 @@ pub const IntrinsicFlags = packed struct(u8) {
         /// unchanged and generated against the same containing block
         /// (`Layout/reuse.zig`).
         containing_block: [2]math.Unit = .{ -1, -1 },
+        /// The border colors were resolved by a table's collapsing border
+        /// model (CSS 2.1 §17.6.2), not taken from this block's own style.
+        collapsed_borders: bool = false,
     };
     pub const List = MultiArrayList(Block);
     pub const View = List.Slice;

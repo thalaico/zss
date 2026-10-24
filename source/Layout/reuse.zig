@@ -53,7 +53,128 @@ pub const Incremental = struct {
     /// the previous layout's (`markBlocked`). Values past the end count as
     /// blocked.
     blocked: []const bool,
+    /// Elements whose only changes are to groups that do not affect layout
+    /// (`cascade.classifyChange` `.paint`, and `repaintNeedsLayout` false):
+    /// not blocked; their taken-over boxes get the new colors (`repaint`).
+    repaint: []const Repaint = &.{},
 };
+
+pub const Repaint = struct {
+    node: NodeId,
+    /// `color` changed: it inherits, and `currentColor` reaches borders and
+    /// backgrounds, so the element's descendants are repainted too.
+    color: bool,
+    border_colors: bool,
+};
+
+/// A paint-only change that still needs layout: a table's collapsing border
+/// model resolves cell and table edge colors from the cells' border colors
+/// (CSS 2.1 §17.6.2), so a border-color change on such a block, or a
+/// `color` change (currentColor) over one, relays the table out.
+pub fn repaintNeedsLayout(previous: *const BoxTree, node: NodeId, change: Repaint) bool {
+    if (!change.color and !change.border_colors) return false;
+    if (!previous.has_collapsed_borders) return false;
+    const gen = previous.node_to_generated_box.get(node) orelse return false;
+    const ref = switch (gen) {
+        .block_ref => |r| r,
+        // An inline box's descendants are not one block range.
+        else => return change.color,
+    };
+    const view = previous.getSubtree(ref.subtree).view();
+    if (view.items(.collapsed_borders)[ref.index]) return true;
+    if (!change.color) return false;
+    return rangeHasCollapsedBorders(previous, view, ref.index, view.items(.skip)[ref.index]);
+}
+
+fn rangeHasCollapsedBorders(previous: *const BoxTree, view: Subtree.View, index: Subtree.Size, skip: Subtree.Size) bool {
+    const types = view.items(.type);
+    const flags = view.items(.collapsed_borders);
+    for (index..index + skip) |i| {
+        if (flags[i]) return true;
+        switch (types[i]) {
+            .subtree_proxy => |id| {
+                const child = previous.getSubtree(id);
+                if (rangeHasCollapsedBorders(previous, child.view(), 0, child.size())) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// After box generation: give the paint-only changed elements whose boxes
+/// were taken over (not generated again) their new colors — computed
+/// values and the boxes' cosmetic fields, as box generation writes them.
+pub fn repaint(layout: *Layout) !void {
+    const inc = layout.incremental orelse return;
+    if (!layout.reuse_state.active) return;
+    const env = layout.inputs.env;
+    for (inc.repaint) |r| {
+        if (!r.color) {
+            try repaintNode(layout, r.node);
+            continue;
+        }
+        // Tree order: each element's parent entry is current first.
+        var it = SubtreeIterator{ .env = env, .root = r.node, .next_node = r.node };
+        while (it.next()) |n| try repaintNode(layout, n);
+    }
+}
+
+fn repaintNode(layout: *Layout, node: NodeId) !void {
+    const env = layout.inputs.env;
+    if (env.getNodeProperty(.category, node) != .element) return;
+    // Generated again in this layout: already current.
+    if (layout.computer.visitedNode(.box_gen, node)) return;
+    layout.computer.refreshPaintValues(.box_gen, node);
+    const tree = layout.box_tree.ptr;
+    const gen = tree.node_to_generated_box.get(node) orelse return;
+    switch (gen) {
+        .block_ref => |ref| try repaintBlock(layout, ref, node),
+        .inline_box => |b| @import("inline.zig").writeInlineBoxCosmetic(layout, tree.getIfc(b.ifc_id), b.index, node),
+        .text => {},
+    }
+}
+
+/// The paint fields of an element's block (`BoxGen.writeBlockCosmetic`'s
+/// colors and backgrounds) and the text color of the IFCs directly in it.
+fn repaintBlock(layout: *Layout, ref: BlockRef, node: NodeId) !void {
+    const tree = layout.box_tree.ptr;
+    const view = tree.getSubtree(ref.subtree).view();
+    if (view.items(.type)[ref.index] != .block) return;
+    const entry = layout.computer.box_gen_stage.nodes[@intCast(node.value)];
+    const color = entry.color orelse return;
+    const solve = @import("solve.zig");
+    _, const used_color = solve.colorProperty(color);
+    if (!view.items(.collapsed_borders)[ref.index]) {
+        if (entry.border_colors) |bc| view.items(.border_colors)[ref.index] = solve.borderColors(bc, used_color);
+    }
+    if (entry.background_color) |bg_color| {
+        if (entry.background_clip) |bg_clip| if (entry.background) |bg| {
+            try BoxGen.resolveBlockBackgrounds(
+                layout,
+                &view.items(.box_offsets)[ref.index],
+                &view.items(.borders)[ref.index],
+                used_color,
+                bg_color,
+                bg_clip,
+                bg,
+                &view.items(.background)[ref.index],
+            );
+        };
+    }
+    // The IFCs of its own content (anonymous blocks among its children).
+    const types = view.items(.type);
+    const skips = view.items(.skip);
+    var child = ref.index + 1;
+    const end = ref.index + skips[ref.index];
+    while (child < end) : (child += skips[child]) {
+        switch (types[child]) {
+            .ifc_container => |id| tree.getIfc(id).font_color = used_color,
+            else => {},
+        }
+    }
+}
+
 
 /// Per-layout bookkeeping of what was taken from the previous tree.
 pub const State = struct {
@@ -329,6 +450,9 @@ fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, old_subtree: Subtree.Id, sub
     const types = view.items(.type);
     const nodes = view.items(.node);
     const backgrounds = view.items(.background);
+    if (std.mem.indexOfScalar(bool, view.items(.collapsed_borders)[start..][0..count], true) != null) {
+        new_tree.has_collapsed_borders = true;
+    }
     for (start..start + count) |i| {
         const here: BlockRef = .{ .subtree = subtree.id, .index = @intCast(i) };
         switch (types[i]) {

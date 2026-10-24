@@ -1067,7 +1067,7 @@ pub fn border(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.border) 
     // Apply defaults for omitted values
     const w = bw orelse .medium;
     const s = style orelse .none;
-    const col = border_color orelse types.Color.black;
+    const col = border_color orelse .current_color;
     return .{
         .horizontal_edges = .{
             .border_left = .{ .declared = w },
@@ -1133,7 +1133,7 @@ pub fn @"border-top"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@
     if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
     return .{
         .vertical_edges = .{ .border_top = .{ .declared = parsed.bw orelse .medium } },
-        .border_colors = .{ .top = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_colors = .{ .top = .{ .declared = parsed.border_color orelse .current_color } },
         .border_styles = .{ .top = .{ .declared = parsed.style orelse .none } },
     };
 }
@@ -1144,7 +1144,7 @@ pub fn @"border-right"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(
     if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
     return .{
         .horizontal_edges = .{ .border_right = .{ .declared = parsed.bw orelse .medium } },
-        .border_colors = .{ .right = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_colors = .{ .right = .{ .declared = parsed.border_color orelse .current_color } },
         .border_styles = .{ .right = .{ .declared = parsed.style orelse .none } },
     };
 }
@@ -1155,7 +1155,7 @@ pub fn @"border-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType
     if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
     return .{
         .vertical_edges = .{ .border_bottom = .{ .declared = parsed.bw orelse .medium } },
-        .border_colors = .{ .bottom = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_colors = .{ .bottom = .{ .declared = parsed.border_color orelse .current_color } },
         .border_styles = .{ .bottom = .{ .declared = parsed.style orelse .none } },
     };
 }
@@ -1166,7 +1166,7 @@ pub fn @"border-left"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     if (parsed.bw == null and parsed.style == null and parsed.border_color == null) return null;
     return .{
         .horizontal_edges = .{ .border_left = .{ .declared = parsed.bw orelse .medium } },
-        .border_colors = .{ .left = .{ .declared = parsed.border_color orelse types.Color.black } },
+        .border_colors = .{ .left = .{ .declared = parsed.border_color orelse .current_color } },
         .border_styles = .{ .left = .{ .declared = parsed.style orelse .none } },
     };
 }

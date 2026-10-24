@@ -190,6 +190,32 @@ pub fn adoptTable(sc: *StyleComputer, comptime stage: Stage, allocator: Allocato
     s.blocked = blocked;
 }
 
+/// Recompute the groups that do not affect layout (`color`, backgrounds,
+/// border colors) of an element whose table entry is otherwise current —
+/// one whose boxes a layout took over while only those changed
+/// (`Layout/reuse.zig` repaint). Its parent's entry must be current.
+pub fn refreshPaintValues(sc: *StyleComputer, comptime stage: Stage, node: NodeId) void {
+    const s = sc.stagePtr(stage);
+    const index: usize = @intCast(node.value);
+    if (index >= s.nodes.len) return;
+    if (sc.env.getNodeProperty(.category, node) != .element) return;
+    const entry = &s.nodes[index];
+    if (entry.box_style == null) return;
+    const cascaded: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
+    entry.color = sc.getSpecifiedValueForElement(stage, .color, node, cascaded);
+    entry.border_colors = sc.getSpecifiedValueForElement(stage, .border_colors, node, cascaded);
+    entry.background_color = sc.getSpecifiedValueForElement(stage, .background_color, node, cascaded);
+    entry.background_clip = sc.getSpecifiedValueForElement(stage, .background_clip, node, cascaded);
+    entry.background = sc.getSpecifiedValueForElement(stage, .background, node, cascaded);
+}
+
+/// Whether this layout visited `node` (generated its boxes, or computed its
+/// values) rather than keeping its previous entry.
+pub fn visitedNode(sc: *const StyleComputer, comptime stage: Stage, node: NodeId) bool {
+    const s = sc.stageConst(stage);
+    return node.value < s.visited.bit_length and s.visited.isSet(node.value);
+}
+
 /// The current node's boxes were taken over from the previous layout
 /// (`Layout/reuse.zig`): restore its entry from before this layout's visit,
 /// and treat it as not visited (its table entry is complete).

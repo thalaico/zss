@@ -946,6 +946,8 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
         }
         setCellBorders(subtree, cell.block, widths);
         subtree.items(.border_colors)[cell.block] = .{ .left = colors[0], .right = colors[1], .top = colors[2], .bottom = colors[3] };
+        subtree.items(.collapsed_borders)[cell.block] = true;
+        layout.box_tree.ptr.has_collapsed_borders = true;
     }
 
     // The table's box: outer halves — the part of each outer edge outside
@@ -999,4 +1001,6 @@ pub fn afterTableCosmetic(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: S
     const t = box_gen.table_context.finished.get(.{ .subtree_id = subtree_id, .block = index }) orelse return;
     if (!t.collapse) return;
     subtree.items(.border_colors)[index] = .{ .left = t.outer_colors[0], .right = t.outer_colors[1], .top = t.outer_colors[2], .bottom = t.outer_colors[3] };
+    subtree.items(.collapsed_borders)[index] = true;
+    box_gen.getLayout().box_tree.ptr.has_collapsed_borders = true;
 }

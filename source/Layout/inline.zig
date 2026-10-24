@@ -1095,7 +1095,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
     ifc.items(.margins)[inline_box_index] = .{ .start = used.margin_inline_start, .end = used.margin_inline_end };
 }
 
-fn writeInlineBoxCosmetic(layout: *Layout, ifc: *Ifc, inline_box_index: Ifc.Size, node: NodeId) void {
+pub fn writeInlineBoxCosmetic(layout: *Layout, ifc: *Ifc, inline_box_index: Ifc.Size, node: NodeId) void {
     const bgc = layout.computer.box_gen_stage.nodes[@intCast(node.value)];
     const color_specified = bgc.color orelse return;
     _, const used_color = solve.colorProperty(color_specified);

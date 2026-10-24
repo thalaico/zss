@@ -371,7 +371,7 @@ pub const Database = struct {
             };
         }
 
-        fn canFitWithinUsize(comptime T: type) bool {
+        pub fn canFitWithinUsize(comptime T: type) bool {
             return (@alignOf(T) <= @alignOf(usize) and @sizeOf(T) <= @sizeOf(usize));
         }
 
@@ -1644,10 +1644,87 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
 /// are skipped. The caller removes the elements' ::before / ::after nodes
 /// beforehand (`Environment.discardPseudoNodesOf`) and creates them again
 /// after (`Environment.createPseudoNodes`).
+/// A restyled element whose cascaded values may differ from before
+/// (`restyle`), with what it had before.
+pub const Change = struct {
+    node: Environment.NodeId,
+    /// The element's previous cascaded values (the values a larger group
+    /// points to stay in the database's arena), or null when they cannot be
+    /// compared: it has or had ::before / ::after values.
+    previous: ?Previous,
+
+    pub const Previous = struct {
+        group_map: Database.Storage.Map,
+        all: ?zss.values.types.CssWideKeyword,
+        /// A copy of its declared custom properties (keys and values point
+        /// into the declarations), owned by `restyle`'s caller's allocator.
+        custom_properties: std.StringHashMapUnmanaged([]const u8),
+    };
+
+    pub fn deinit(change: *Change, allocator: Allocator) void {
+        if (change.previous) |*p| p.custom_properties.deinit(allocator);
+    }
+};
+
+/// What a `Change` changed, compared once its new values are complete
+/// (after `custom_properties.resolveSubtrees`).
+pub const ChangeKind = union(enum) {
+    /// Something that can change layout, or cannot be compared.
+    layout,
+    /// Only the groups that do not affect layout: `color`,
+    /// `background-color`, `background-clip`, `background`, `border-*-color`.
+    paint: struct { color: bool, border_colors: bool },
+};
+
+pub fn classifyChange(env: *const Environment, change: *const Change) ChangeKind {
+    const previous = change.previous orelse return .layout;
+    const storage = env.cascade_db.getStorage(change.node) orelse return .layout;
+    if (!std.meta.eql(previous.all, storage.all)) return .layout;
+    if (!eqlCustomProperties(&previous.custom_properties, &storage.custom_properties)) return .layout;
+    var color = false;
+    var border_colors = false;
+    inline for (comptime std.enums.values(zss.values.groups.Tag)) |tag| {
+        if (!groupEql(tag, previous.group_map, storage.group_map)) switch (tag) {
+            .color => color = true,
+            .border_colors => border_colors = true,
+            .background_color, .background_clip, .background => {},
+            else => return .layout,
+        };
+    }
+    return .{ .paint = .{ .color = color, .border_colors = border_colors } };
+}
+
+fn eqlCustomProperties(a: *const std.StringHashMapUnmanaged([]const u8), b: *const std.StringHashMapUnmanaged([]const u8)) bool {
+    if (a.count() != b.count()) return false;
+    var it = a.iterator();
+    while (it.next()) |entry| {
+        const other = b.get(entry.key_ptr.*) orelse return false;
+        if (!std.mem.eql(u8, entry.value_ptr.*, other)) return false;
+    }
+    return true;
+}
+
+/// Whether `group` has the same cascaded values in the two maps (values
+/// that hold slices compare their pointers: a copy counts as different).
+fn groupEql(comptime tag: zss.values.groups.Tag, a: Database.Storage.Map, b: Database.Storage.Map) bool {
+    const a_value = a.getPtrConst(tag);
+    const b_value = b.getPtrConst(tag);
+    if (a_value == null or b_value == null) return a_value == null and b_value == null;
+    const CascadedValues = tag.CascadedValues();
+    if (comptime Database.Storage.canFitWithinUsize(CascadedValues)) {
+        const av: *const CascadedValues = @ptrCast(a_value.?);
+        const bv: *const CascadedValues = @ptrCast(b_value.?);
+        return std.meta.eql(av.*, bv.*);
+    }
+    const av: *const CascadedValues = @ptrFromInt(a_value.?.*);
+    const bv: *const CascadedValues = @ptrFromInt(b_value.?.*);
+    return av == bv or std.meta.eql(av.*, bv.*);
+}
+
 /// `changed`, if not null, receives the elements among `nodes` whose
 /// cascaded values may differ from before: their applied declaration
 /// blocks changed, or they have or had ::before / ::after values.
-pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator, changed: ?*std.ArrayListUnmanaged(Environment.NodeId)) !void {
+pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator, changed: ?*std.ArrayListUnmanaged(Change)) !void {
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
     const allocator = ctx.arena.allocator();
@@ -1709,6 +1786,13 @@ pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.
         const storage = try env.cascade_db.addStorage(env.allocator, node);
         const old_hash = storage.applied_hash;
         var pseudo_values = env.cascade_db.getPseudoStorage(node, .before) != null or env.cascade_db.getPseudoStorage(node, .after) != null;
+        var previous: ?Change.Previous = null;
+        if (changed != null) previous = .{
+            .group_map = storage.group_map,
+            .all = storage.all,
+            .custom_properties = try storage.custom_properties.clone(temp_allocator),
+        };
+        errdefer if (previous) |*p| p.custom_properties.deinit(temp_allocator);
         storage.reset();
         storage.applied_hash = 0;
         if (ctx.element_to_decl_block_list.getPtr(node)) |blocks| try applyInCascadeOrder(env, storage, blocks.items);
@@ -1717,7 +1801,17 @@ pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.
             if (ctx.pseudo_to_decl_block_list.contains(key)) pseudo_values = true;
         }
         if (changed) |list_out| {
-            if (pseudo_values or storage.applied_hash != old_hash) try list_out.append(temp_allocator, node);
+            if (pseudo_values or storage.applied_hash != old_hash) {
+                if (pseudo_values) {
+                    previous.?.custom_properties.deinit(temp_allocator);
+                    previous = null;
+                }
+                try list_out.append(temp_allocator, .{ .node = node, .previous = previous });
+                previous = null;
+            } else {
+                previous.?.custom_properties.deinit(temp_allocator);
+                previous = null;
+            }
         }
         inline for (.{ .before, .after }) |pseudo| {
             const key: Database.PseudoKey = .{ .node = node, .pseudo = pseudo };
