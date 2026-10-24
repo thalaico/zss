@@ -14,6 +14,7 @@ const Ast = zss.syntax.Ast;
 const ReturnType = zss.property.Property.ParseFnReturnType;
 
 const values = zss.values;
+const Environment = zss.Environment;
 const types = values.types;
 const Context = values.parse.Context;
 
@@ -862,74 +863,110 @@ pub fn @"background-size"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba
 }
 
 
-/// CSS font shorthand: [style] [variant] [weight] <size>[/<line-height>] <family>
-/// Handles the common form: font: normal normal normal 14px/1 FontAwesome
-pub fn font(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.font) {
+/// The `font` shorthand (CSS Fonts 4 §2.9):
+///   [ [ <'font-style'> || <font-variant-css2> || <font-weight-absolute> ||
+///       <font-width-css3> ]? <'font-size'> [ / <'line-height'> ]? <'font-family'># ]
+///   | <system-family-name>
+/// Every longhand is reset: those not given take their initial values
+/// (line-height `normal`). `normal` before the size stands for any of the
+/// four optional parts not otherwise given, and each part appears at most
+/// once. `bolder`/`lighter` are accepted as in Chrome and Firefox. `small-caps` (font-variant) and the font-width keywords are
+/// parse-only: zss has no font-variant or font-width (font-stretch)
+/// properties, so they reset nothing it tracks. The angle of
+/// `oblique <angle>` is parse-only too (zss slants by a fixed amount). The
+/// system family names (caption, icon, ...) are not supported: the
+/// declaration is invalid here.
+pub fn font(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.font) {
     ctx.initDecl(declaration_index);
 
-    var font_style: types.FontStyle = .normal;
-    var font_weight: types.FontWeight = .normal;
-
-    // Parse optional style/variant/weight keywords in any order (up to 4 tokens).
-    // "normal" is valid for style, variant, and weight — consuming it is a no-op.
-    var i: usize = 0;
-    while (i < 4) : (i += 1) {
+    var font_style: ?types.FontStyle = null;
+    var font_weight: ?types.FontWeight = null;
+    var variant_given = false;
+    var width_given = false;
+    var parts: u3 = 0;
+    while (parts < 4) {
         const save = ctx.savePoint();
-        if (values.parse.fontStyle(ctx)) |s| {
-            font_style = s;
+        if (values.parse.keyword(ctx, void, &.{.{ "normal", {} }})) |_| {
+            parts += 1;
             continue;
         }
-        ctx.resetPoint(save);
-        if (values.parse.fontWeight(ctx)) |w| {
-            font_weight = w;
-            continue;
+        if (font_style == null) {
+            if (values.parse.fontStyle(ctx)) |style| {
+                font_style = style;
+                if (style == .oblique) _ = values.parse.angle(ctx);
+                parts += 1;
+                continue;
+            }
+        }
+        if (!variant_given) {
+            if (values.parse.keyword(ctx, void, &.{.{ "small-caps", {} }})) |_| {
+                variant_given = true;
+                parts += 1;
+                continue;
+            }
+        }
+        if (font_weight == null) {
+            // The grammar has <font-weight-absolute>, but engines (Chrome,
+            // Firefox) accept bolder/lighter here too; so does zss.
+            if (values.parse.fontWeight(ctx)) |weight| {
+                font_weight = weight;
+                parts += 1;
+                continue;
+            }
+        }
+        if (!width_given) {
+            if (values.parse.keyword(ctx, void, &.{
+                .{ "ultra-condensed", {} }, .{ "extra-condensed", {} }, .{ "condensed", {} },
+                .{ "semi-condensed", {} },  .{ "semi-expanded", {} },   .{ "expanded", {} },
+                .{ "extra-expanded", {} },  .{ "ultra-expanded", {} },
+            })) |_| {
+                width_given = true;
+                parts += 1;
+                continue;
+            }
         }
         ctx.resetPoint(save);
         break;
     }
 
-    // Required font-size.
     const size = values.parse.fontSize(ctx) orelse return null;
 
-    // Optional /line-height — consume the slash and the value.
-    var lh: types.LineHeight = 0; // 0 = normal
+    var line_height: types.LineHeight = .normal;
     {
         const save = ctx.savePoint();
         if (ctx.next()) |item| {
-            if (item.tag == .token_delim) {
-                // Assume '/' — parse line-height value.
-                if (values.parse.lineHeight(ctx)) |h| {
-                    lh = h;
-                }
+            if (item.tag == .token_delim and item.index.extra(ctx.ast).codepoint == '/') {
+                line_height = values.parse.lineHeight(ctx) orelse return null;
             } else {
-                ctx.resetPoint(item.index);
+                ctx.resetPoint(save);
             }
         }
-        _ = save;
     }
 
-    // Required font-family list.
     const generic_monospace = values.parse.familyIsGenericMonospace(ctx);
-    const family = values.parse.fontFamily(ctx) orelse return null;
+    const family = (try values.parse.fontFamily(ctx, env)) orelse return null;
 
     return .{ .font = .{
-        .font_family = .{ .declared = family },
+        .font_family = .{ .declared = family.family },
+        .font_family_list = .{ .declared = family.list },
         .generic_monospace = .{ .declared = generic_monospace },
         .font_size = .{ .declared = size },
         .font_size_info = .{ .declared = values.parse.fontSizeInfo(size) },
-        .font_weight = .{ .declared = font_weight },
-        .font_style = .{ .declared = font_style },
-        .line_height = .{ .declared = lh },
+        .font_weight = .{ .declared = font_weight orelse .normal },
+        .font_style = .{ .declared = font_style orelse .normal },
+        .line_height = .{ .declared = line_height },
     } };
 }
 
-pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-family") {
+pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"font-family") {
     ctx.initDecl(declaration_index);
-    // font-family consumes the entire comma-separated list internally;
-    // don't check ctx.empty() since trailing unrecognized entries are skipped.
     const generic_monospace = values.parse.familyIsGenericMonospace(ctx);
-    const value = values.parse.fontFamily(ctx) orelse return null;
-    return .{ .font = .{ .font_family = .{ .declared = value }, .generic_monospace = .{ .declared = generic_monospace } } };
+    const value = (try values.parse.fontFamily(ctx, env)) orelse return null;
+    return .{ .font = .{
+        .font_family = .{ .declared = value.family },
+        .font_family_list = .{ .declared = value.list },
+        .generic_monospace = .{ .declared = generic_monospace },
+    } };
 }
 
 pub fn @"font-size"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"font-size") {

@@ -533,6 +533,13 @@ pub const FontStyle = enum {
     italic,
     oblique,
 };
+/// The computed font-family: the list as specified (CSS Fonts 4 §2.1), an
+/// id of its serialization interned in the Environment
+/// (`Environment.internFontFamilyList`). `.initial` is the UA's standard font.
+pub const FontFamilyList = enum(u32) { initial = 0, _ };
+
+/// The family used for the element's text: the first available family of
+/// its font-family list.
 pub const FontFamily = union(enum) {
     sans_serif,
     serif,
@@ -648,8 +655,22 @@ pub const BorderSpacing = struct {
     v: @import("../zss.zig").math.Unit,
 };
 
-/// CSS line-height: stored as layout units (4 units = 1px). 0 = normal.
-pub const LineHeight = @import("../zss.zig").math.Unit;
+/// line-height (CSS 2.1 §10.8.1, CSS Inline 3).
+pub const LineHeight = union(enum) {
+    normal,
+    /// A multiple of the element's font size; inherits as the number.
+    number: f32,
+    /// An absolute length, in CSS px (kept unrounded, as Chrome does; layout
+    /// rounds it to layout units).
+    length: f32,
+    /// An `em` length or a percentage, as a multiple of the element's own
+    /// font size. Specified only: computed to a `length`
+    /// (StyleComputer.computeFont), so descendants inherit the length.
+    em: f32,
+    /// A `rem` length, as a multiple of the root element's font size.
+    /// Specified only, like `em`.
+    rem: f32,
+};
 
 /// CSS content property for generated content (::before/::after).
 /// Drives box generation in insertPseudoElement: .normal/.none suppress generation,

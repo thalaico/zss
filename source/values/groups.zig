@@ -251,6 +251,7 @@ pub fn MultiValue(comptime T: type) type {
 pub const Font = struct {
     font: types.Font,
     font_family: types.FontFamily,
+    font_family_list: types.FontFamilyList,
     font_size: types.FontSize,
     font_size_info: types.FontSizeInfo,
     /// The family list is exactly the one generic family `monospace`
@@ -272,6 +273,7 @@ pub const Font = struct {
     pub const initial_values = Font{
         .font = .default,
         .font_family = .serif, // the UA "standard font" (Chrome: Times New Roman)
+        .font_family_list = .initial,
         .font_size = .{ .keyword = 3 }, // medium
         .font_size_info = .{},
         .generic_monospace = false,
@@ -283,7 +285,7 @@ pub const Font = struct {
         .visibility = .visible,
         .border_spacing = .{ .h = 0, .v = 0 }, // CSS initial value; the UA sheet sets 2px on tables
         .border_collapse = .separate,
-        .line_height = 0, // 0 = normal (1.2 * font-size)
+        .line_height = .normal,
         .white_space = .normal,
         .overflow_wrap = .normal,
         .list_style_type = .disc,

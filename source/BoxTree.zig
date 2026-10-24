@@ -439,7 +439,7 @@ pub const InlineFormattingContext = struct {
     font_runs: ArrayListUnmanaged(FontRun) = .{},
     text_decoration: values.types.TextDecoration = .none,
     text_align: values.types.TextAlign = .start,
-    line_height: math.Unit = 0, // 0 = normal (1.2 * font-size)
+    line_height: values.types.LineHeight = .normal,
     ascender: math.Unit = undefined,
     /// This is a positive value.
     descender: math.Unit = undefined,

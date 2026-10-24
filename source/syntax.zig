@@ -714,9 +714,10 @@ pub const Ast = struct {
         }
 
         /// Returns to a previously visited point in the sequence.
-        /// `index` must be a value that was previously returned from one of the `next*` functions.
+        /// `index` must be a value that was previously returned from one of the
+        /// `next*` functions, or a saved `start` — which may be the end.
         pub fn reset(sequence: *Sequence, index: Index) void {
-            assert(@intFromEnum(index) < @intFromEnum(sequence.end));
+            assert(@intFromEnum(index) <= @intFromEnum(sequence.end));
             sequence.start = index;
         }
     };

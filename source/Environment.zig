@@ -70,6 +70,10 @@ viewport_configured: bool = false,
 /// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
 /// Used by the CSS font-family parser to recognize custom font names.
 custom_font_names: []const []const u8 = &.{},
+/// The distinct specified font-family lists, serialized (CSSOM), indexed by
+/// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
+font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,
+font_family_list_ids: std.StringHashMapUnmanaged(u32) = .empty,
 testing: Testing,
 
 pub const CaseOptions = struct {
@@ -191,6 +195,29 @@ pub fn deinit(env: *Environment) void {
     }
 
     env.urls_to_images.deinit(env.allocator);
+    for (env.font_family_lists.items) |text| env.allocator.free(text);
+    env.font_family_lists.deinit(env.allocator);
+    env.font_family_list_ids.deinit(env.allocator);
+}
+
+/// The id of the serialized font-family list `text`, interning it.
+pub fn internFontFamilyList(env: *Environment, text: []const u8) !zss.values.types.FontFamilyList {
+    const gop = try env.font_family_list_ids.getOrPut(env.allocator, text);
+    if (!gop.found_existing) {
+        errdefer _ = env.font_family_list_ids.remove(text);
+        const owned = try env.allocator.dupe(u8, text);
+        errdefer env.allocator.free(owned);
+        try env.font_family_lists.append(env.allocator, owned);
+        gop.key_ptr.* = owned;
+        gop.value_ptr.* = @intCast(env.font_family_lists.items.len);
+    }
+    return @enumFromInt(gop.value_ptr.*);
+}
+
+/// The serialized font-family list, or null for the initial value.
+pub fn fontFamilyListText(env: *const Environment, list: zss.values.types.FontFamilyList) ?[]const u8 {
+    if (list == .initial) return null;
+    return env.font_family_lists.items[@intFromEnum(list) - 1];
 }
 
 pub const Namespaces = struct {

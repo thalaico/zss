@@ -594,23 +594,35 @@ fn colorArg(ctx: *Context) ?ColorArg {
         // Percentage tokens hold the fraction (50% = 0.5).
         .token_percentage => return .{ .percentage = arg.index.extra(ctx.ast).number orelse return null },
         .token_dimension => {
-            var children = arg.index.children(ctx.ast);
-            const unit_index = children.nextSkipSpaces(ctx.ast) orelse return null;
-            const number = arg.index.extra(ctx.ast).number orelse return null;
-            const unit_loc = unit_index.location(ctx.ast);
-            const factor: f32 = ctx.source_code.mapIdentifierValue(unit_loc, f32, &.{
-                .{ "deg", 1.0 },
-                .{ "grad", 0.9 },
-                .{ "rad", 180.0 / std.math.pi },
-                .{ "turn", 360.0 },
-            }) orelse return null;
-            return .{ .degrees = number * factor };
+            ctx.resetPoint(arg.index);
+            return .{ .degrees = angle(ctx) orelse return null };
         },
         else => {
             ctx.resetPoint(arg.index);
             return null;
         },
     }
+}
+
+/// An <angle> (CSS Values 4 §7.1), in degrees. Consumes nothing on failure.
+pub fn angle(ctx: *Context) ?f32 {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .token_dimension) {
+        var children = item.index.children(ctx.ast);
+        if (children.nextSkipSpaces(ctx.ast)) |unit_index| {
+            if (item.index.extra(ctx.ast).number) |number| {
+                const factor: ?f32 = ctx.source_code.mapIdentifierValue(unit_index.location(ctx.ast), f32, &.{
+                    .{ "deg", 1.0 },
+                    .{ "grad", 0.9 },
+                    .{ "rad", 180.0 / std.math.pi },
+                    .{ "turn", 360.0 },
+                });
+                if (factor) |f| return number * f;
+            }
+        }
+    }
+    ctx.resetPoint(item.index);
+    return null;
 }
 
 /// CSS Color 4 §4.1 / §7: the arguments of rgb()/rgba() or hsl()/hsla() in
@@ -1000,141 +1012,169 @@ pub fn familyIsGenericMonospace(ctx: *Context) bool {
     return ctx.next() == null;
 }
 
-/// CSS font-family: comma-separated list of family names / generic keywords.
-/// Scans the list and returns the first recognized generic family.
-/// Named fonts are mapped to their nearest generic category.
-/// Custom @font-face fonts (registered in ctx.custom_font_names) are returned as .custom(idx).
-pub fn fontFamily(ctx: *Context) ?types.FontFamily {
-    const generic_family_kvs = comptime &[_]SourceCode.KV(types.FontFamily){
-        .{ "sans-serif", .sans_serif },
+pub const FontFamilyValue = struct {
+    family: types.FontFamily,
+    list: types.FontFamilyList,
+};
+
+/// <'font-family'> = [ <family-name> | <generic-family> ]# (CSS Fonts 4
+/// §2.1), consuming the rest of the sequence. <family-name> is a <string>
+/// or a sequence of identifiers (joined by single spaces). The computed
+/// value is the list as specified, interned in `env` in its CSSOM
+/// serialization: generic families lowercased, family names unquoted if
+/// they are an identifier (and not a generic keyword), else quoted.
+/// `family` is the first available family of the list — a generic family
+/// zss renders, a registered custom font (`custom_font_names`), or a known
+/// named font mapped to its generic family — or the UA standard font
+/// (`serif`, Chrome's Times New Roman) when none is. Generic families zss
+/// does not render (cursive, fantasy, emoji, math, fangsong, ui-*) are
+/// skipped like unavailable names.
+pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
+    const allocator = env.allocator;
+    var serialized: std.ArrayList(u8) = .empty;
+    defer serialized.deinit(allocator);
+    var name: std.ArrayList(u8) = .empty;
+    defer name.deinit(allocator);
+    var resolved: ?types.FontFamily = null;
+
+    while (true) {
+        name.clearRetainingCapacity();
+        const first = ctx.next() orelse return null;
+        var quoted = false;
+        var idents: usize = 0;
+        switch (first.tag) {
+            .token_string => {
+                quoted = true;
+                var it = ctx.source_code.stringTokenIterator(first.index.location(ctx.ast));
+                while (it.next()) |cp| try appendCodepoint(allocator, &name, cp);
+            },
+            .token_ident => {
+                var item = first;
+                while (true) {
+                    if (idents > 0) try name.append(allocator, ' ');
+                    var it = ctx.source_code.identTokenIterator(item.index.location(ctx.ast));
+                    while (it.next()) |cp| try appendCodepoint(allocator, &name, cp);
+                    idents += 1;
+                    const following = ctx.next() orelse break;
+                    if (following.tag != .token_ident) {
+                        ctx.resetPoint(following.index);
+                        break;
+                    }
+                    item = following;
+                }
+            },
+            else => return null,
+        }
+
+        var lower_buf: [64]u8 = undefined;
+        const lower: ?[]const u8 = if (name.items.len <= lower_buf.len) std.ascii.lowerString(&lower_buf, name.items) else null;
+        const generic: ?[]const u8 = if (!quoted and idents == 1) blk: {
+            const l = lower orelse break :blk null;
+            for (generic_family_names) |g| if (std.mem.eql(u8, l, g)) break :blk g;
+            break :blk null;
+        } else null;
+        if (!quoted and idents == 1) {
+            // CSS-wide keywords and `default` are not <custom-ident>s.
+            if (lower) |l| for ([_][]const u8{ "inherit", "initial", "unset", "revert", "revert-layer", "default" }) |k| {
+                if (std.mem.eql(u8, l, k)) return null;
+            };
+        }
+
+        if (serialized.items.len > 0) try serialized.appendSlice(allocator, ", ");
+        if (generic) |g| {
+            try serialized.appendSlice(allocator, g);
+        } else if (isIdentifier(name.items) and !isGenericFamilyName(lower)) {
+            try serialized.appendSlice(allocator, name.items);
+        } else {
+            try serialized.append(allocator, '"');
+            for (name.items) |c| {
+                if (c == '"' or c == '\\') try serialized.append(allocator, '\\');
+                try serialized.append(allocator, c);
+            }
+            try serialized.append(allocator, '"');
+        }
+
+        if (resolved == null) resolved = if (generic) |g|
+            renderedGenericFamily(g)
+        else if (lower) |l|
+            availableNamedFamily(l, ctx.custom_font_names)
+        else
+            null;
+
+        const separator = ctx.next() orelse break;
+        if (separator.tag != .token_comma) return null;
+    }
+
+    return .{
+        .family = resolved orelse .serif,
+        .list = try env.internFontFamilyList(serialized.items),
+    };
+}
+
+const generic_family_names = [_][]const u8{
+    "serif",   "sans-serif", "monospace", "cursive",  "fantasy",       "system-ui",
+    "emoji",   "math",       "fangsong",  "ui-serif", "ui-sans-serif", "ui-monospace",
+    "ui-rounded",
+};
+
+fn isGenericFamilyName(lower: ?[]const u8) bool {
+    const l = lower orelse return false;
+    for (generic_family_names) |g| if (std.mem.eql(u8, l, g)) return true;
+    return false;
+}
+
+fn renderedGenericFamily(generic: []const u8) ?types.FontFamily {
+    const kvs = [_]struct { []const u8, types.FontFamily }{
         .{ "serif", .serif },
+        .{ "sans-serif", .sans_serif },
         .{ "monospace", .monospace },
         .{ "system-ui", .system_ui },
     };
+    for (kvs) |kv| if (std.mem.eql(u8, generic, kv[0])) return kv[1];
+    return null;
+}
 
-    // Named-font-to-generic fallback: only used when no custom font (fontconfig)
-    // is registered for this name. Ensures pages still render even without fontconfig.
-    const named_font_fallbacks = comptime &[_]SourceCode.KV(types.FontFamily){
-        .{ "verdana", .sans_serif },
-        .{ "arial", .sans_serif },
-        .{ "helvetica", .sans_serif },
-        .{ "tahoma", .sans_serif },
-        .{ "calibri", .sans_serif },
-        .{ "roboto", .sans_serif },
-        .{ "lato", .sans_serif },
-        .{ "times", .serif },
-        .{ "georgia", .serif },
-        .{ "garamond", .serif },
-        .{ "palatino", .serif },
-        .{ "cambria", .serif },
-        .{ "courier", .monospace },
-        .{ "consolas", .monospace },
-        .{ "monaco", .monospace },
+/// A named family that is available: a registered custom font (fontconfig
+/// resolved names and @font-face families), else a known named font mapped
+/// to its generic family.
+fn availableNamedFamily(lower: []const u8, custom_font_names: []const []const u8) ?types.FontFamily {
+    for (custom_font_names, 0..) |custom, idx| {
+        if (std.ascii.eqlIgnoreCase(custom, lower)) return .{ .custom = @intCast(idx) };
+    }
+    const named = [_]struct { []const u8, types.FontFamily }{
+        .{ "verdana", .sans_serif },          .{ "arial", .sans_serif },       .{ "helvetica", .sans_serif },
+        .{ "tahoma", .sans_serif },           .{ "calibri", .sans_serif },     .{ "roboto", .sans_serif },
+        .{ "lato", .sans_serif },             .{ "times", .serif },            .{ "georgia", .serif },
+        .{ "garamond", .serif },              .{ "palatino", .serif },         .{ "cambria", .serif },
+        .{ "linux libertine", .serif },       .{ "liberation serif", .serif }, .{ "nimbus roman", .serif },
+        .{ "courier", .monospace },           .{ "consolas", .monospace },     .{ "monaco", .monospace },
         .{ "menlo", .monospace },
     };
-
-    // Walk through comma-separated values, return first recognized family.
-    while (true) {
-        if (identifier(ctx)) |loc| {
-            // 1. Generic CSS keywords (sans-serif, serif, monospace, system-ui)
-            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, generic_family_kvs)) |family| {
-                return family;
-            }
-            // 2. Custom fonts — fontconfig-resolved named fonts + @font-face
-            if (identMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
-                return .{ .custom = idx };
-            }
-            // 3. Fallback: map known named fonts to their generic family
-            if (ctx.source_code.mapIdentifierValue(loc, types.FontFamily, named_font_fallbacks)) |family| {
-                return family;
-            }
-            // Unrecognized identifier — skip to next comma-separated entry.
-        } else if (ctx.next()) |item| {
-            // Skip over string tokens and other unrecognized tokens.
-            if (item.tag == .token_comma) continue;
-            if (item.tag == .token_string) {
-                const loc = item.index.location(ctx.ast);
-                // 1. Custom fonts first (fontconfig-resolved + @font-face)
-                if (stringMatchesCustomFont(ctx.source_code, loc, ctx.custom_font_names)) |idx| {
-                    return .{ .custom = idx };
-                }
-                // 2. Fallback: quoted named fonts to generic families
-                if (matchQuotedFontFamily(ctx.source_code, loc)) |family| {
-                    return family;
-                }
-                // Unrecognized quoted name — continue to next entry.
-            }
-            // Other token type — no more font families.
-            ctx.resetPoint(item.index);
-            break;
-        } else {
-            break;
-        }
-        // Consume the comma separator.
-        const next_item = ctx.next() orelse break;
-        if (next_item.tag != .token_comma) {
-            ctx.resetPoint(next_item.index);
-            break;
-        }
-    }
+    for (named) |kv| if (std.mem.eql(u8, lower, kv[0])) return kv[1];
     return null;
 }
 
-/// Check an unquoted identifier against registered custom font names (case-insensitive).
-fn identMatchesCustomFont(source_code: SourceCode, location: SourceCode.Location, custom_names: []const []const u8) ?u8 {
-    for (custom_names, 0..) |name, idx| {
-        if (identEqlIgnoreCase(source_code, location, name)) return @intCast(idx);
+/// Whether `text` is a CSS identifier as written (CSS Syntax 3 §4.3.10),
+/// i.e. serializes without quotes or escapes.
+fn isIdentifier(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var i: usize = 0;
+    if (text[0] == '-') {
+        i = 1;
+        if (text.len == 1) return false;
     }
-    return null;
+    const start = text[i];
+    if (!(std.ascii.isAlphabetic(start) or start == '_' or start >= 0x80 or (i == 1 and start == '-'))) return false;
+    for (text[i + 1 ..]) |c| {
+        if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c >= 0x80)) return false;
+    }
+    return true;
 }
 
-/// Check a quoted string token against registered custom font names (case-insensitive).
-fn stringMatchesCustomFont(source_code: SourceCode, location: SourceCode.Location, custom_names: []const []const u8) ?u8 {
-    for (custom_names, 0..) |name, idx| {
-        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return @intCast(idx);
-    }
-    return null;
-}
-
-fn matchQuotedFontFamily(source_code: SourceCode, location: SourceCode.Location) ?types.FontFamily {
-    const names_sans = [_][]const u8{ "verdana", "arial", "helvetica", "tahoma", "calibri", "roboto", "lato" };
-    const names_serif = [_][]const u8{ "times", "georgia", "garamond", "palatino", "cambria", "linux libertine", "liberation serif", "nimbus roman" };
-    const names_mono = [_][]const u8{ "courier", "consolas", "monaco", "menlo" };
-
-    // Compare quoted string content against known font names.
-    // Uses stringTokenIterator for character-by-character comparison.
-    inline for (&names_sans) |name| {
-        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .sans_serif;
-    }
-    inline for (&names_serif) |name| {
-        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .serif;
-    }
-    inline for (&names_mono) |name| {
-        if (stringEqlIgnoreCaseImpl(source_code, location, name)) return .monospace;
-    }
-    return null;
-}
-
-fn stringEqlIgnoreCaseImpl(source_code: SourceCode, location: SourceCode.Location, ascii_string: []const u8) bool {
-    const toLowercase = zss.unicode.latin1ToLowercase;
-    var it = source_code.stringTokenIterator(location);
-    for (ascii_string) |byte| {
-        const actual = it.next() orelse return false;
-        if (toLowercase(@as(u21, byte)) != toLowercase(actual)) return false;
-    }
-    // String must be fully consumed for exact match.
-    return it.next() == null;
-}
-
-/// Compare an unquoted identifier token against an ASCII string (case-insensitive).
-fn identEqlIgnoreCase(source_code: SourceCode, location: SourceCode.Location, ascii_string: []const u8) bool {
-    const toLowercase = zss.unicode.latin1ToLowercase;
-    var it = source_code.identTokenIterator(location);
-    for (ascii_string) |byte| {
-        const actual = it.next() orelse return false;
-        if (toLowercase(@as(u21, byte)) != toLowercase(actual)) return false;
-    }
-    return it.next() == null;
+fn appendCodepoint(allocator: Allocator, list: *std.ArrayList(u8), cp: u21) !void {
+    var buf: [4]u8 = undefined;
+    const len = std.unicode.utf8Encode(cp, &buf) catch return;
+    try list.appendSlice(allocator, buf[0..len]);
 }
 
 pub fn fontWeight(ctx: *Context) ?types.FontWeight {
@@ -1266,16 +1306,41 @@ pub fn gap(ctx: *Context) ?zss.math.Unit {
 /// Parse line-height: <length> | <number> | normal.
 /// Encoding: 0 = normal, >0 = absolute layout units, <0 = number factor × -1000
 /// (deferred resolution against element's font-size at layout time).
+/// normal | <number [0,∞]> | <length-percentage [0,∞]>
 pub fn lineHeight(ctx: *Context) ?types.LineHeight {
     const save = ctx.savePoint();
     if (keyword(ctx, enum { normal }, &.{.{ "normal", .normal }})) |_| {
-        return 0;
+        return .normal;
     }
     ctx.resetPoint(save);
-    if (parseNumberFactor(ctx)) |factor| {
-        return -@as(types.LineHeight, @intFromFloat(@round(factor * 1000.0)));
+    if (parseNumberFactor(ctx)) |factor| return .{ .number = factor };
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        // Percentage tokens hold the fraction (150% = 1.5).
+        .token_percentage => {
+            const fraction = item.index.extra(ctx.ast).number orelse return null;
+            if (fraction < 0) return null;
+            return .{ .em = fraction };
+        },
+        .token_dimension => {
+            var children = item.index.children(ctx.ast);
+            if (children.nextSkipSpaces(ctx.ast)) |unit_index| {
+                const number: f32 = item.index.extra(ctx.ast).number orelse
+                    @floatFromInt(item.index.extra(ctx.ast).integer orelse return null);
+                if (number < 0) return null;
+                switch (unit_index.extra(ctx.ast).unit orelse return null) {
+                    .em => return .{ .em = number },
+                    .rem => return .{ .rem = number },
+                    else => {},
+                }
+            }
+        },
+        else => {},
     }
-    return parseLengthToUnits(ctx);
+    ctx.resetPoint(item.index);
+    const px = parseLengthPx(ctx) orelse return null;
+    if (px < 0) return null;
+    return .{ .length = px };
 }
 
 /// Parse a unitless number factor (CSS <number> for line-height).
@@ -1284,13 +1349,13 @@ fn parseNumberFactor(ctx: *Context) ?f32 {
     switch (item.tag) {
         .token_number => {
             const num = item.index.extra(ctx.ast).number orelse return null;
-            if (num > 0) return num;
+            if (num >= 0) return num;
             ctx.resetPoint(item.index);
             return null;
         },
         .token_integer => {
             const int_val = item.index.extra(ctx.ast).integer orelse return null;
-            if (int_val > 0) return @floatFromInt(int_val);
+            if (int_val >= 0) return @floatFromInt(int_val);
             ctx.resetPoint(item.index);
             return null;
         },
@@ -1303,6 +1368,13 @@ fn parseNumberFactor(ctx: *Context) ?f32 {
 
 /// Shared helper: parse a <length> token and convert to layout units (4 units = 1px).
 fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
+    const px = parseLengthPx(ctx) orelse return null;
+    return @intFromFloat(@round(px * 4.0)); // 4 units per px
+}
+
+/// A <length> in CSS px (font-relative units against the initial font
+/// size), or a unitless 0.
+fn parseLengthPx(ctx: *Context) ?f32 {
     const item = ctx.next() orelse return null;
     switch (item.tag) {
         .token_dimension => {
@@ -1323,11 +1395,11 @@ fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
                 .vw => number * ctx.viewport_width_px / 100.0,
                 .vh => number * ctx.viewport_height_px / 100.0,
             };
-            return @intFromFloat(@round(px * 4.0)); // 4 units per px
+            return px;
         },
         .token_integer => {
             const int_val = item.index.extra(ctx.ast).integer orelse return null;
-            if (int_val == 0) return 0;
+            if (int_val == 0) return 0.0;
             return null;
         },
         else => {

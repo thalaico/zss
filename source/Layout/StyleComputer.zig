@@ -489,6 +489,13 @@ fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *co
     }
     result.font_size = .{ .px = size };
     result.font_size_info = info;
+    // CSS 2.1 §10.8.1: a percentage (and an em length) is relative to the
+    // element's own font size; the computed value is the length.
+    switch (specified.line_height) {
+        .em => |m| result.line_height = .{ .length = m * size },
+        .rem => |m| result.line_height = .{ .length = m * rootFontSizePx(stage, sc, node) },
+        else => {},
+    }
     return result;
 }
 

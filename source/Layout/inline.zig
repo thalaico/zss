@@ -554,12 +554,14 @@ fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytyp
     const ascent: Unit = @intFromFloat(m.ascent * upp);
     const descent: Unit = @intFromFloat(m.descent * upp);
     const content: Unit = ascent + descent;
-    const line_height: Unit = if (font.line_height == 0)
-        content + @as(Unit, @intFromFloat(m.line_gap * upp))
-    else if (font.line_height < 0)
-        @intFromFloat(@round(@as(f32, @floatFromInt(-font.line_height)) / 1000.0 * size * upp))
-    else
-        font.line_height;
+    const line_height: Unit = switch (font.line_height) {
+        .normal => content + @as(Unit, @intFromFloat(m.line_gap * upp)),
+        .number => |n| @intFromFloat(@round(n * size * upp)),
+        .length => |px| @intFromFloat(@round(px * upp)),
+        // Font-relative lengths are computed to lengths
+        // (StyleComputer.computeFont); these are computed values.
+        .em, .rem => unreachable,
+    };
     // Blink floors the half-leading above the ascent to whole pixels; the
     // descent side gets the rest.
     const half_leading = @divFloor(@divFloor(line_height - content, 2), units_per_pixel) * units_per_pixel;
