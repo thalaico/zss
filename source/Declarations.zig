@@ -44,11 +44,15 @@ meta: std.ArrayListUnmanaged(Meta) = .empty,
 arena: ArenaAllocator.State = .{},
 /// Custom properties per block. Each block can declare --name: value pairs.
 custom_props_map: std.AutoHashMapUnmanaged(std.meta.Tag(Block), CustomPropsBlock) = .empty,
+/// Declarations whose value contains var() per block (CSS Variables 1 §3:
+/// parsed after substitution, at computed-value time).
+pending_map: std.AutoHashMapUnmanaged(std.meta.Tag(Block), PendingBlock) = .empty,
 current: struct {
     block: std.meta.Tag(Block) = 0,
     meta: Meta = undefined,
     /// Custom properties being added to current block
     custom_props: CustomPropsBlock = .empty,
+    pending: PendingBlock = .empty,
 } = .{},
 debug: Debug = .{},
 
@@ -56,9 +60,23 @@ debug: Debug = .{},
 pub const CustomProp = struct {
     name: []const u8,  // Property name without -- prefix
     value: []const u8, // Unparsed value string
+    importance: Importance,
 };
 
 pub const CustomPropsBlock = std.ArrayListUnmanaged(CustomProp);
+
+/// A declaration of `property` whose value contains var(). It claims the
+/// property's fields in `mask` (bit i = the i-th field of
+/// `Property.affectedFields`, the ones no later declaration in the block
+/// set) with `unset` until it is substituted.
+pub const Pending = struct {
+    property: zss.property.Property,
+    text: []const u8,
+    importance: Importance,
+    mask: u32,
+};
+
+pub const PendingBlock = std.ArrayListUnmanaged(Pending);
 
 pub const Block = enum(u32) {
     _,
@@ -130,6 +148,9 @@ pub fn deinit(decls: *Declarations, allocator: Allocator) void {
         block.deinit(allocator);
     }
     decls.custom_props_map.deinit(allocator);
+    var pending_it = decls.pending_map.valueIterator();
+    while (pending_it.next()) |block| block.deinit(allocator);
+    decls.pending_map.deinit(allocator);
 }
 
 pub fn openBlock(decls: *Declarations, allocator: Allocator) !Block {
@@ -137,6 +158,8 @@ pub fn openBlock(decls: *Declarations, allocator: Allocator) !Block {
     if (decls.current.block == std.math.maxInt(std.meta.Tag(Block))) return error.OutOfDeclBlockIds;
     decls.current.meta = .{};
     decls.current.custom_props = .empty; // Reset custom props for new block
+    decls.current.pending = .empty;
+    try decls.pending_map.ensureUnusedCapacity(allocator, 1);
     try decls.meta.ensureUnusedCapacity(allocator, 1);
     try decls.custom_props_map.ensureUnusedCapacity(allocator, 1); // Pre-allocate for closeBlock
     return @enumFromInt(decls.current.block);
@@ -147,6 +170,9 @@ pub fn closeBlock(decls: *Declarations) void {
     decls.meta.appendAssumeCapacity(decls.current.meta);
     
     // Store custom properties for this block if any were added
+    if (decls.current.pending.items.len > 0) {
+        decls.pending_map.putAssumeCapacity(decls.current.block, decls.current.pending);
+    }
     if (decls.current.custom_props.items.len > 0) {
         const block_id = decls.current.block;
         decls.custom_props_map.putAssumeCapacity(block_id, decls.current.custom_props);
@@ -170,10 +196,6 @@ pub fn addCustomProperty(
 ) !void {
     decls.debug.assertBlockOpened();
     
-    // For now, ignore importance and just store all custom properties
-    // TODO: Handle importance properly (separate normal/important)
-    _ = importance;
-    
     // Allocate copies of name and value in arena
     var arena = decls.arena.promote(allocator);
     defer decls.arena = arena.state;
@@ -186,7 +208,41 @@ pub fn addCustomProperty(
     try decls.current.custom_props.append(allocator, .{
         .name = name_copy,
         .value = value_copy,
+        .importance = importance,
     });
+}
+
+/// Add a var()-containing declaration to the open block (see `Pending`).
+pub fn addPending(decls: *Declarations, allocator: Allocator, pending: Pending) !void {
+    decls.debug.assertBlockOpened();
+    var arena = decls.arena.promote(allocator);
+    defer decls.arena = arena.state;
+    var copy = pending;
+    copy.text = try arena.allocator().dupe(u8, pending.text);
+    try decls.current.pending.append(allocator, copy);
+}
+
+/// Whether `field` of `group` already has a value of `importance` in the
+/// open block (declarations are added last to first, so it was declared
+/// later in the source).
+pub fn currentHasValue(decls: *const Declarations, comptime group: groups.Tag, comptime field: group.FieldEnum(), importance: Importance) bool {
+    const header = @field(decls.headers, @tagName(group)).getPtr(decls.current.block) orelse return false;
+    switch (comptime group.size()) {
+        .single => {
+            const counts = switch (importance) {
+                .important => header.important_counts,
+                .normal => header.normal_counts,
+            };
+            return @field(counts, @tagName(field)) != ValueCount.undeclared;
+        },
+        .multi => {
+            const tags = switch (importance) {
+                .important => header.important_tags,
+                .normal => header.normal_tags,
+            };
+            return tags[@intFromEnum(field)] != ValueCount.undeclared;
+        },
+    }
 }
 
 /// Add values to the currently open declaration block.
@@ -261,7 +317,12 @@ pub fn hasValues(decls: *const Declarations, block: Block, importance: Importanc
         .important => .{ meta.all_important, meta.active_groups_important },
         .normal => .{ meta.all_normal, meta.active_groups_normal },
     };
-    return (all != null) or (set.count() != 0);
+    if (all != null or set.count() != 0) return true;
+    // A block may declare only custom properties.
+    if (decls.custom_props_map.get(@intFromEnum(block))) |custom_props| {
+        for (custom_props.items) |prop| if (prop.importance == importance) return true;
+    }
+    return false;
 }
 
 /// Gets the value of the 'all' property with importance `importance` for `block`, or null if such a property was never declared.

@@ -90,6 +90,9 @@ pub const Database = struct {
     /// Cascaded values for pseudo-elements (::before/::after) keyed by (node, pseudo).
     pseudo_map: std.AutoHashMapUnmanaged(PseudoKey, Storage) = .empty,
     arena: std.heap.ArenaAllocator.State = .{},
+    /// Computed custom properties and substituted values
+    /// (`zss.custom_properties`).
+    custom_arena: std.heap.ArenaAllocator.State = .{},
 
     pub const PseudoKey = struct {
         node: Environment.NodeId,
@@ -117,6 +120,9 @@ pub const Database = struct {
         var arena = db.arena.promote(allocator);
         defer db.arena = arena.state;
         arena.deinit();
+        var custom_arena = db.custom_arena.promote(allocator);
+        defer db.custom_arena = custom_arena.state;
+        custom_arena.deinit();
     }
 
     pub fn addStorage(db: *Database, _: Allocator, node: Environment.NodeId) !*Storage {
@@ -151,6 +157,21 @@ pub const Database = struct {
         /// Custom properties (CSS variables) declared on this element.
         /// Keys are property names (without --), values are unparsed token sequences.
         custom_properties: std.StringHashMapUnmanaged([]const u8) = .{},
+        /// The element's computed custom properties (CSS Variables 1 §2.2:
+        /// inherited ones plus its own, var() substituted), set by
+        /// `zss.custom_properties.resolve`. Shared with the parent when the
+        /// element declares none.
+        computed_custom: ?*const std.StringHashMapUnmanaged([]const u8) = null,
+        /// var()-containing declarations that won the cascade for `mask`'s
+        /// fields of their property (those fields hold `unset` until
+        /// `zss.custom_properties.resolve` substitutes and parses them).
+        pending: std.ArrayListUnmanaged(PendingValue) = .{},
+
+        pub const PendingValue = struct {
+            property: zss.property.Property,
+            text: []const u8,
+            mask: u32,
+        };
 
         pub const Map = std.EnumMap(groups.Tag, usize);
 
@@ -183,6 +204,19 @@ pub const Database = struct {
         ) !void {
             // TODO: The 'all' property does not affect some properties
             if (storage.all != null) return;
+
+            const block_id = @intFromEnum(block);
+            // var()-containing declarations win the fields still undeclared.
+            if (decls.pending_map.get(block_id)) |pending| {
+                for (pending.items) |pd| {
+                    if (pd.importance != importance) continue;
+                    const won = storage.undeclaredFields(pd.property, pd.mask);
+                    if (won == 0) continue;
+                    var arena = db.arena.promote(allocator);
+                    defer db.arena = arena.state;
+                    try storage.pending.append(arena.allocator(), .{ .property = pd.property, .text = pd.text, .mask = won });
+                }
+            }
 
             if (decls.getAll(block, importance)) |all| storage.all = all;
 
@@ -217,12 +251,87 @@ pub const Database = struct {
                 }
             }
             
-            // Apply custom properties from this declaration block
-            const block_id = @intFromEnum(block);
+            // Custom properties (CSS Variables 1 §2): blocks come in cascade
+            // order, so the first declaration of a name wins.
             if (decls.custom_props_map.get(block_id)) |custom_props| {
                 for (custom_props.items) |prop| {
-                    try storage.custom_properties.put(allocator, prop.name, prop.value);
+                    if (prop.importance != importance) continue;
+                    const gop = try storage.custom_properties.getOrPut(allocator, prop.name);
+                    if (!gop.found_existing) gop.value_ptr.* = prop.value;
                 }
+            }
+        }
+
+        /// The fields of `property` in `mask` (bits as in
+        /// `Declarations.Pending`) that have no cascaded value yet.
+        pub fn undeclaredFields(storage: *const Storage, property: zss.property.Property, mask: u32) u32 {
+            switch (property) {
+                .all => return 0,
+                inline else => |p| {
+                    var result: u32 = 0;
+                    var bit: u5 = 0;
+                    inline for (comptime p.affectedFields()) |group_fields| {
+                        const values = storage.getPtr(group_fields[0]);
+                        inline for (group_fields[1]) |field| {
+                            if (mask & (@as(u32, 1) << bit) != 0) {
+                                const undeclared = if (values) |v| @field(v, @tagName(field)) == .undeclared else true;
+                                if (undeclared) result |= @as(u32, 1) << bit;
+                            }
+                            bit +%= 1;
+                        }
+                    }
+                    return result;
+                },
+            }
+        }
+
+        /// Set the fields of `property` in `mask` to `value` (`.undeclared`
+        /// to let a later block declare them, `.unset` for invalid at
+        /// computed-value time); with `only_undeclared` only those that are
+        /// undeclared.
+        pub fn setFields(storage: *Storage, db: *Database, allocator: Allocator, property: zss.property.Property, mask: u32, comptime value: enum { undeclared, unset }, only_undeclared: bool) !void {
+            switch (property) {
+                .all => {},
+                inline else => |p| {
+                    var bit: u5 = 0;
+                    inline for (comptime p.affectedFields()) |group_fields| {
+                        const values = try storage.groupValues(db, allocator, group_fields[0]);
+                        inline for (group_fields[1]) |field| {
+                            if (mask & (@as(u32, 1) << bit) != 0) {
+                                const dest = &@field(values, @tagName(field));
+                                if (!only_undeclared or dest.* == .undeclared) dest.* = switch (value) {
+                                    .undeclared => .undeclared,
+                                    .unset => .unset,
+                                };
+                            }
+                            bit +%= 1;
+                        }
+                    }
+                },
+            }
+        }
+
+        /// The cascaded values of `group`, created (all undeclared) if absent.
+        fn groupValues(storage: *Storage, db: *Database, allocator: Allocator, comptime group: groups.Tag) !*group.CascadedValues() {
+            const needs_init = !storage.group_map.contains(group);
+            const map_value = if (needs_init) storage.group_map.putUninitialized(group) else storage.group_map.getPtrAssertContains(group);
+            const CascadedValues = group.CascadedValues();
+            switch (comptime canFitWithinUsize(CascadedValues)) {
+                true => {
+                    const values: *CascadedValues = @ptrCast(map_value);
+                    if (needs_init) values.* = .{};
+                    return values;
+                },
+                false => {
+                    if (needs_init) {
+                        var arena = db.arena.promote(allocator);
+                        defer db.arena = arena.state;
+                        const values = try arena.allocator().create(CascadedValues);
+                        values.* = .{};
+                        map_value.* = @intFromPtr(values);
+                    }
+                    return @ptrFromInt(map_value.*);
+                },
             }
         }
 
@@ -241,6 +350,9 @@ pub const Database = struct {
         }
 
         pub fn reset(storage: *Storage) void {
+            storage.pending = .{};
+            storage.computed_custom = null;
+            storage.custom_properties.clearRetainingCapacity();
             storage.group_map = .{}; // TODO: Leaks memory (but okay, because of arena allocation)
             storage.all = null;
         }
@@ -1303,16 +1415,8 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
         const cascaded_values = try env.cascade_db.addStorage(env.allocator, node);
         cascaded_values.reset();
 
-        // Inherit custom properties from parent
-        if (node.parent(env)) |parent_node| {
-            if (env.cascade_db.getStorage(parent_node)) |parent_storage| {
-                // Copy parent's custom properties
-                var prop_it = parent_storage.custom_properties.iterator();
-                while (prop_it.next()) |prop_entry| {
-                    try cascaded_values.custom_properties.put(env.allocator, prop_entry.key_ptr.*, prop_entry.value_ptr.*);
-                }
-            }
-        }
+        // Custom properties inherit in `zss.custom_properties.resolve`,
+        // which visits the document in tree order.
         for (entry.value_ptr.*.items) |item| {
             try cascaded_values.applyDeclBlock(&env.cascade_db, env.allocator, &env.decls, item.block, item.importance);
         }
