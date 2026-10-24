@@ -322,16 +322,19 @@ pub const Calc = struct {
 pub const LengthPercentageAuto = union(enum) {
     px: f32,
     em: f32,
+    /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
+    rem: f32,
     percentage: f32,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
     auto,
 
-    /// Resolve em to px using the element's computed font-size.
-    /// After resolution, .em is unreachable.
-    pub fn resolveEm(self: LengthPercentageAuto, font_size_px: f32) LengthPercentageAuto {
+    /// Resolve em and rem to px using the element's and the root's computed
+    /// font size. After resolution, .em and .rem are unreachable.
+    pub fn resolveEm(self: LengthPercentageAuto, font_size_px: f32, root_font_size_px: f32) LengthPercentageAuto {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .rem => |v| .{ .px = v * root_font_size_px },
             .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };
@@ -345,13 +348,16 @@ pub const Inset = LengthPercentageAuto;
 pub const LengthPercentage = union(enum) {
     px: f32,
     em: f32,
+    /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
+    rem: f32,
     percentage: f32,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
 
-    pub fn resolveEm(self: LengthPercentage, font_size_px: f32) LengthPercentage {
+    pub fn resolveEm(self: LengthPercentage, font_size_px: f32, root_font_size_px: f32) LengthPercentage {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .rem => |v| .{ .px = v * root_font_size_px },
             .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };
@@ -364,14 +370,17 @@ pub const Padding = LengthPercentage;
 pub const MaxSize = union(enum) {
     px: f32,
     em: f32,
+    /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
+    rem: f32,
     percentage: f32,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
     none,
 
-    pub fn resolveEm(self: MaxSize, font_size_px: f32) MaxSize {
+    pub fn resolveEm(self: MaxSize, font_size_px: f32, root_font_size_px: f32) MaxSize {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
+            .rem => |v| .{ .px = v * root_font_size_px },
             .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
             else => self,
         };

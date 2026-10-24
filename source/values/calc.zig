@@ -23,6 +23,26 @@ const SourceCode = zss.syntax.SourceCode;
 
 pub const Id = enum(u32) { _ };
 
+/// The px value of a length in an absolute or viewport unit (CSS Values 4
+/// §6.2: 1in = 96px = 2.54cm, 1pt = 1/72in, 1pc = 12pt, 1Q = 1/4mm; §6.1.2
+/// vw/vh/vmin/vmax), or null for a font-relative unit (em, rem).
+pub fn absoluteLengthPx(unit: zss.syntax.Token.Unit, number: f32, viewport_width_px: f32, viewport_height_px: f32) ?f32 {
+    return switch (unit) {
+        .px => number,
+        .in => number * 96.0,
+        .cm => number * 96.0 / 2.54,
+        .mm => number * 96.0 / 25.4,
+        .q => number * 96.0 / 101.6,
+        .pt => number * 96.0 / 72.0,
+        .pc => number * 16.0,
+        .vw => number * viewport_width_px / 100.0,
+        .vh => number * viewport_height_px / 100.0,
+        .vmin => number * @min(viewport_width_px, viewport_height_px) / 100.0,
+        .vmax => number * @max(viewport_width_px, viewport_height_px) / 100.0,
+        .em, .rem => null,
+    };
+}
+
 /// CSS Values 4 §10.9: a NaN result becomes 0, and infinities clamp to the
 /// largest supported length — Chrome's (LayoutUnit), which zss shares so
 /// that sums of such sizes stay in range.
@@ -378,12 +398,9 @@ const Parser = struct {
                     @floatFromInt(index.extra(p.ast).integer orelse return error.Invalid);
                 const unit = unit_index.extra(p.ast).unit orelse return error.Invalid;
                 const linear: Linear = switch (unit) {
-                    .px => .{ .px = number },
                     .em => .{ .em = number },
                     .rem => .{ .px = number * 16.0 },
-                    .pt => .{ .px = number * (96.0 / 72.0) },
-                    .vw => .{ .px = number * p.options.viewport_width_px / 100.0 },
-                    .vh => .{ .px = number * p.options.viewport_height_px / 100.0 },
+                    else => .{ .px = absoluteLengthPx(unit, number, p.options.viewport_width_px, p.options.viewport_height_px).? },
                 };
                 return .{ .length = .{ .linear = linear } };
             },

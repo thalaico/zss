@@ -1305,16 +1305,16 @@ fn writeBlockCosmetic(
         .static => {},
         .relative => {
             const insets_spec = bgc.insets orelse return;
-            solveInsetsRelative(layout.inputs.env, insets_spec, cb_size, font_size_px, used_insets);
+            solveInsetsRelative(layout.inputs.env, insets_spec, cb_size, font_size_px, layout.computer.resolvedRootFontSizePx(.box_gen), used_insets);
         },
         .absolute => {
             const insets_spec = bgc.insets orelse return;
-            solveInsetsAbsolute(layout.inputs.env, insets_spec, cb_size, font_size_px, used_insets);
+            solveInsetsAbsolute(layout.inputs.env, insets_spec, cb_size, font_size_px, layout.computer.resolvedRootFontSizePx(.box_gen), used_insets);
         },
         .fixed => {
             const insets_spec = bgc.insets orelse return;
             const icb_size = layout.viewport;
-            solveInsetsAbsolute(layout.inputs.env, insets_spec, icb_size, font_size_px, used_insets);
+            solveInsetsAbsolute(layout.inputs.env, insets_spec, icb_size, font_size_px, layout.computer.resolvedRootFontSizePx(.box_gen), used_insets);
         },
     }
 
@@ -1343,6 +1343,7 @@ fn solveInsetsRelative(
     specified: zss.values.groups.Tag.SpecifiedValues(.insets),
     containing_block_size: math.Size,
     font_size_px: f32,
+    root_font_size_px: f32,
     used: *BoxTree.Insets,
 ) void {
     const left: ?math.Unit = switch (specified.left) {
@@ -1351,6 +1352,7 @@ fn solveInsetsRelative(
         .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
+        .rem => |v| solve.length(.px, v * root_font_size_px),
     };
     const right: ?math.Unit = switch (specified.right) {
         .px => |v| -solve.length(.px, v),
@@ -1358,6 +1360,7 @@ fn solveInsetsRelative(
         .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
+        .rem => |v| -solve.length(.px, v * root_font_size_px),
     };
     const top: ?math.Unit = switch (specified.top) {
         .px => |v| solve.length(.px, v),
@@ -1365,6 +1368,7 @@ fn solveInsetsRelative(
         .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
+        .rem => |v| solve.length(.px, v * root_font_size_px),
     };
     const bottom: ?math.Unit = switch (specified.bottom) {
         .px => |v| -solve.length(.px, v),
@@ -1372,6 +1376,7 @@ fn solveInsetsRelative(
         .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
+        .rem => |v| -solve.length(.px, v * root_font_size_px),
     };
     used.* = .{
         .x = left orelse right orelse 0,
@@ -1384,6 +1389,7 @@ fn solveInsetsAbsolute(
     specified: zss.values.groups.Tag.SpecifiedValues(.insets),
     containing_block_size: math.Size,
     font_size_px: f32,
+    root_font_size_px: f32,
     used: *BoxTree.Insets,
 ) void {
     var left: math.Unit = 0;
@@ -1394,6 +1400,7 @@ fn solveInsetsAbsolute(
         .calc => |v| left = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
         .auto => {},
         .em => |v| left = solve.length(.px, v * font_size_px),
+        .rem => |v| left = solve.length(.px, v * root_font_size_px),
     }
     switch (specified.top) {
         .px => |v| top = solve.length(.px, v),
@@ -1401,6 +1408,7 @@ fn solveInsetsAbsolute(
         .calc => |v| top = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
         .auto => {},
         .em => |v| top = solve.length(.px, v * font_size_px),
+        .rem => |v| top = solve.length(.px, v * root_font_size_px),
     }
     used.* = .{ .x = left, .y = top };
 }

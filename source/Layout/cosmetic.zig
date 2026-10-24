@@ -363,24 +363,28 @@ fn solveInsetsStatic(
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
             .em => unreachable,
+            .rem => unreachable,
         },
         .right = switch (specified.right) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
             .em => unreachable,
+            .rem => unreachable,
         },
         .top = switch (specified.top) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
             .em => unreachable,
+            .rem => unreachable,
         },
         .bottom = switch (specified.bottom) {
             .px => |value| .{ .px = value },
             .percentage => |value| .{ .percentage = value },
             .auto => .auto,
             .em => unreachable,
+            .rem => unreachable,
         },
     };
     used.* = .{ .x = 0, .y = 0 };

@@ -260,6 +260,7 @@ pub fn insets(specified: SpecifiedValues(.insets)) ComputedValues(.insets) {
             .calc => |value| .{ .calc = value },
             .auto => .auto,
             .em => unreachable,
+            .rem => unreachable,
         };
     }
     return computed;

@@ -185,5 +185,6 @@ fn inset(env: *const zss.Environment, value: types.LengthPercentageAuto, base: U
         .calc => |c| solve.calc(env, c, base).?,
         .auto => null,
         .em => unreachable,
+        .rem => unreachable,
     };
 }

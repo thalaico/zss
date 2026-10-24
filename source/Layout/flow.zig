@@ -100,6 +100,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                         break :blk switch (cw.width) {
                             .px => |v| @as(i32, @intFromFloat(@round(v * 4.0))),
                             .em => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedFontSizePx(.box_gen) * 4.0))),
+                            .rem => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedRootFontSizePx(.box_gen) * 4.0))),
                             // CSS Flexbox §7.2 + §9.2A: flex-basis:auto uses the main
                             // size property. width:<percentage> resolved against a
                             // definite containing block is itself definite, so the
@@ -237,40 +238,40 @@ pub const ContainingBlockWidth = union(SizeMode) {
 
 /// Resolve all em values in block sizes to px using the element's computed font-size.
 /// Called before passing sizes to solve functions which expect only px/percentage/auto.
-pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32) BlockComputedSizes {
+pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32, rfs: f32) BlockComputedSizes {
     return .{
         .content_width = .{
-            .width = sizes.content_width.width.resolveEm(fs),
-            .min_width = sizes.content_width.min_width.resolveEm(fs),
-            .max_width = sizes.content_width.max_width.resolveEm(fs),
+            .width = sizes.content_width.width.resolveEm(fs, rfs),
+            .min_width = sizes.content_width.min_width.resolveEm(fs, rfs),
+            .max_width = sizes.content_width.max_width.resolveEm(fs, rfs),
             .box_sizing = sizes.content_width.box_sizing,
         },
         .horizontal_edges = .{
-            .margin_left = sizes.horizontal_edges.margin_left.resolveEm(fs),
-            .margin_right = sizes.horizontal_edges.margin_right.resolveEm(fs),
-            .padding_left = sizes.horizontal_edges.padding_left.resolveEm(fs),
-            .padding_right = sizes.horizontal_edges.padding_right.resolveEm(fs),
+            .margin_left = sizes.horizontal_edges.margin_left.resolveEm(fs, rfs),
+            .margin_right = sizes.horizontal_edges.margin_right.resolveEm(fs, rfs),
+            .padding_left = sizes.horizontal_edges.padding_left.resolveEm(fs, rfs),
+            .padding_right = sizes.horizontal_edges.padding_right.resolveEm(fs, rfs),
             .border_left = sizes.horizontal_edges.border_left,
             .border_right = sizes.horizontal_edges.border_right,
         },
         .content_height = .{
-            .height = sizes.content_height.height.resolveEm(fs),
-            .min_height = sizes.content_height.min_height.resolveEm(fs),
-            .max_height = sizes.content_height.max_height.resolveEm(fs),
+            .height = sizes.content_height.height.resolveEm(fs, rfs),
+            .min_height = sizes.content_height.min_height.resolveEm(fs, rfs),
+            .max_height = sizes.content_height.max_height.resolveEm(fs, rfs),
         },
         .vertical_edges = .{
-            .margin_top = sizes.vertical_edges.margin_top.resolveEm(fs),
-            .margin_bottom = sizes.vertical_edges.margin_bottom.resolveEm(fs),
-            .padding_top = sizes.vertical_edges.padding_top.resolveEm(fs),
-            .padding_bottom = sizes.vertical_edges.padding_bottom.resolveEm(fs),
+            .margin_top = sizes.vertical_edges.margin_top.resolveEm(fs, rfs),
+            .margin_bottom = sizes.vertical_edges.margin_bottom.resolveEm(fs, rfs),
+            .padding_top = sizes.vertical_edges.padding_top.resolveEm(fs, rfs),
+            .padding_bottom = sizes.vertical_edges.padding_bottom.resolveEm(fs, rfs),
             .border_top = sizes.vertical_edges.border_top,
             .border_bottom = sizes.vertical_edges.border_bottom,
         },
         .insets = .{
-            .top = sizes.insets.top.resolveEm(fs),
-            .right = sizes.insets.right.resolveEm(fs),
-            .bottom = sizes.insets.bottom.resolveEm(fs),
-            .left = sizes.insets.left.resolveEm(fs),
+            .top = sizes.insets.top.resolveEm(fs, rfs),
+            .right = sizes.insets.right.resolveEm(fs, rfs),
+            .bottom = sizes.insets.bottom.resolveEm(fs, rfs),
+            .left = sizes.insets.left.resolveEm(fs, rfs),
         },
     };
 }
@@ -371,7 +372,7 @@ pub fn solveAllSizes(
         .content_height = computer.getSpecifiedValue(.box_gen, .content_height),
         .vertical_edges = computer.getSpecifiedValue(.box_gen, .vertical_edges),
         .insets = computer.getSpecifiedValue(.box_gen, .insets),
-    }, font_size_px);
+    }, font_size_px, computer.resolvedRootFontSizePx(.box_gen));
     const percentage_base_unit = switch (containing_block_width) {
         .normal => |value| value,
         .stf => 0,
@@ -506,6 +507,7 @@ fn solveWidthAndHorizontalMargins(
             sizes.min_inline_size = solve.positiveCalc(env, value, cbwBase(containing_block_width)) orelse 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_width.max_width) {
         .px => |value| {
@@ -528,6 +530,7 @@ fn solveWidthAndHorizontalMargins(
             sizes.max_inline_size = std.math.maxInt(Unit);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     switch (specified.content_width.width) {
@@ -554,6 +557,7 @@ fn solveWidthAndHorizontalMargins(
             sizes.setAuto(.inline_size);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.margin_left) {
         .px => |value| {
@@ -579,6 +583,7 @@ fn solveWidthAndHorizontalMargins(
             sizes.setAuto(.margin_inline_start);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
         .px => |value| {
@@ -604,6 +609,7 @@ fn solveWidthAndHorizontalMargins(
             sizes.setAuto(.margin_inline_end);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 }
 
@@ -662,6 +668,7 @@ fn solveHorizontalBorderPadding(
             sizes.padding_inline_start = solve.positiveCalc(env, value, containing_block_width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.padding_right) {
         .px => |value| {
@@ -677,6 +684,7 @@ fn solveHorizontalBorderPadding(
             sizes.padding_inline_end = solve.positiveCalc(env, value, containing_block_width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 }
 
@@ -707,6 +715,7 @@ fn solveHeight(
             sizes.min_block_size = solve.positiveCalc(env, value, containing_block_height) orelse 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.max_height) {
         .px => |value| {
@@ -729,6 +738,7 @@ fn solveHeight(
             sizes.max_block_size = std.math.maxInt(Unit);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.height) {
         .px => |value| {
@@ -754,6 +764,7 @@ fn solveHeight(
             sizes.setAuto(.block_size);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 }
 
@@ -814,6 +825,7 @@ fn solveVerticalEdges(
             sizes.padding_block_start = solve.positiveCalc(env, value, containing_block_width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.padding_bottom) {
         .px => |value| {
@@ -829,6 +841,7 @@ fn solveVerticalEdges(
             sizes.padding_block_end = solve.positiveCalc(env, value, containing_block_width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.margin_top) {
         .px => |value| {
@@ -848,6 +861,7 @@ fn solveVerticalEdges(
             sizes.margin_block_start = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.margin_bottom) {
         .px => |value| {
@@ -867,6 +881,7 @@ fn solveVerticalEdges(
             sizes.margin_block_end = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 }
 
@@ -902,6 +917,7 @@ pub fn solveInsets(
                     .calc => sizes.setPercentage(pair[1], 0),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
+                    .rem => unreachable,
                 }
             }
         },
@@ -922,6 +938,7 @@ pub fn solveInsets(
                     .calc => sizes.setPercentage(pair[1], 0),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
+                    .rem => unreachable,
                 }
             }
         },

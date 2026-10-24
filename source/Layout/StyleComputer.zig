@@ -212,43 +212,44 @@ pub fn commitNode(sc: *StyleComputer, comptime stage: Stage) void {
 fn completeComputedValues(sc: *StyleComputer, comptime stage: Stage) void {
     const cur = &sc.stagePtr(stage).current_computed;
     const font_px = sc.resolvedFontSizePx(stage);
+    const root_px = rootFontSizePx(stage, sc, sc.current.node);
 
     if (cur.content_width == null) {
         var v = sc.getSpecifiedValue(stage, .content_width);
-        v.width = v.width.resolveEm(font_px);
-        v.min_width = v.min_width.resolveEm(font_px);
-        v.max_width = v.max_width.resolveEm(font_px);
+        v.width = v.width.resolveEm(font_px, root_px);
+        v.min_width = v.min_width.resolveEm(font_px, root_px);
+        v.max_width = v.max_width.resolveEm(font_px, root_px);
         cur.content_width = v;
     }
     if (cur.content_height == null) {
         var v = sc.getSpecifiedValue(stage, .content_height);
-        v.height = v.height.resolveEm(font_px);
-        v.min_height = v.min_height.resolveEm(font_px);
-        v.max_height = v.max_height.resolveEm(font_px);
+        v.height = v.height.resolveEm(font_px, root_px);
+        v.min_height = v.min_height.resolveEm(font_px, root_px);
+        v.max_height = v.max_height.resolveEm(font_px, root_px);
         cur.content_height = v;
     }
     if (cur.horizontal_edges == null) {
         var v = sc.getSpecifiedValue(stage, .horizontal_edges);
-        v.padding_left = v.padding_left.resolveEm(font_px);
-        v.padding_right = v.padding_right.resolveEm(font_px);
-        v.margin_left = v.margin_left.resolveEm(font_px);
-        v.margin_right = v.margin_right.resolveEm(font_px);
+        v.padding_left = v.padding_left.resolveEm(font_px, root_px);
+        v.padding_right = v.padding_right.resolveEm(font_px, root_px);
+        v.margin_left = v.margin_left.resolveEm(font_px, root_px);
+        v.margin_right = v.margin_right.resolveEm(font_px, root_px);
         cur.horizontal_edges = v;
     }
     if (cur.vertical_edges == null) {
         var v = sc.getSpecifiedValue(stage, .vertical_edges);
-        v.padding_top = v.padding_top.resolveEm(font_px);
-        v.padding_bottom = v.padding_bottom.resolveEm(font_px);
-        v.margin_top = v.margin_top.resolveEm(font_px);
-        v.margin_bottom = v.margin_bottom.resolveEm(font_px);
+        v.padding_top = v.padding_top.resolveEm(font_px, root_px);
+        v.padding_bottom = v.padding_bottom.resolveEm(font_px, root_px);
+        v.margin_top = v.margin_top.resolveEm(font_px, root_px);
+        v.margin_bottom = v.margin_bottom.resolveEm(font_px, root_px);
         cur.vertical_edges = v;
     }
     if (cur.insets == null) {
         var v = sc.getSpecifiedValue(stage, .insets);
-        v.left = v.left.resolveEm(font_px);
-        v.right = v.right.resolveEm(font_px);
-        v.top = v.top.resolveEm(font_px);
-        v.bottom = v.bottom.resolveEm(font_px);
+        v.left = v.left.resolveEm(font_px, root_px);
+        v.right = v.right.resolveEm(font_px, root_px);
+        v.top = v.top.resolveEm(font_px, root_px);
+        v.bottom = v.bottom.resolveEm(font_px, root_px);
         cur.insets = v;
     }
     if (cur.z_index == null) cur.z_index = sc.getSpecifiedValue(stage, .z_index);
@@ -298,6 +299,11 @@ pub fn getTextFont(sc: *const StyleComputer, comptime stage: Stage) ComputedValu
 /// Get the current element's resolved font-size in px.
 /// Resolves em values against the parent's computed font-size.
 /// The current element's computed font size in px.
+/// The root element's computed font size, for `rem` (CSS Values 4 §6.1.1).
+pub fn resolvedRootFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
+    return rootFontSizePx(stage, sc, sc.current.node);
+}
+
 pub fn resolvedFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
     return sc.computedFont(stage).font_size.px_val();
 }

@@ -56,6 +56,13 @@ pub const Token = union(enum) {
         pt,
         vw,
         vh,
+        vmin,
+        vmax,
+        cm,
+        mm,
+        q,
+        in,
+        pc,
     };
 
     pub const Dimension = struct {

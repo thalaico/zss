@@ -890,8 +890,8 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
     // Resolve em values in edges using element's computed font-size.
     const font_size_px = computer.resolvedFontSizePx(.box_gen);
     const specified = .{
-        .horizontal_edges = resolveHorizontalEdgesEm(computer.getSpecifiedValue(.box_gen, .horizontal_edges), font_size_px),
-        .vertical_edges = resolveVerticalEdgesEm(computer.getSpecifiedValue(.box_gen, .vertical_edges), font_size_px),
+        .horizontal_edges = resolveHorizontalEdgesEm(computer.getSpecifiedValue(.box_gen, .horizontal_edges), font_size_px, computer.resolvedRootFontSizePx(.box_gen)),
+        .vertical_edges = resolveVerticalEdgesEm(computer.getSpecifiedValue(.box_gen, .vertical_edges), font_size_px, computer.resolvedRootFontSizePx(.box_gen)),
         .border_styles = computer.getSpecifiedValue(.box_gen, .border_styles),
     };
 
@@ -931,6 +931,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.margin_inline_start = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.left);
@@ -961,6 +962,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.padding_inline_start = solve.positiveCalc(env, value, percentage_base_unit).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
         .px => |value| {
@@ -980,6 +982,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.margin_inline_end = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.right);
@@ -1010,6 +1013,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.padding_inline_end = solve.positiveCalc(env, value, percentage_base_unit).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     {
@@ -1041,6 +1045,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.padding_block_start = solve.positiveCalc(env, value, percentage_base_unit).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     {
         const multiplier = solve.borderWidthMultiplier(specified.border_styles.bottom);
@@ -1071,6 +1076,7 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
             used.padding_block_end = solve.positiveCalc(env, value, percentage_base_unit).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     computed.vertical_edges.margin_top = specified.vertical_edges.margin_top;
@@ -1133,7 +1139,7 @@ fn inlineBlockSolveSizes(
         .content_height = computer.getSpecifiedValue(.box_gen, .content_height),
         .vertical_edges = computer.getSpecifiedValue(.box_gen, .vertical_edges),
         .insets = computer.getSpecifiedValue(.box_gen, .insets),
-    }, font_size_px);
+    }, font_size_px, computer.resolvedRootFontSizePx(.box_gen));
     const border_styles = computer.getSpecifiedValue(.box_gen, .border_styles);
     const env = computer.env;
     var computed: BlockComputedSizes = undefined;
@@ -1189,6 +1195,7 @@ fn inlineBlockSolveSizes(
             used.padding_inline_start = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.padding_right) {
         .px => |value| {
@@ -1204,6 +1211,7 @@ fn inlineBlockSolveSizes(
             used.padding_inline_end = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.margin_left) {
         .px => |value| {
@@ -1223,6 +1231,7 @@ fn inlineBlockSolveSizes(
             used.setValue(.margin_inline_start, 0);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.horizontal_edges.margin_right) {
         .px => |value| {
@@ -1242,6 +1251,7 @@ fn inlineBlockSolveSizes(
             used.setValue(.margin_inline_end, 0);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_width.min_width) {
         .px => |value| {
@@ -1257,6 +1267,7 @@ fn inlineBlockSolveSizes(
             used.min_inline_size = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_width.max_width) {
         .px => |value| {
@@ -1276,6 +1287,7 @@ fn inlineBlockSolveSizes(
             used.max_inline_size = std.math.maxInt(Unit);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     switch (specified.content_width.width) {
@@ -1296,6 +1308,7 @@ fn inlineBlockSolveSizes(
             used.setAuto(.inline_size);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     {
@@ -1342,6 +1355,7 @@ fn inlineBlockSolveSizes(
             used.padding_block_start = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.vertical_edges.padding_bottom) {
         .px => |value| {
@@ -1357,6 +1371,7 @@ fn inlineBlockSolveSizes(
             used.padding_block_end = solve.positiveCalc(env, value, containing_block_size.width).?;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.vertical_edges.margin_top) {
         .px => |value| {
@@ -1376,6 +1391,7 @@ fn inlineBlockSolveSizes(
             used.margin_block_start = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.vertical_edges.margin_bottom) {
         .px => |value| {
@@ -1395,6 +1411,7 @@ fn inlineBlockSolveSizes(
             used.margin_block_end = 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_height.min_height) {
         .px => |value| {
@@ -1413,6 +1430,7 @@ fn inlineBlockSolveSizes(
             used.min_block_size = solve.positiveCalc(env, value, containing_block_size.height) orelse 0;
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_height.max_height) {
         .px => |value| {
@@ -1435,6 +1453,7 @@ fn inlineBlockSolveSizes(
             used.max_block_size = std.math.maxInt(Unit);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
     switch (specified.content_height.height) {
         .px => |value| {
@@ -1460,6 +1479,7 @@ fn inlineBlockSolveSizes(
             used.setAuto(.block_size);
         },
         .em => unreachable,
+        .rem => unreachable,
     }
 
     computed.insets = solve.insets(specified.insets);
@@ -2288,24 +2308,24 @@ fn entryBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, co
 }
 
 /// Resolve em values in horizontal edges to px.
-fn resolveHorizontalEdgesEm(edges: ComputedValues(.horizontal_edges), fs: f32) ComputedValues(.horizontal_edges) {
+fn resolveHorizontalEdgesEm(edges: ComputedValues(.horizontal_edges), fs: f32, rfs: f32) ComputedValues(.horizontal_edges) {
     return .{
-        .margin_left = edges.margin_left.resolveEm(fs),
-        .margin_right = edges.margin_right.resolveEm(fs),
-        .padding_left = edges.padding_left.resolveEm(fs),
-        .padding_right = edges.padding_right.resolveEm(fs),
+        .margin_left = edges.margin_left.resolveEm(fs, rfs),
+        .margin_right = edges.margin_right.resolveEm(fs, rfs),
+        .padding_left = edges.padding_left.resolveEm(fs, rfs),
+        .padding_right = edges.padding_right.resolveEm(fs, rfs),
         .border_left = edges.border_left,
         .border_right = edges.border_right,
     };
 }
 
 /// Resolve em values in vertical edges to px.
-fn resolveVerticalEdgesEm(edges: ComputedValues(.vertical_edges), fs: f32) ComputedValues(.vertical_edges) {
+fn resolveVerticalEdgesEm(edges: ComputedValues(.vertical_edges), fs: f32, rfs: f32) ComputedValues(.vertical_edges) {
     return .{
-        .margin_top = edges.margin_top.resolveEm(fs),
-        .margin_bottom = edges.margin_bottom.resolveEm(fs),
-        .padding_top = edges.padding_top.resolveEm(fs),
-        .padding_bottom = edges.padding_bottom.resolveEm(fs),
+        .margin_top = edges.margin_top.resolveEm(fs, rfs),
+        .margin_bottom = edges.margin_bottom.resolveEm(fs, rfs),
+        .padding_top = edges.padding_top.resolveEm(fs, rfs),
+        .padding_bottom = edges.padding_bottom.resolveEm(fs, rfs),
         .border_top = edges.border_top,
         .border_bottom = edges.border_bottom,
     };

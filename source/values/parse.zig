@@ -367,11 +367,8 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
         // em resolves against the element's computed font-size at layout time
         // (for types that support deferred em; others convert eagerly).
         .em => if (@hasField(Type, "em")) .{ .em = number } else .{ .px = number * ctx.font_size_px },
-        .rem => .{ .px = number * 16.0 },
-        // 1pt = 1/72 inch = 96/72 px = 1.333px
-        .pt => .{ .px = number * (96.0 / 72.0) },
-        .vw => .{ .px = number * ctx.viewport_width_px / 100.0 },
-        .vh => .{ .px = number * ctx.viewport_height_px / 100.0 },
+        .rem => if (@hasField(Type, "rem")) .{ .rem = number } else .{ .px = number * 16.0 },
+        else => .{ .px = absLength(ctx, unit, number) },
     };
 }
 
@@ -411,6 +408,11 @@ pub fn integer(ctx: *Context) ?i32 {
 
 // Spec: CSS 2.2
 // <length>
+/// A length in an absolute or viewport unit, in px.
+fn absLength(ctx: *const Context, unit: zss.syntax.Token.Unit, number: f32) f32 {
+    return zss.values.calc.absoluteLengthPx(unit, number, ctx.viewport_width_px, ctx.viewport_height_px).?;
+}
+
 pub fn length(ctx: *Context, comptime Type: type) ?Type {
     const item = ctx.next() orelse return null;
     if (item.tag == .function) {
@@ -1018,9 +1020,7 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
                 .px => .{ .px = number },
                 .em => .{ .em = number },
                 .rem => .{ .rem = number },
-                .pt => .{ .px = number * (96.0 / 72.0) },
-                .vw => .{ .px = number * ctx.viewport_width_px / 100.0 },
-                .vh => .{ .px = number * ctx.viewport_height_px / 100.0 },
+                else => .{ .px = absLength(ctx, unit, number) },
             };
         },
         .token_integer => blk: {
@@ -1433,12 +1433,9 @@ fn parseLengthPx(ctx: *Context) ?f32 {
             };
             const unit = unit_index.extra(ctx.ast).unit orelse return null;
             const px: f32 = switch (unit) {
-                .px => number,
                 .em => number * ctx.font_size_px,
                 .rem => number * 16.0,
-                .pt => number * (96.0 / 72.0),
-                .vw => number * ctx.viewport_width_px / 100.0,
-                .vh => number * ctx.viewport_height_px / 100.0,
+                else => absLength(ctx, unit, number),
             };
             return px;
         },
@@ -1958,12 +1955,9 @@ fn parseFrOrLength(ctx: *Context) ?types.GridTrackSize {
             return null;
         };
         const px: f32 = switch (unit) {
-            .px => number,
             .em => number * ctx.font_size_px,
             .rem => number * 16.0,
-            .pt => number * (96.0 / 72.0),
-            .vw => number * ctx.viewport_width_px / 100.0,
-            .vh => number * ctx.viewport_height_px / 100.0,
+            else => absLength(ctx, unit, number),
         };
         return types.GridTrackSize.initFixed(@intFromFloat(px * 4.0));
     }
