@@ -77,6 +77,13 @@ font_family_list_ids: std.StringHashMapUnmanaged(u32) = .empty,
 /// The math-function values (calc(), min(), ...) that did not fold to a
 /// plain length or percentage at parse time.
 calc: zss.values.calc.Table = .{},
+/// "property:text" → the declaration block that parsing the var()-
+/// substituted text gave (null: no valid declaration), shared by every
+/// element and every cascade run (`zss.custom_properties`). Declaration
+/// blocks are immutable once closed, so a block stays valid however often
+/// the cascade re-runs. Each key is the tail of an allocation that starts
+/// two bytes earlier ("x{" + key + "}").
+substituted_blocks: std.StringHashMapUnmanaged(?Declarations.Block) = .empty,
 testing: Testing,
 
 pub const CaseOptions = struct {
@@ -202,6 +209,14 @@ pub fn deinit(env: *Environment) void {
     env.font_family_lists.deinit(env.allocator);
     env.font_family_list_ids.deinit(env.allocator);
     env.calc.deinit(env.allocator);
+    {
+        var it = env.substituted_blocks.keyIterator();
+        while (it.next()) |key| {
+            const start = key.ptr - 2;
+            env.allocator.free(start[0 .. key.len + 3]);
+        }
+        env.substituted_blocks.deinit(env.allocator);
+    }
 }
 
 /// The id of the serialized font-family list `text`, interning it.
@@ -894,18 +909,74 @@ pub fn getNodePropertyPtr(
     return &@field(value_ptr, @tagName(field));
 }
 
-/// Returns `error.IdAlreadyExists` if `id` was already registered.
+/// Record `node`'s ID. Several elements may carry the same ID (an ID
+/// selector matches each of them); `getElementById` answers the first one
+/// registered.
 pub fn registerId(env: *Environment, id: IdName, node: NodeId) !void {
-    const gop = try env.ids_to_nodes.getOrPut(env.allocator, id);
-    // TODO: If `gop.found_existing == true`, the existing element may have been destroyed, so consider allowing the Id to be reused.
-    if (gop.found_existing and gop.value_ptr.* != node) return error.IdAlreadyExists;
-    gop.value_ptr.* = node;
     try env.nodes_to_ids.put(env.allocator, node, id);
+    const gop = try env.ids_to_nodes.getOrPut(env.allocator, id);
+    if (!gop.found_existing) gop.value_ptr.* = node;
 }
 
 pub fn getElementById(env: *const Environment, id: IdName) ?NodeId {
-    // TODO: Even if an element was returned, it could have been destroyed.
     return env.ids_to_nodes.get(id);
+}
+
+/// Whether `node` carries the ID `id`.
+pub fn nodeHasId(env: *const Environment, node: NodeId, id: IdName) bool {
+    const own = env.nodes_to_ids.get(node) orelse return false;
+    return own == id;
+}
+
+/// Make room in the per-node tables for `count` nodes: a host that keeps
+/// one environment across document mutations maps new nodes after the
+/// first cascade.
+pub fn ensureNodeCapacity(env: *Environment, count: u32) !void {
+    const nodes = &env.node_properties.nodes;
+    if (nodes.len >= count) return;
+    const old = nodes.len;
+    nodes.* = try env.allocator.realloc(nodes.*, @max(count, old + old / 2));
+    @memset(nodes.*[old..], .{});
+}
+
+/// Forget what the environment knows about `node` — its properties, ID,
+/// classes and attributes — so the host can describe it again (its
+/// attributes changed) or retire it (it left the document; its NodeId is
+/// not reused).
+pub fn clearNodeData(env: *Environment, node: NodeId) void {
+    if (env.nodes_to_classes.fetchRemove(node)) |kv| env.allocator.free(kv.value);
+    if (env.nodes_to_attributes.fetchRemove(node)) |kv| env.allocator.free(kv.value);
+    if (env.nodes_to_ids.fetchRemove(node)) |kv| {
+        if (env.ids_to_nodes.get(kv.value)) |owner| {
+            if (std.meta.eql(owner, node)) _ = env.ids_to_nodes.remove(kv.value);
+        }
+    }
+    env.resetNodeProperties(node);
+}
+
+/// Reset `node`'s `NodeProperty` slot to the defaults.
+pub fn resetNodeProperties(env: *Environment, node: NodeId) void {
+    const index: usize = @intCast(node.value);
+    if (index < env.node_properties.nodes.len) env.node_properties.nodes[index] = .{};
+}
+
+/// Remove the ::before / ::after nodes `createPseudoNodes` made, so the
+/// document's own node values continue from `env.node_count` again. A host
+/// that keeps the environment across mutations calls this before mapping
+/// new document nodes and re-running the cascade (which creates the pseudo
+/// nodes anew).
+pub fn discardPseudoNodes(env: *Environment, document_node_count: u32) void {
+    env.pseudo_nodes.clearRetainingCapacity();
+    env.pseudo_links.clearRetainingCapacity();
+    env.node_count = document_node_count;
+}
+
+/// Discard every cascaded value so the cascade can run again over the
+/// (possibly changed) document.
+pub fn resetCascade(env: *Environment) !void {
+    env.cascade_db.deinit(env.allocator);
+    env.cascade_db = .{};
+    try env.cascade_db.initNodes(env.allocator, env.node_count);
 }
 
 /// Store the class names associated with a DOM node.

@@ -18,7 +18,7 @@
 //!
 //! ::before / ::after storages are resolved against their element.
 //! Parsed values are shared between elements with the same property and
-//! substituted text.
+//! substituted text, and across cascade runs (`Environment.substituted_blocks`).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zss = @import("zss.zig");
@@ -57,11 +57,7 @@ const Resolver = struct {
     /// Computed custom property maps and substituted strings (they live as
     /// long as the cascade database's values reference them).
     arena: std.heap.ArenaAllocator,
-    /// "property:text" → its parsed declaration block.
-    parsed: std.StringHashMapUnmanaged(?Declarations.Block) = .empty,
-
     fn deinit(r: *Resolver) void {
-        r.parsed.deinit(r.env.allocator);
         // The maps and strings stay referenced by the storages: the cascade
         // database owns them.
         r.env.cascade_db.custom_arena = r.arena.state;
@@ -213,10 +209,17 @@ const Resolver = struct {
     /// valid declaration.
     fn parse(r: *Resolver, property: zss.property.Property, text: []const u8) !?Declarations.Block {
         const env = r.env;
-        const allocator = r.arena.allocator();
-        const source_text = try std.fmt.allocPrint(allocator, "x{{{s}:{s}}}", .{ @tagName(property), text });
-        const gop = try r.parsed.getOrPut(env.allocator, source_text[2 .. source_text.len - 1]);
-        if (gop.found_existing) return gop.value_ptr.*;
+        const source_text = try std.fmt.allocPrint(env.allocator, "x{{{s}:{s}}}", .{ @tagName(property), text });
+        const gop = env.substituted_blocks.getOrPut(env.allocator, source_text[2 .. source_text.len - 1]) catch |err| {
+            env.allocator.free(source_text);
+            return err;
+        };
+        if (gop.found_existing) {
+            env.allocator.free(source_text);
+            return gop.value_ptr.*;
+        }
+        // The key keeps the whole allocation alive; `Environment.deinit`
+        // frees it (see `substituted_blocks`).
         gop.value_ptr.* = null;
 
         const source = zss.syntax.SourceCode.init(source_text) catch return null;

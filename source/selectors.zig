@@ -483,8 +483,7 @@ pub const EnvTree = struct {
         return sameElementType(t.env.getNodeProperty(.type, a), t.env.getNodeProperty(.type, b));
     }
     pub fn hasId(t: EnvTree, n: NodeId, id: IdName) bool {
-        const with_id = t.env.getElementById(id) orelse return false;
-        return std.meta.eql(n, with_id);
+        return t.env.nodeHasId(n, id);
     }
     pub fn hasClass(t: EnvTree, n: NodeId, class_name: ClassName) bool {
         return t.env.nodeHasClass(n, class_name);
