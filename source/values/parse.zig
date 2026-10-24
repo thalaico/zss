@@ -1150,10 +1150,14 @@ pub fn borderCollapse(ctx: *Context) ?types.BorderCollapse {
 pub fn verticalAlign(ctx: *Context) ?types.VerticalAlign {
     return keyword(ctx, types.VerticalAlign, &.{
         .{ "baseline", .baseline },
+        .{ "sub", .sub },
+        .{ "super", .super },
+        .{ "text-top", .text_top },
+        .{ "text-bottom", .text_bottom },
         .{ "top", .top },
         .{ "middle", .middle },
         .{ "bottom", .bottom },
-    });
+    }) orelse lengthPercentage(ctx, types.VerticalAlign);
 }
 
 pub fn visibility(ctx: *Context) ?types.Visibility {

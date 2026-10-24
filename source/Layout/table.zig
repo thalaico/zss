@@ -589,10 +589,11 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         const bottom_edge = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
         bo.border_size.h = h;
         const free = h - top_edge - bottom_edge - content_h;
+        // CSS 2.1 §17.5.4: other values align the cell like baseline.
         const shift: Unit = switch (cell.vertical_align) {
             .middle => @divFloor(free, 2),
             .bottom => free,
-            .top, .baseline => 0,
+            else => 0,
         };
         bo.content_pos.y = top_edge + @max(0, shift);
         bo.content_size.h = h - bo.content_pos.y - bottom_edge;

@@ -194,7 +194,8 @@ pub fn ifcSizes(layout: *Layout, ifc: *const Ifc, subtree: Subtree.View, subtree
                     result.min = @max(result.min, atomic.min);
                     segment = 0;
                 },
-                .ZeroGlyphIndex => {
+                // A preserved tab, at its advance in the last line layout.
+                .ZeroGlyphIndex, .Tab => {
                     line += advance;
                     hanging = 0;
                     line_has_content = true;

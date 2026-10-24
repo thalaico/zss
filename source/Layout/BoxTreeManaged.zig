@@ -68,6 +68,7 @@ pub const SpecialGlyph = union(enum(u16)) {
     BoxStart: Ifc.Size,
     BoxEnd: Ifc.Size,
     InlineBlock: Subtree.Size,
+    Tab: u16,
     /// Represents a mandatory line break in the text.
     /// data has no meaning.
     LineBreak,
@@ -83,7 +84,7 @@ pub fn appendSpecialGlyph(
         .kind = zss.meta.coerceEnum(Ifc.Special.Kind, tag),
         .data = switch (tag) {
             .ZeroGlyphIndex, .LineBreak => undefined,
-            .BoxStart, .BoxEnd, .InlineBlock => data,
+            .BoxStart, .BoxEnd, .InlineBlock, .Tab => data,
         },
     };
     try ifc.glyphs.append(box_tree.ptr.allocator, .{ .index = 0, .metrics = undefined });

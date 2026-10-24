@@ -388,6 +388,14 @@ pub const InlineFormattingContext = struct {
     /// space run. Consumed by splitIntoLineBoxes to prefer word-boundary
     /// breaks over character-level breaks.
     break_opportunities: ArrayListUnmanaged(u32) = .{},
+    /// Soft wrap opportunities after the glyph, beside atomic inlines
+    /// (sorted glyph indices).
+    atomic_breaks: ArrayListUnmanaged(u32) = .{},
+    /// Collapsible and pre-wrap preserved space glyphs (sorted).
+    spaces: ArrayListUnmanaged(Space) = .{},
+    /// Box generation: the content so far ends in a collapsible space, so
+    /// another one collapses into it (CSS Text 3 §4.1.1).
+    ends_in_collapsible_space: bool = false,
 
     line_boxes: ArrayListUnmanaged(LineBox) = .{},
 
@@ -469,6 +477,21 @@ pub const InlineFormattingContext = struct {
         /// box's content. Pushed/popped on a stack at BoxStart/BoxEnd in the
         /// same way as font_color, so nested inline boxes restore outer state.
         text_decoration: values.types.TextDecoration = .none,
+        /// The box's own font: its content area (CSS 2.1 §10.6.1) extends
+        /// `ascent` above and `descent` below its baseline.
+        ascent: math.Unit = 0,
+        descent: math.Unit = 0,
+        /// Its layout box (line-height with half-leading, §10.8.1) above and
+        /// below its baseline.
+        above: math.Unit = 0,
+        below: math.Unit = 0,
+        /// How far its baseline is below the root inline box's
+        /// (`vertical-align`, accumulated through its ancestors).
+        shift: math.Unit = 0,
+        /// Its font's size and x-height, for its children's alignment.
+        em: math.Unit = 0,
+        x_height: math.Unit = 0,
+        vertical_align: values.types.VerticalAlign = .baseline,
     });
     pub const Slice = InlineBoxList.Slice;
 
@@ -507,6 +530,25 @@ pub const InlineFormattingContext = struct {
         /// Used to push the line past a left float exclusion (CSS 2.1 §9.5).
         /// Default 0 — line starts at the IFC's content origin x.
         x_offset: math.Unit = 0,
+        /// CSS Text 3 §4.1.2: text glyphs before `lead_end` (collapsible
+        /// spaces at the line's start) are removed and those from
+        /// `trail_start` on (spaces at its end) hang: both take no width.
+        lead_end: usize = 0,
+        trail_start: usize = std.math.maxInt(usize),
+
+        /// The advance a glyph on this line takes.
+        pub fn advance(line: LineBox, glyph: usize, is_text: bool, stored: math.Unit) math.Unit {
+            if (is_text and (glyph < line.lead_end or glyph >= line.trail_start)) return 0;
+            return stored;
+        }
+    };
+
+    /// A space glyph that line breaking treats specially (CSS Text 3 §4.1.2).
+    pub const Space = struct {
+        glyph: u32,
+        /// Collapsible (removed at a line's start, hangs at its end), or a
+        /// preserved `pre-wrap` space (hangs at a line's end).
+        collapsible: bool,
     };
 
     pub const Special = extern struct {
@@ -527,6 +569,10 @@ pub const InlineFormattingContext = struct {
             /// Represents an inline block.
             /// data is the index of the block box.
             InlineBlock,
+            /// Represents a preserved tab (CSS Text 3 §4.2): it advances to
+            /// the next tab stop; its advance is set by line breaking.
+            /// data is the advance of a space in its font.
+            Tab,
             /// Any other value of this enum should never appear in an end user's code.
             _,
         };
@@ -546,6 +592,8 @@ pub const InlineFormattingContext = struct {
     fn deinit(ifc: *InlineFormattingContext, allocator: Allocator) void {
         ifc.glyphs.deinit(allocator);
         ifc.break_opportunities.deinit(allocator);
+        ifc.atomic_breaks.deinit(allocator);
+        ifc.spaces.deinit(allocator);
         ifc.line_boxes.deinit(allocator);
         ifc.font_runs.deinit(allocator);
         ifc.inline_boxes.deinit(allocator);

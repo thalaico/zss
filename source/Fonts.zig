@@ -333,6 +333,78 @@ const TT_OS2_Head = extern struct {
     version: u16,
     xAvgCharWidth: i16,
 };
+/// TT_OS2 up to `sxHeight` (FreeType's layout; FT_ULong is c_ulong).
+const TT_OS2_XHeight = extern struct {
+    version: u16,
+    xAvgCharWidth: i16,
+    usWeightClass: u16,
+    usWidthClass: u16,
+    fsType: u16,
+    ySubscriptXSize: i16,
+    ySubscriptYSize: i16,
+    ySubscriptXOffset: i16,
+    ySubscriptYOffset: i16,
+    ySuperscriptXSize: i16,
+    ySuperscriptYSize: i16,
+    ySuperscriptXOffset: i16,
+    ySuperscriptYOffset: i16,
+    yStrikeoutSize: i16,
+    yStrikeoutPosition: i16,
+    sFamilyClass: i16,
+    panose: [10]u8,
+    ulUnicodeRange1: c_ulong,
+    ulUnicodeRange2: c_ulong,
+    ulUnicodeRange3: c_ulong,
+    ulUnicodeRange4: c_ulong,
+    achVendID: [4]i8,
+    fsSelection: u16,
+    usFirstCharIndex: u16,
+    usLastCharIndex: u16,
+    sTypoAscender: i16,
+    sTypoDescender: i16,
+    sTypoLineGap: i16,
+    usWinAscent: u16,
+    usWinDescent: u16,
+    ulCodePageRange1: c_ulong,
+    ulCodePageRange2: c_ulong,
+    sxHeight: i16,
+};
+
+/// A font's line metrics in CSS px, as Blink computes them
+/// (SimpleFontData::PlatformInit): ascent, descent and line gap each
+/// rounded to whole pixels; the x-height from the OS/2 table's sxHeight, or
+/// the height of the "x" glyph when the table has none (as Skia does).
+pub const LineMetrics = struct {
+    ascent: f32 = 0,
+    descent: f32 = 0,
+    line_gap: f32 = 0,
+    x_height: f32 = 0,
+};
+
+pub fn lineMetrics(fonts: *const Fonts, handle: Handle, font_size_px: f32) LineMetrics {
+    const entry = fonts.entryFor(handle) orelse return .{};
+    const face = entry.ft_face;
+    if (face.*.units_per_EM == 0) return .{};
+    const scale = font_size_px / @as(f32, @floatFromInt(face.*.units_per_EM));
+    const line_gap: i32 = @as(i32, face.*.height) - @as(i32, face.*.ascender) + @as(i32, face.*.descender);
+    var x_height_units: i32 = 0;
+    if (FT_Get_Sfnt_Table(face, FT_SFNT_OS2)) |os2_ptr| {
+        const os2: *const TT_OS2_XHeight = @ptrCast(@alignCast(os2_ptr));
+        if (os2.version >= 2) x_height_units = os2.sxHeight;
+    }
+    if (x_height_units <= 0) {
+        const x_index = hb.FT_Get_Char_Index(face, 'x');
+        if (x_index != 0 and hb.FT_Load_Glyph(face, x_index, hb.FT_LOAD_NO_SCALE) == 0) {
+            x_height_units = @intCast(face.*.glyph.*.metrics.horiBearingY);
+        }
+    }
+    return .{
+        .ascent = @round(@as(f32, @floatFromInt(face.*.ascender)) * scale),
+        .descent = @round(@as(f32, @floatFromInt(-face.*.descender)) * scale),
+        .line_gap = @round(@as(f32, @floatFromInt(@max(0, line_gap))) * scale),
+        .x_height = @as(f32, @floatFromInt(x_height_units)) * scale,
+    };
+}
 
 pub fn getCharWidthMetrics(fonts: *const Fonts, handle: Handle, font_size_px: f32) CharWidthMetrics {
     const entry = fonts.entryFor(handle) orelse return .{ .avg = 0, .max = 0 };

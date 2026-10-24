@@ -292,17 +292,21 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 // If any character in this text run is not HTML whitespace, the
                 // IFC has visible content and must not be zeroed in endMode.
                 if (!ctx.ifc.top.?.has_visible_content) {
+                    // Preserved white space is content (CSS Text 3 §4.1.1).
                     for (text) |ch| {
-                        switch (ch) {
-                            ' ', '\t', '\n', '\r', 0x0c => {},
-                            else => {
-                                ctx.ifc.top.?.has_visible_content = true;
-                                break;
-                            },
+                        const visible = switch (ch) {
+                            ' ', '\t' => font.white_space == .pre or font.white_space == .pre_wrap,
+                            '\n' => font.white_space != .normal and font.white_space != .nowrap,
+                            '\r', 0x0c => false,
+                            else => true,
+                        };
+                        if (visible) {
+                            ctx.ifc.top.?.has_visible_content = true;
+                            break;
                         }
                     }
                 }
-                try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font);
+                try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font, font.white_space);
                 const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
                 if (glyph_end > glyph_start) {
                     // Extend the last run if same weight and font size, otherwise start a new one.
@@ -439,7 +443,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     flow.setupContainer(box_gen, block_inner, box_style_specified);
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     ctx.ifc.top.?.has_visible_content = true;
-                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
+                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index, ib_font.white_space);
                     try layout.pushNode();
                     return box_gen.beginFlowMode(.not_root);
                 }
@@ -452,7 +456,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     // Inline-block is visible content for whitespace-only IFC discard.
                     ctx.ifc.top.?.has_visible_content = true;
-                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
+                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index, ib_font.white_space);
                     try layout.pushNode();
                     return box_gen.beginFlowMode(.not_root);
                 } else {
@@ -469,7 +473,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
                     // Inline-block is visible content for whitespace-only IFC discard.
                     ctx.ifc.top.?.has_visible_content = true;
-                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index);
+                    try ifcAddInlineBlock(layout.box_tree, ifc.ptr, ref.index, ib_font.white_space);
                     try layout.pushNode();
                     return box_gen.beginStfMode(.flow, sizes);
                 }
@@ -527,8 +531,72 @@ fn pushRootInlineBox(box_gen: *BoxGen) !void {
 
     const index = try layout.box_tree.appendInlineBox(ifc.ptr);
     setDataRootInlineBox(ifc.ptr, index);
+    // The root inline box takes the containing block's font (its strut).
+    const block_font = if (box_gen.stacks.block_info.top) |info| layout.computer.committedValue(.box_gen, .font, info.node) else null;
+    setInlineBoxMetrics(layout, ifc.ptr, index, block_font orelse layout.computer.computedFont(.box_gen), .baseline, null);
     try ifcAddBoxStart(layout.box_tree, ifc.ptr, index);
     try ctx.pushInlineBox(layout.allocator, index);
+}
+
+/// CSS 2.1 §10.8.1: inline box `index`'s content area and layout box from its
+/// own font and line-height, and where its baseline sits relative to the root
+/// inline box's, from `vertical-align` against its parent inline box
+/// (`parent`; null for the root). `top` / `bottom` (aligned to the line box)
+/// are not supported for inline boxes and align as `baseline`.
+fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytype, vertical_align: zss.values.types.VerticalAlign, parent: ?Ifc.Size) void {
+    const upp: f32 = @floatFromInt(units_per_pixel);
+    const handle: Fonts.Handle = switch (font.font) {
+        .default => layout.inputs.fonts.queryFamily(font.font_family),
+        .none => .invalid,
+    };
+    const size = font.font_size.px_val();
+    const m = layout.inputs.fonts.lineMetrics(handle, size);
+    const ascent: Unit = @intFromFloat(m.ascent * upp);
+    const descent: Unit = @intFromFloat(m.descent * upp);
+    const content: Unit = ascent + descent;
+    const line_height: Unit = if (font.line_height == 0)
+        content + @as(Unit, @intFromFloat(m.line_gap * upp))
+    else if (font.line_height < 0)
+        @intFromFloat(@round(@as(f32, @floatFromInt(-font.line_height)) / 1000.0 * size * upp))
+    else
+        font.line_height;
+    // Blink floors the half-leading above the ascent to whole pixels; the
+    // descent side gets the rest.
+    const half_leading = @divFloor(@divFloor(line_height - content, 2), units_per_pixel) * units_per_pixel;
+    const above = ascent + half_leading;
+    const below = line_height - above;
+
+    const slice = ifc.inline_boxes.slice();
+    var shift: Unit = 0;
+    if (parent) |p| {
+        const p_shift = slice.items(.shift)[p];
+        const p_em: f32 = @floatFromInt(slice.items(.em)[p]);
+        const relative: Unit = switch (vertical_align) {
+            .baseline, .top, .bottom => 0,
+            // Blink: sub lowers by the parent's font size / 5 + 1px, super
+            // raises by its font size / 3 + 1px.
+            .sub => @intFromFloat(p_em / 5.0 + upp),
+            .super => -@as(Unit, @intFromFloat(p_em / 3.0 + upp)),
+            // The content area's top / bottom at the parent's.
+            .text_top => ascent - slice.items(.ascent)[p],
+            .text_bottom => slice.items(.descent)[p] - descent,
+            // The layout box's midpoint at the parent's baseline plus half
+            // its x-height.
+            .middle => -@divFloor(slice.items(.x_height)[p], 2) - @divFloor(below - above, 2),
+            .px => |v| -@as(Unit, @intFromFloat(v * upp)),
+            .em => |v| -@as(Unit, @intFromFloat(v * size * upp)),
+            .percentage => |v| -@as(Unit, @intFromFloat(v * @as(f32, @floatFromInt(line_height)))),
+        };
+        shift = p_shift + relative;
+    }
+    slice.items(.ascent)[index] = ascent;
+    slice.items(.descent)[index] = descent;
+    slice.items(.above)[index] = above;
+    slice.items(.below)[index] = below;
+    slice.items(.shift)[index] = shift;
+    slice.items(.em)[index] = @intFromFloat(size * upp);
+    slice.items(.x_height)[index] = @intFromFloat(m.x_height * upp);
+    slice.items(.vertical_align)[index] = vertical_align;
 }
 
 fn pushInlineBox(box_gen: *BoxGen, node: NodeId) !Ifc.Size {
@@ -538,6 +606,10 @@ fn pushInlineBox(box_gen: *BoxGen, node: NodeId) !Ifc.Size {
 
     const index = try layout.box_tree.appendInlineBox(ifc.ptr);
     setDataInlineBox(&layout.computer, ifc.ptr.slice(), index, node, ifc.percentage_base_unit);
+    if (layout.computer.committedValue(.box_gen, .font, node)) |font| {
+        const box_style = layout.computer.committedValue(.box_gen, .box_style, node);
+        setInlineBoxMetrics(layout, ifc.ptr, index, font, if (box_style) |b| b.vertical_align else .baseline, ctx.inline_box.top.?.index);
+    }
     try ifcAddBoxStart(layout.box_tree, ifc.ptr, index);
     try ctx.pushInlineBox(layout.allocator, index);
     return index;
@@ -560,15 +632,30 @@ fn ifcAddBoxEnd(box_tree: BoxTreeManaged, ifc: *Ifc, inline_box_index: Ifc.Size)
     try box_tree.appendSpecialGlyph(ifc, .BoxEnd, inline_box_index);
 }
 
-fn ifcAddInlineBlock(box_tree: BoxTreeManaged, ifc: *Ifc, block_box_index: Subtree.Size) !void {
+/// An atomic inline: a soft wrap opportunity before and after it when
+/// its white-space allows wrapping (CSS Text 3 §5.1, as Chromium does).
+fn ifcAddInlineBlock(box_tree: BoxTreeManaged, ifc: *Ifc, block_box_index: Subtree.Size, white_space: zss.values.types.WhiteSpace) !void {
+    const wrap = white_space != .nowrap and white_space != .pre;
+    const allocator = box_tree.ptr.allocator;
+    if (wrap and ifc.glyphs.len > 0) try ifc.atomic_breaks.append(allocator, @intCast(ifc.glyphs.len - 1));
     try box_tree.appendSpecialGlyph(ifc, .InlineBlock, block_box_index);
+    if (wrap) try ifc.atomic_breaks.append(allocator, @intCast(ifc.glyphs.len - 1));
+    ifc.ends_in_collapsible_space = false;
 }
 
 fn ifcAddLineBreak(box_tree: BoxTreeManaged, ifc: *Ifc) !void {
     try box_tree.appendSpecialGlyph(ifc, .LineBreak, {});
 }
 
-fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.hb_font_t) !void {
+/// CSS Text 3 §4.1.1 white space processing of one text run, then shaping.
+/// Collapsible spaces and tabs (`normal`, `nowrap`, `pre-line`) become one
+/// space, which collapses into a collapsible space before it in the same
+/// inline formatting context (even across inline box boundaries); segment
+/// breaks are forced line breaks with `pre`, `pre-wrap` and `pre-line` (which
+/// also removes the collapsible spaces around them) and collapsible spaces
+/// otherwise. Preserved tabs advance to tab stops (`Tab` glyphs). Spaces
+/// are soft wrap opportunities unless `nowrap` or `pre`.
+fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.hb_font_t, white_space: zss.values.types.WhiteSpace) !void {
     const buffer = hb.hb_buffer_create() orelse unreachable;
     defer hb.hb_buffer_destroy(buffer);
     // TODO: Need to put a limit on the length of text
@@ -578,36 +665,86 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
     hb.hb_buffer_set_script(buffer, hb.HB_SCRIPT_LATIN);
     hb.hb_buffer_set_language(buffer, hb.hb_language_from_string("en", -1));
 
-    // CSS white-space: normal — collapse whitespace sequences to a single space.
-    // \n, \r, \t are treated as spaces; consecutive whitespace collapses.
+    const allocator = box_tree.ptr.allocator;
+    const collapse = switch (white_space) {
+        .normal, .nowrap, .pre_line => true,
+        .pre, .pre_wrap => false,
+    };
+    const preserve_breaks = switch (white_space) {
+        .normal, .nowrap => false,
+        .pre, .pre_wrap, .pre_line => true,
+    };
+    const wrap = switch (white_space) {
+        .normal, .pre_wrap, .pre_line => true,
+        .nowrap, .pre => false,
+    };
+
     var run_begin: usize = 0;
-    var run_end: usize = 0;
-    var in_whitespace: bool = false;
-    while (run_end < text.len) : (run_end += 1) {
-        const ch = text[run_end];
-        const is_ws = (ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t');
-        if (is_ws) {
-            if (!in_whitespace) {
-                // End non-whitespace run before this first whitespace char.
-                try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
-                // Emit a single collapsed space. This space glyph is the
-                // soft-wrap break opportunity for splitIntoLineBoxes.
-                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", true);
-                in_whitespace = true;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (preserve_breaks and ch == '\n') {
+            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            if (white_space == .pre_line) dropTrailingCollapsibleSpace(ifc);
+            try ifcAddLineBreak(box_tree, ifc);
+            // pre-line: spaces after the break collapse away too.
+            ifc.ends_in_collapsible_space = collapse;
+            run_begin = i + 1;
+            continue;
+        }
+        const is_space = ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
+        if (!is_space) continue;
+        if (collapse) {
+            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            if (!ifc.ends_in_collapsible_space) {
+                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", wrap);
+                try ifc.spaces.append(allocator, .{ .glyph = @intCast(ifc.glyphs.len - 1), .collapsible = true });
+                ifc.ends_in_collapsible_space = true;
             }
-            // Skip this whitespace char (already collapsed).
-            run_begin = run_end + 1;
-        } else {
-            in_whitespace = false;
+            run_begin = i + 1;
+        } else if (ch == '\t') {
+            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            const space = try shapeRun(buffer, font, " ");
+            const space_advance: u16 = if (space.len > 0) @intCast(@max(0, space[0].advance)) else 0;
+            try box_tree.appendSpecialGlyph(ifc, .Tab, space_advance);
+            if (wrap) try ifc.break_opportunities.append(allocator, @intCast(ifc.glyphs.len - 1));
+            run_begin = i + 1;
+        } else if (ch == ' ') {
+            // A run of preserved spaces: a soft wrap opportunity after it
+            // (pre-wrap), hanging at a line's end.
+            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            var end = i;
+            while (end < text.len and text[end] == ' ') end += 1;
+            const first: u32 = @intCast(ifc.glyphs.len);
+            try ifcAddTextRun(box_tree, ifc, buffer, font, text[i..end], wrap);
+            if (white_space == .pre_wrap) {
+                var g = first;
+                while (g < ifc.glyphs.len) : (g += 1) try ifc.spaces.append(allocator, .{ .glyph = g, .collapsible = false });
+            }
+            ifc.ends_in_collapsible_space = false;
+            run_begin = end;
+            i = end - 1;
         }
     }
+    try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, text.len);
+}
 
-    try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, run_end);
+/// pre-line: a collapsible space right before a segment break is removed.
+fn dropTrailingCollapsibleSpace(ifc: *Ifc) void {
+    if (!ifc.ends_in_collapsible_space) return;
+    const spaces = ifc.spaces.items;
+    if (spaces.len == 0 or !spaces[spaces.len - 1].collapsible or spaces[spaces.len - 1].glyph != ifc.glyphs.len - 1) return;
+    _ = ifc.spaces.pop();
+    ifc.glyphs.len -= 1;
+    if (ifc.break_opportunities.items.len > 0 and ifc.break_opportunities.items[ifc.break_opportunities.items.len - 1] == ifc.glyphs.len) {
+        _ = ifc.break_opportunities.pop();
+    }
 }
 
 fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, run_begin: usize, run_end: usize) !void {
     if (run_end > run_begin) {
         try ifcAddTextRun(box_tree, ifc, buffer, font, text[run_begin..run_end], false);
+        ifc.ends_in_collapsible_space = false;
     }
 }
 
@@ -1327,6 +1464,8 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                     setMetricsInlineBlock(metrics, subtree, block_box_index);
                 },
                 .LineBreak => setMetricsLineBreak(metrics),
+                // Advance set by line breaking (the next tab stop).
+                .Tab => metrics.* = .{ .offset = 0, .advance = 0, .width = 0 },
             }
         } else {
             // Advance to the font run covering this glyph; restore its face and size.
@@ -1481,7 +1620,62 @@ fn setMetricsInlineBlock(metrics: *Ifc.Metrics, subtree: Subtree.View, block_box
     metrics.* = .{ .offset = margins.left, .advance = advance, .width = width };
 }
 
+const LineContext = struct {
+    layout: *Layout,
+    subtree: Subtree.View,
+    ifc: *Ifc,
+};
+
+/// Where inline-block `index` sits on its line (CSS 2.1 §10.8.1): its
+/// margin box's extent above the root baseline from `vertical-align`
+/// against its parent inline box `parent`. With `baseline` its own baseline
+/// (`inlineBlockBaseline`, else its bottom margin edge) is on the parent's.
+fn inlineBlockPlacement(layout: *Layout, subtree: Subtree.View, ifc: *Ifc, index: Subtree.Size, cursor: Unit, at: usize, parent: Ifc.Size) IFCLineSplitState.InlineBlockInfo {
+    const upp: f32 = @floatFromInt(units_per_pixel);
+    const box_offsets = subtree.items(.box_offsets)[index];
+    const margins = subtree.items(.margins)[index];
+    const height = box_offsets.border_size.h + margins.top + margins.bottom;
+    const boxes = ifc.inline_boxes.slice();
+    const p_shift = boxes.items(.shift)[parent];
+    const p_em: f32 = @floatFromInt(boxes.items(.em)[parent]);
+    const align_value: zss.values.types.VerticalAlign = blk: {
+        const node = subtree.items(.node)[index] orelse break :blk .baseline;
+        const box_style = layout.computer.committedValue(.box_gen, .box_style, node) orelse break :blk .baseline;
+        break :blk box_style.vertical_align;
+    };
+    const baseline_ascent: Unit = if (inlineBlockBaseline(layout, subtree, index)) |b| margins.top + b else height;
+    // Its margin box's extent above the parent's baseline.
+    const ascent: Unit = switch (align_value) {
+        .baseline, .top, .bottom => baseline_ascent,
+        .sub => baseline_ascent - @as(Unit, @intFromFloat(p_em / 5.0 + upp)),
+        .super => baseline_ascent + @as(Unit, @intFromFloat(p_em / 3.0 + upp)),
+        .text_top => boxes.items(.ascent)[parent],
+        .text_bottom => height - boxes.items(.descent)[parent],
+        // Its vertical midpoint at the parent's baseline plus half the
+        // parent's x-height.
+        .middle => @divFloor(height, 2) + @divFloor(boxes.items(.x_height)[parent], 2),
+        .px => |v| baseline_ascent + @as(Unit, @intFromFloat(v * upp)),
+        .em => |v| baseline_ascent + @as(Unit, @intFromFloat(v * p_em)),
+        // Percentages refer to the element's own line-height; an
+        // inline-block's is its parent's here (it inherits).
+        .percentage => |v| baseline_ascent + @as(Unit, @intFromFloat(v * @as(f32, @floatFromInt(boxes.items(.above)[parent] + boxes.items(.below)[parent])))),
+    };
+    return .{
+        .offset = &subtree.items(.offset)[index],
+        .cursor = cursor,
+        .at = at,
+        .above = ascent - p_shift,
+        .height = height,
+        .line_relative = switch (align_value) {
+            .top => .top,
+            .bottom => .bottom,
+            else => .no,
+        },
+    };
+}
+
 const IFCLineSplitState = struct {
+    allocator: Allocator,
     cursor: Unit,
     line_box: Ifc.LineBox,
     inline_blocks_in_this_line_box: std.ArrayListUnmanaged(InlineBlockInfo),
@@ -1494,16 +1688,28 @@ const IFCLineSplitState = struct {
     longest_line_box_length: Unit,
     inline_box_stack: std.ArrayListUnmanaged(Ifc.Size) = .{},
     current_inline_box: Ifc.Size = undefined,
+    /// The inline boxes open where the current line starts.
+    line_start_boxes: std.ArrayListUnmanaged(Ifc.Size) = .{},
+    /// No content yet on the current line (collapsible spaces here are removed).
+    at_line_start: bool = true,
 
     const InlineBlockInfo = struct {
         offset: *zss.math.Vector,
         cursor: Unit,
-        /// Margin-box extent above the baseline.
+        /// The glyph index of its placeholder: on a line only if before the
+        /// line's end (a rewound line re-places it on the next line).
+        at: usize,
+        /// Its margin box's extent above the root baseline (negative: below)
+        /// and its height.
+        above: Unit,
         height: Unit,
+        /// `vertical-align: top / bottom` align it to the line box.
+        line_relative: enum { no, top, bottom } = .no,
     };
 
-    fn init(top_height: Unit, bottom_height: Unit) IFCLineSplitState {
+    fn init(allocator: Allocator, top_height: Unit, bottom_height: Unit) IFCLineSplitState {
         return IFCLineSplitState{
+            .allocator = allocator,
             .cursor = 0,
             .line_box = .{ .baseline = 0, .elements = [2]usize{ 0, 0 }, .inline_box = undefined },
             .inline_blocks_in_this_line_box = .{},
@@ -1518,17 +1724,78 @@ const IFCLineSplitState = struct {
     fn deinit(self: *IFCLineSplitState, allocator: Allocator) void {
         self.inline_blocks_in_this_line_box.deinit(allocator);
         self.inline_box_stack.deinit(allocator);
+        self.line_start_boxes.deinit(allocator);
     }
 
-    fn finishLineBox(self: *IFCLineSplitState) void {
-        self.line_box.baseline += self.max_top_height;
+    /// CSS 2.1 §10.8.1: the line box's height covers the strut, the layout
+    /// box of every inline box on the line (open at its start or started on
+    /// it), and the margin box of every inline-block on it; then the
+    /// inline-blocks aligned to the line box itself.
+    fn finishLineBox(self: *IFCLineSplitState, lc: LineContext) !void {
+        // CSS Text 3 §4.1.2: spaces at the end of the line hang (they take
+        // no width), past the inline box edges after them.
+        {
+            const g = lc.ifc.glyphs.slice();
+            var k = self.line_box.elements[1];
+            while (k > self.line_box.elements[0]) {
+                const j = k - 1;
+                if (j >= 1 and j - 1 >= self.line_box.elements[0] and g.items(.index)[j - 1] == 0) {
+                    const special = Ifc.Special.decode(g.items(.index)[j]);
+                    if (special.kind != .BoxStart and special.kind != .BoxEnd) break;
+                    k -= 2;
+                    continue;
+                }
+                if (spaceAt(lc.ifc, j) == null) break;
+                self.cursor -= g.items(.metrics)[j].advance;
+                self.line_box.trail_start = j;
+                k -= 1;
+            }
+        }
+        const boxes = lc.ifc.inline_boxes.slice();
+        var above = self.top_height;
+        var below = self.bottom_height;
+        for (self.line_start_boxes.items) |b| {
+            above = @max(above, boxes.items(.above)[b] - boxes.items(.shift)[b]);
+            below = @max(below, boxes.items(.below)[b] + boxes.items(.shift)[b]);
+        }
+        const glyphs = lc.ifc.glyphs.slice();
+        var j = self.line_box.elements[0];
+        while (j + 1 < self.line_box.elements[1]) : (j += 1) {
+            if (glyphs.items(.index)[j] != 0) continue;
+            j += 1;
+            const special = Ifc.Special.decode(glyphs.items(.index)[j]);
+            if (special.kind != .BoxStart) continue;
+            const b: Ifc.Size = @intCast(special.data);
+            above = @max(above, boxes.items(.above)[b] - boxes.items(.shift)[b]);
+            below = @max(below, boxes.items(.below)[b] + boxes.items(.shift)[b]);
+        }
+        const blocks = self.inline_blocks_in_this_line_box.items;
+        for (blocks) |info| {
+            if (info.at >= self.line_box.elements[1] or info.line_relative != .no) continue;
+            above = @max(above, info.above);
+            below = @max(below, info.height - info.above);
+        }
+        for (blocks) |info| {
+            if (info.at >= self.line_box.elements[1] or info.line_relative == .no) continue;
+            if (info.height > above + below) switch (info.line_relative) {
+                .top => below = info.height - above,
+                .bottom => above = info.height - below,
+                .no => unreachable,
+            };
+        }
+        self.max_top_height = above;
+        self.max_bottom_height = below;
+        self.line_box.baseline += above;
         self.longest_line_box_length = @max(self.longest_line_box_length, self.cursor);
 
-        for (self.inline_blocks_in_this_line_box.items) |info| {
-            info.offset.* = .{
-                .x = info.cursor,
-                .y = self.line_box.baseline - info.height,
+        for (blocks) |info| {
+            if (info.at >= self.line_box.elements[1]) continue;
+            const top = switch (info.line_relative) {
+                .no => self.line_box.baseline - info.above,
+                .top => self.line_box.baseline - above,
+                .bottom => self.line_box.baseline + below - info.height,
             };
+            info.offset.* = .{ .x = info.cursor, .y = top };
         }
     }
 
@@ -1541,7 +1808,12 @@ const IFCLineSplitState = struct {
         };
         self.max_top_height = self.top_height;
         self.max_bottom_height = self.bottom_height;
+        self.at_line_start = true;
         self.inline_blocks_in_this_line_box.clearRetainingCapacity();
+        // The boxes open here continue on the new line.
+        self.line_start_boxes.clearRetainingCapacity();
+        self.line_start_boxes.appendSlice(self.allocator, self.inline_box_stack.items) catch {};
+        self.line_start_boxes.append(self.allocator, self.current_inline_box) catch {};
     }
 
     fn pushInlineBox(self: *IFCLineSplitState, allocator: Allocator, index: Ifc.Size) !void {
@@ -1615,6 +1887,55 @@ fn clearLineYUntilFits(
     return .{ .line_y = line_y, .left = ex.left_offset, .right = ex.right_limit };
 }
 
+/// Ends the current line box and starts the next one below it, shortened
+/// by the floats beside it.
+const LineStepper = struct {
+    floats: ?flow.FloatContext,
+    nominal_line_h: Unit,
+    max_w: Unit,
+    min_w: Unit,
+
+    fn next(self: LineStepper, s: *IFCLineSplitState, lc: LineContext, skipped: usize, line_top: *Unit, right: *Unit) !void {
+        try s.finishLineBox(lc);
+        try lc.layout.box_tree.appendLineBox(lc.ifc, s.line_box);
+        s.newLineBox(skipped);
+        line_top.* += self.nominal_line_h;
+        var left: Unit = 0;
+        right.* = self.max_w;
+        if (self.floats) |f| {
+            const cleared = clearLineYUntilFits(f, line_top.*, self.nominal_line_h, self.max_w, self.min_w);
+            line_top.* = cleared.line_y;
+            left = cleared.left;
+            right.* = cleared.right;
+        }
+        s.line_box.x_offset = left;
+        s.cursor = left;
+    }
+};
+
+/// Whether a soft wrap opportunity follows glyph `i`.
+fn isBreakAfter(ifc: *const Ifc, i: usize) bool {
+    const order = struct {
+        fn f(key: u32, item: u32) std.math.Order {
+            return std.math.order(key, item);
+        }
+    }.f;
+    const key: u32 = @intCast(i);
+    return std.sort.binarySearch(u32, ifc.break_opportunities.items, key, order) != null or
+        std.sort.binarySearch(u32, ifc.atomic_breaks.items, key, order) != null;
+}
+
+/// The space glyph `i` is, if it is one line breaking treats specially.
+fn spaceAt(ifc: *const Ifc, i: usize) ?Ifc.Space {
+    const order = struct {
+        fn f(key: u32, item: Ifc.Space) std.math.Order {
+            return std.math.order(key, item.glyph);
+        }
+    }.f;
+    const index = std.sort.binarySearch(Ifc.Space, ifc.spaces.items, @as(u32, @intCast(i)), order) orelse return null;
+    return ifc.spaces.items[index];
+}
+
 pub fn splitIntoLineBoxes(
     layout: *Layout,
     subtree: Subtree.View,
@@ -1624,79 +1945,15 @@ pub fn splitIntoLineBoxes(
 ) !IFCLineSplitResult {
     assert(max_line_box_length >= 0);
 
-    var top_height: Unit = undefined;
-    var bottom_height: Unit = undefined;
-    if (layout.inputs.fonts.get(ifc.font)) |font| {
-        _ = font; // HarfBuzz font still used for glyph shaping (advances/positions) below
-        // Resize the FreeType face before querying metrics.
-        layout.inputs.fonts.setFontSize(ifc.font, ifc.font_size);
-        // Compute line metrics from font design units (hhea table) to avoid
-        // FreeType's size->metrics ceil/floor pixel-boundary rounding, which
-        // overshoots Chrome's unrounded computation by ~0.8px per line box.
-        //
-        // Chrome's line-height:normal uses the font's intrinsic leading
-        // (hhea.lineGap) distributed half-above / half-below the baseline —
-        // it widens the line-box without shifting the baseline. Omitting it
-        // leaves every line ~(line_gap/upem × font-size) px shorter than
-        // Chrome, so baselines drift upward in multi-line blocks.
-        const dm = layout.inputs.fonts.getDesignMetrics(ifc.font);
-        if (dm.units_per_em > 0) {
-            const upem: f32 = @floatFromInt(dm.units_per_em);
-            const asc_design: f32 = @floatFromInt(dm.ascender);
-            const desc_design: f32 = @floatFromInt(dm.descender);
-            const line_gap: f32 = @floatFromInt(dm.line_gap);
-            const total_design = asc_design + desc_design + line_gap;
-            // Blink (SimpleFontData::PlatformInit) rounds ascent, descent and
-            // line gap to whole CSS pixels EACH, then sums them: Liberation Sans
-            // at 16px is 14 + 3 + 1 = 18px, not round(18.39) = 18 by luck —
-            // Noto Sans at 16px is 17 + 5 + 0 = 22px where the unrounded sum is
-            // 21.75. Rounding the sum instead left every line box up to 0.5px
-            // off, which compounds down a page (computed-style probe: 18.5px vs
-            // Chrome's 18px for every one-line block).
-            _ = total_design;
-            const px_scale = ifc.font_size / upem;
-            const asc_px: f32 = @round(asc_design * px_scale);
-            const desc_px: f32 = @round(desc_design * px_scale);
-            const gap_px: f32 = @round(line_gap * px_scale);
-            const upp: f32 = @floatFromInt(units_per_pixel);
-            const total_lu: i32 = @intFromFloat((asc_px + desc_px + gap_px) * upp);
-            // Half-leading: the line gap is split half above the ascent, half
-            // below the descent (CSS2 §10.8.1); the baseline sits at
-            // ascent + gap/2 from the top of the line box.
-            ifc.ascender = @intFromFloat(asc_px * upp + @floor(gap_px * upp / 2));
-            ifc.descender = total_lu - ifc.ascender;
-        } else {
-            ifc.ascender = 0;
-            ifc.descender = 0;
-        }
-        top_height = ifc.ascender;
-        bottom_height = ifc.descender;
-    } else {
-        ifc.ascender = 0;
-        ifc.descender = 0;
-        top_height = 0;
-        bottom_height = 0;
-    }
+    // The strut: the root inline box's layout box (CSS 2.1 §10.8.1).
+    const top_height = ifc.inline_boxes.items(.above)[0];
+    const bottom_height = ifc.inline_boxes.items(.below)[0];
+    const nominal_line_h: Unit = top_height + bottom_height;
+    ifc.ascender = top_height;
+    ifc.descender = bottom_height;
+    const lc: LineContext = .{ .layout = layout, .subtree = subtree, .ifc = ifc };
 
-    // Apply explicit line-height before initializing line-split state,
-    // so the state captures the adjusted ascender/descender heights.
-    // Encoding: 0 = normal, >0 = absolute layout units, <0 = number × -1000.
-    var nominal_line_h: Unit = top_height + bottom_height;
-    const resolved_lh: Unit = if (ifc.line_height < 0) blk: {
-        const factor = @as(f32, @floatFromInt(-ifc.line_height)) / 1000.0;
-        break :blk @intFromFloat(@round(factor * ifc.font_size * @as(f32, @floatFromInt(units_per_pixel))));
-    } else ifc.line_height;
-    if (resolved_lh > 0) {
-        // CSS2 §10.8.1 half-leading model: leading = line-height - content-area,
-        // split equally above the ascender and below the descender.
-        const leading = resolved_lh - nominal_line_h;
-        const half_leading = @divFloor(leading, 2);
-        top_height += half_leading;
-        bottom_height = resolved_lh - top_height;
-        nominal_line_h = resolved_lh;
-    }
-
-    var s = IFCLineSplitState.init(top_height, bottom_height);
+    var s = IFCLineSplitState.init(layout.allocator, top_height, bottom_height);
     defer s.deinit(layout.allocator);
     // Minimum useful inline width: ~one font-em-square. Lines narrower
     // than this trigger the §9.5 line-clear fallback so we don't
@@ -1729,13 +1986,25 @@ pub fn splitIntoLineBoxes(
     // the char-level break path (same as pre-fix behavior). This protects
     // against the 2026-04-14 popInlineBox assertion crash observed on
     // real-wikipedia / real-lobsters paragraphs with <i>, <b>, <a> inlines.
-    const break_ops = ifc.break_opportunities.items;
-    var next_break_op_idx: usize = 0;
     var last_break_i: ?usize = null;
     var last_break_cursor: Unit = 0;
     var last_break_elements_1: usize = 0;
     var last_break_current_inline_box: Ifc.Size = 0;
-    var last_break_stack_depth: usize = 0;
+    // The inline boxes open at the last soft wrap opportunity, restored when
+    // the line is rewound to it.
+    var last_break_stack: std.ArrayListUnmanaged(Ifc.Size) = .{};
+    defer last_break_stack.deinit(layout.allocator);
+    // CSS Text 3 §5: a word longer than the line overflows it; the line
+    // ends at the next soft wrap opportunity.
+    var overflowing = false;
+    var effective_right_mut = effective_right;
+    const lines: LineStepper = .{
+        .floats = parent_float_ctx,
+        .nominal_line_h = nominal_line_h,
+        .max_w = max_line_box_length,
+        .min_w = min_useful_w,
+    };
+    var line_top = line_top_y;
 
     {
         const gi = glyphs.items(.index)[0];
@@ -1755,7 +2024,8 @@ pub fn splitIntoLineBoxes(
     var i: usize = 2;
     while (i < glyphs.len) : (i += 1) {
         const gi = glyphs.items(.index)[i];
-        const metrics = glyphs.items(.metrics)[i];
+        var metrics = glyphs.items(.metrics)[i];
+        const marker = i;
 
         if (gi == 0) {
             i += 1;
@@ -1764,84 +2034,56 @@ pub fn splitIntoLineBoxes(
                 .BoxStart => try s.pushInlineBox(layout.allocator, @as(Ifc.Size, special.data)),
                 .BoxEnd => s.popInlineBox(@as(Ifc.Size, special.data)),
                 .LineBreak => {
-                    s.finishLineBox();
-                    try layout.box_tree.appendLineBox(ifc, s.line_box);
-                    s.newLineBox(2);
-                    line_top_y += nominal_line_h;
-                    if (parent_float_ctx) |fctx2| {
-                        const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
-                        line_top_y = cleared.line_y;
-                        effective_left = cleared.left;
-                        effective_right = cleared.right;
-                    } else {
-                        effective_left = 0;
-                        effective_right = max_line_box_length;
-                    }
-                    s.line_box.x_offset = effective_left;
-                    s.cursor = effective_left;
+                    try lines.next(&s, lc, 2, &line_top, &effective_right_mut);
+                    overflowing = false;
+                    last_break_i = null;
                     continue;
                 },
-                else => {},
+                .Tab => {
+                    // CSS Text 3 §4.2: to the next tab stop (tab-size 8 spaces),
+                    // skipping one closer than half a space.
+                    s.at_line_start = false;
+                    const space: Unit = special.data;
+                    const stop: Unit = @max(1, 8 * space);
+                    var advance = stop - @mod(s.cursor - s.line_box.x_offset, stop);
+                    if (advance * 2 < space) advance += stop;
+                    glyphs.items(.metrics)[marker].advance = advance;
+                    metrics.advance = advance;
+                },
+                .InlineBlock, .ZeroGlyphIndex => s.at_line_start = false,
             }
+        } else if (s.at_line_start) {
+            if (spaceAt(ifc, i)) |space| {
+                if (space.collapsible) {
+                    // CSS Text 3 §4.1.2: removed at the start of a line.
+                    s.line_box.elements[1] += 1;
+                    s.line_box.lead_end = i + 1;
+                    continue;
+                }
+            }
+            s.at_line_start = false;
         }
 
-        // TODO: (Bug) A glyph with a width of zero but an advance that is non-zero may overflow the width of the containing block
-        // overflow-wrap: break-word allows breaking within words when the line would otherwise overflow.
-        const overflow_break_word = ifc.overflow_wrap == .break_word;
-        if (s.cursor > effective_left and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > effective_right and (s.line_box.elements[1] > s.line_box.elements[0] or overflow_break_word)) {
-            // Prefer rewinding to the last word-boundary break opportunity.
-            // SAFETY: only rewind if the inline-box state (current_inline_box
-            // and stack depth) is the SAME as it was at the break opportunity.
-            // If it's changed, we crossed a BoxStart/BoxEnd between the break
-            // and the overflow — re-processing the moved glyphs would corrupt
-            // the inline-box stack and panic in popInlineBox. In that case we
-            // fall through to the char-break path (pre-fix behavior).
-            var rewound = false;
-            if (!overflow_break_word) {
-                if (last_break_i) |bi| {
-                    if (last_break_elements_1 > s.line_box.elements[0] and s.current_inline_box == last_break_current_inline_box and s.inline_box_stack.items.len == last_break_stack_depth) {
-                        s.cursor = last_break_cursor;
-                        s.line_box.elements[1] = last_break_elements_1;
-                        s.finishLineBox();
-                        try layout.box_tree.appendLineBox(ifc, s.line_box);
-                        s.newLineBox(0);
-                        line_top_y += nominal_line_h;
-                        if (parent_float_ctx) |fctx2| {
-                            const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
-                            line_top_y = cleared.line_y;
-                            effective_left = cleared.left;
-                            effective_right = cleared.right;
-                        } else {
-                            effective_left = 0;
-                            effective_right = max_line_box_length;
-                        }
-                        s.line_box.x_offset = effective_left;
-                        s.cursor = effective_left;
-                        i = bi; // loop's i+=1 will advance past the break glyph
-                        last_break_i = null;
-                        rewound = true;
-                    }
-                }
-            }
-            if (!rewound) {
-                s.finishLineBox();
-                try layout.box_tree.appendLineBox(ifc, s.line_box);
-                s.newLineBox(0);
-                line_top_y += nominal_line_h;
-                if (parent_float_ctx) |fctx2| {
-                    const cleared = clearLineYUntilFits(fctx2, line_top_y, nominal_line_h, max_line_box_length, min_useful_w);
-                    line_top_y = cleared.line_y;
-                    effective_left = cleared.left;
-                    effective_right = cleared.right;
-                } else {
-                    effective_left = 0;
-                    effective_right = max_line_box_length;
-                }
-                s.line_box.x_offset = effective_left;
-                s.cursor = effective_left;
+        if (!overflowing and s.cursor > s.line_box.x_offset and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > effective_right_mut) {
+            if (last_break_i != null and last_break_elements_1 > s.line_box.elements[0]) {
+                // End the line at the last soft wrap opportunity and lay
+                // out what follows it again on the next line.
+                s.cursor = last_break_cursor;
+                s.line_box.elements[1] = last_break_elements_1;
+                s.inline_box_stack.clearRetainingCapacity();
+                try s.inline_box_stack.appendSlice(layout.allocator, last_break_stack.items);
+                s.current_inline_box = last_break_current_inline_box;
+                try lines.next(&s, lc, 0, &line_top, &effective_right_mut);
+                i = last_break_i.?; // the loop's i += 1 resumes after it
                 last_break_i = null;
+                continue;
+            } else if (ifc.overflow_wrap == .break_word) {
+                // overflow-wrap: break-word — an unbreakable word may break
+                // anywhere when the line has no other opportunity.
+                try lines.next(&s, lc, 0, &line_top, &effective_right_mut);
+            } else {
+                overflowing = true;
             }
-            if (rewound) continue;
         }
 
         if (gi == 0) {
@@ -1849,24 +2091,7 @@ pub fn splitIntoLineBoxes(
             switch (@as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)))) {
                 .InlineBlock => {
                     const block_box_index = @as(Subtree.Size, special.data);
-                    const offset = &subtree.items(.offset)[block_box_index];
-                    const box_offsets = subtree.items(.box_offsets)[block_box_index];
-                    const margins = subtree.items(.margins)[block_box_index];
-                    const margin_box_height = box_offsets.border_size.h + margins.top + margins.bottom;
-                    // CSS 2.1 §10.8.1 (vertical-align: baseline): the
-                    // inline-block's baseline sits on the line's baseline;
-                    // without one its bottom margin edge does.
-                    const ascent: Unit = if (inlineBlockBaseline(layout, subtree, block_box_index)) |b| margins.top + b else margin_box_height;
-                    s.max_top_height = @max(s.max_top_height, ascent);
-                    s.max_bottom_height = @max(s.max_bottom_height, margin_box_height - ascent);
-                    try s.inline_blocks_in_this_line_box.append(
-                        layout.allocator,
-                        .{
-                            .offset = offset,
-                            .cursor = s.cursor,
-                            .height = ascent,
-                        },
-                    );
+                    try s.inline_blocks_in_this_line_box.append(layout.allocator, inlineBlockPlacement(layout, subtree, ifc, block_box_index, s.cursor, i, s.current_inline_box));
                 },
                 .LineBreak => unreachable,
                 else => {},
@@ -1878,25 +2103,25 @@ pub fn splitIntoLineBoxes(
 
         s.cursor += metrics.advance;
 
-        // Record break-opportunity state AFTER processing the glyph (so
-        // last_break_cursor/elements_1 reflect the line state with the
-        // break glyph included). Also capture the inline-box stack state
-        // for the rewind safety check.
-        while (next_break_op_idx < break_ops.len and break_ops[next_break_op_idx] < i) {
-            next_break_op_idx += 1;
-        }
-        if (next_break_op_idx < break_ops.len and break_ops[next_break_op_idx] == i) {
+        if (isBreakAfter(ifc, i)) {
+            if (overflowing) {
+                // The overflowing word ends here.
+                try lines.next(&s, lc, 0, &line_top, &effective_right_mut);
+                overflowing = false;
+                last_break_i = null;
+                continue;
+            }
             last_break_i = i;
             last_break_cursor = s.cursor;
             last_break_elements_1 = s.line_box.elements[1];
             last_break_current_inline_box = s.current_inline_box;
-            last_break_stack_depth = s.inline_box_stack.items.len;
-            next_break_op_idx += 1;
+            last_break_stack.clearRetainingCapacity();
+            try last_break_stack.appendSlice(layout.allocator, s.inline_box_stack.items);
         }
     }
 
     if (s.line_box.elements[1] > s.line_box.elements[0]) {
-        s.finishLineBox();
+        try s.finishLineBox(lc);
         try layout.box_tree.appendLineBox(ifc, s.line_box);
     }
 

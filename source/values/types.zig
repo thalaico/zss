@@ -614,11 +614,21 @@ pub const TextAlign = enum {
     @"-webkit-center",
 };
 
-pub const VerticalAlign = enum {
+/// CSS 2.1 §10.8.1 `vertical-align`.
+pub const VerticalAlign = union(enum) {
     baseline,
-    top,
+    sub,
+    super,
+    text_top,
+    text_bottom,
     middle,
+    top,
     bottom,
+    /// <length>: raise by this many px (negative lowers).
+    px: f32,
+    em: f32,
+    /// <percentage> of the element's line-height (0.5 = 50%).
+    percentage: f32,
 };
 
 pub const Visibility = enum {
