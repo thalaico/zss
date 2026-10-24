@@ -149,9 +149,13 @@ pub fn ensureCapacity(sc: *StyleComputer, comptime stage: Stage, allocator: Allo
     // Raw allocation: `Allocator.alloc` fills new memory with 0xAA in safe
     // builds, and the table (~880 B per node, 13 MB for a 15k-node page)
     // is overwritten with `.{}` on the next line anyway.
+    // The table is a quarter longer than the document (empty entries), so
+    // the incremental layouts after DOM insertions grow into it rather than
+    // copying it (`adoptTable`).
     const T = stage.ComputedValues();
-    const bytes = allocator.rawAlloc(@sizeOf(T) * count, .of(T), @returnAddress()) orelse return error.OutOfMemory;
-    s.nodes = @as([*]T, @ptrCast(@alignCast(bytes)))[0..count];
+    const len = count + count / 4;
+    const bytes = allocator.rawAlloc(@sizeOf(T) * len, .of(T), @returnAddress()) orelse return error.OutOfMemory;
+    s.nodes = @as([*]T, @ptrCast(@alignCast(bytes)))[0..len];
     @memset(s.nodes, .{});
     try s.visited.resize(sc.allocator, count, false);
     s.visited.unsetAll();

@@ -407,6 +407,11 @@ pub fn pushInitialSubtree(box_gen: *BoxGen) !void {
     if (layout.incremental) |inc| {
         subtree.blocks = inc.previous.spare_blocks;
         inc.previous.spare_blocks = .{};
+        // The first incremental layout after a full one has no spare
+        // storage: size it once rather than growing it block by block.
+        if (inc.previous.subtrees.items.len > 0) {
+            try subtree.blocks.ensureTotalCapacity(layout.box_tree.ptr.allocator, inc.previous.subtrees.items[0].blocks.len);
+        }
     }
     box_gen.stacks.subtree.top = .{ .id = subtree.id, .depth = 0 };
 }

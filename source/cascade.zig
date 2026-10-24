@@ -1721,35 +1721,68 @@ fn groupEql(comptime tag: zss.values.groups.Tag, a: Database.Storage.Map, b: Dat
     return av == bv or std.meta.eql(av.*, bv.*);
 }
 
+/// The origins and importances in the order `run` traverses them.
+const restyle_phases = [_]struct { origin: Origin, importances: []const Importance }{
+    .{ .origin = .user_agent, .importances = &.{.important} },
+    .{ .origin = .user, .importances = &.{.important} },
+    .{ .origin = .author, .importances = &.{ .important, .normal } },
+    .{ .origin = .user, .importances = &.{.normal} },
+    .{ .origin = .user_agent, .importances = &.{.normal} },
+};
+
+/// The rule indexes `restyle` matches elements against, built once for a
+/// cascade list. They stay valid while the list's sources keep their
+/// selectors and the `Environment` they were interned in lives (a host that
+/// changes a style sheet builds a new environment, and new indexes).
+pub const RestyleIndexes = struct {
+    arena: std.heap.ArenaAllocator,
+    /// Per `restyle_phases` entry, the indexes of its sources in order.
+    phases: [restyle_phases.len][]const SourceIndex,
+
+    const SourceIndex = struct { source: *const Source, index: RuleIndex };
+
+    pub fn init(list: *const List, allocator: Allocator) !RestyleIndexes {
+        var indexes: RestyleIndexes = .{ .arena = .init(allocator), .phases = undefined };
+        errdefer indexes.arena.deinit();
+        const arena = indexes.arena.allocator();
+        var sources: std.ArrayListUnmanaged(*const Source) = .{};
+        for (restyle_phases, &indexes.phases) |phase, *out| {
+            sources.clearRetainingCapacity();
+            const roots = switch (phase.origin) {
+                .user => list.user,
+                .author => list.author,
+                .user_agent => list.user_agent,
+            };
+            for (roots) |root| try collectSources(root, &sources, arena);
+            const entries = try arena.alloc(SourceIndex, sources.items.len);
+            for (sources.items, entries) |source, *entry| {
+                entry.* = .{ .source = source, .index = try RuleIndex.build(source, phase.importances, arena) };
+            }
+            out.* = entries;
+        }
+        return indexes;
+    }
+
+    pub fn deinit(indexes: *RestyleIndexes) void {
+        indexes.arena.deinit();
+    }
+};
+
+/// Re-run the cascade for `nodes` against `indexes` (built for the same
+/// cascade list and environment).
 /// `changed`, if not null, receives the elements among `nodes` whose
 /// cascaded values may differ from before: their applied declaration
 /// blocks changed, or they have or had ::before / ::after values.
-pub fn restyle(list: *const List, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator, changed: ?*std.ArrayListUnmanaged(Change)) !void {
+pub fn restyle(indexes: *const RestyleIndexes, env: *Environment, nodes: []const Environment.NodeId, temp_allocator: Allocator, changed: ?*std.ArrayListUnmanaged(Change)) !void {
     var ctx = RunContext{ .arena = .init(temp_allocator) };
     defer ctx.arena.deinit();
     const allocator = ctx.arena.allocator();
 
-    // The origins in the order `run` traverses them.
-    const Phase = struct { origin: Origin, importances: []const Importance };
-    const phases = [_]Phase{
-        .{ .origin = .user_agent, .importances = &.{.important} },
-        .{ .origin = .user, .importances = &.{.important} },
-        .{ .origin = .author, .importances = &.{ .important, .normal } },
-        .{ .origin = .user, .importances = &.{.normal} },
-        .{ .origin = .user_agent, .importances = &.{.normal} },
-    };
-    var sources: std.ArrayListUnmanaged(*const Source) = .{};
     var candidates: std.ArrayListUnmanaged(SelectorEntry) = .{};
-    for (phases) |phase| {
-        sources.clearRetainingCapacity();
-        const roots = switch (phase.origin) {
-            .user => list.user,
-            .author => list.author,
-            .user_agent => list.user_agent,
-        };
-        for (roots) |root| try collectSources(root, &sources, allocator);
-        for (sources.items) |source| {
-            const index = try RuleIndex.build(source, phase.importances, allocator);
+    for (restyle_phases, indexes.phases) |phase, sources| {
+        for (sources) |entry_source| {
+            const source = entry_source.source;
+            const index = &entry_source.index;
             const data = source.selector_data.items;
             for (nodes) |node| {
                 if (env.getNodeProperty(.category, node) != .element) continue;
