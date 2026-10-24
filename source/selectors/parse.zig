@@ -705,13 +705,17 @@ fn parseSelectorListPseudoClass(parser: *Parser, data_list: DataListManaged, fun
 fn parseListArgument(parser: *Parser, data_list: DataListManaged, kind: ListPseudoClass) Error!bool {
     var leading: ?selectors.Combinator = null;
     if (kind == .has) {
+        // Selectors 4 §3.5: an optional leading combinator, descendant
+        // when absent. Any other delimiter starts the selector itself
+        // (`.class`, `*`).
         leading = .descendant;
+        _ = parser.skipSpaces();
         if (parser.accept(.token_delim)) |index| {
             switch (index.extra(parser.ast).codepoint) {
                 '>' => leading = .child,
                 '+' => leading = .next_sibling,
                 '~' => leading = .subsequent_sibling,
-                else => return false,
+                else => parser.sequence.reset(index),
             }
         }
     }
