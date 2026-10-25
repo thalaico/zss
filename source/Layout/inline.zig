@@ -516,6 +516,51 @@ pub fn afterFlowMode(box_gen: *BoxGen) void {
     box_gen.getLayout().popNode();
 }
 
+/// An absolutely positioned element met in an inline formatting context
+/// (CSS 2.1 §9.6): out of flow, so the line and the inline boxes around it
+/// go on unbroken. Its block is generated as the IFC container's child, as
+/// an inline-block's is, sized against its containing block like one in
+/// normal flow (`flow.blockElement`); a zero-width `OutOfFlow` glyph marks
+/// where it would have been, which line breaking turns into its static
+/// position (§10.3.7) for `positioned.run`.
+pub fn outOfFlowElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyle.InnerBlock, position: BoxTree.BoxStyle.Position) !void {
+    const layout = box_gen.getLayout();
+    const computer = &layout.computer;
+    const ifc = box_gen.inline_context.ifc.top.?;
+    const containing_block_size = box_gen.absoluteContainingBlockSize(position);
+    const box_style_specified = computer.getSpecifiedValue(.box_gen, .box_style);
+    var sizes = flow.solveAllSizes(computer, position, .{ .normal = containing_block_size.width }, containing_block_size.height, false);
+    form_controls.applyIntrinsicSizes(layout, node, &sizes);
+    const stacking_context = flow.solveStackingContext(computer, position);
+    computer.setComputedValue(.box_gen, .font, computer.computedFont(.box_gen));
+    computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
+    computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
+    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
+    computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
+    computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
+    computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
+    computer.commitNode(.box_gen);
+
+    const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };
+    const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
+    flow.setupContainer(box_gen, inner_block, box_style_specified);
+    try layout.box_tree.setGeneratedBox(node, .{ .block_ref = ref });
+    // The hypothetical box is inline-level or block-level by the element's
+    // display before it was blockified (CSS 2.1 §9.7, §10.3.7).
+    const inline_level = switch (box_style_specified.display) {
+        .@"inline", .inline_block, .inline_flex, .inline_grid => true,
+        else => false,
+    };
+    if (inline_level) {
+        try layout.box_tree.appendSpecialGlyph(ifc.ptr, .OutOfFlowInline, ref.index);
+    } else {
+        try layout.box_tree.appendSpecialGlyph(ifc.ptr, .OutOfFlowBlock, ref.index);
+    }
+    try layout.pushNode();
+    return box_gen.beginFlowMode(.not_root);
+}
+
 pub fn afterInlineMode() noreturn {
     unreachable;
 }
@@ -1577,6 +1622,8 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                 .LineBreak => setMetricsLineBreak(metrics),
                 // Advance set by line breaking (the next tab stop).
                 .Tab => metrics.* = .{ .offset = 0, .advance = 0, .width = 0 },
+                // Out of flow: no space in the line.
+                .OutOfFlowInline, .OutOfFlowBlock => metrics.* = .{ .offset = 0, .advance = 0, .width = 0 },
             }
         } else {
             // Advance to the font run covering this glyph; restore its face and size.
@@ -1814,8 +1861,11 @@ const IFCLineSplitState = struct {
         /// and its height.
         above: Unit,
         height: Unit,
-        /// `vertical-align: top / bottom` align it to the line box.
-        line_relative: enum { no, top, bottom } = .no,
+        /// `vertical-align: top / bottom` align it to the line box. The
+        /// static position of an out-of-flow box: at the top of this line
+        /// where it was met, or at the start of the next line (a block-level
+        /// hypothetical box) — it takes no space in the line.
+        line_relative: enum { no, top, bottom, static_in_line, static_next_line } = .no,
     };
 
     fn init(allocator: Allocator, top_height: Unit, bottom_height: Unit) IFCLineSplitState {
@@ -1852,7 +1902,11 @@ const IFCLineSplitState = struct {
                 const j = k - 1;
                 if (j >= 1 and j - 1 >= self.line_box.elements[0] and g.items(.index)[j - 1] == 0) {
                     const special = Ifc.Special.decode(g.items(.index)[j]);
-                    if (special.kind != .BoxStart and special.kind != .BoxEnd) break;
+                    switch (special.kind) {
+                        // No content: the spaces before them hang too.
+                        .BoxStart, .BoxEnd, .OutOfFlowInline, .OutOfFlowBlock => {},
+                        else => break,
+                    }
                     k -= 2;
                     continue;
                 }
@@ -1887,12 +1941,16 @@ const IFCLineSplitState = struct {
             below = @max(below, info.height - info.above);
         }
         for (blocks) |info| {
-            if (info.at >= self.line_box.elements[1] or info.line_relative == .no) continue;
-            if (info.height > above + below) switch (info.line_relative) {
-                .top => below = info.height - above,
-                .bottom => above = info.height - below,
-                .no => unreachable,
-            };
+            if (info.at >= self.line_box.elements[1]) continue;
+            switch (info.line_relative) {
+                .top => if (info.height > above + below) {
+                    below = info.height - above;
+                },
+                .bottom => if (info.height > above + below) {
+                    above = info.height - below;
+                },
+                .no, .static_in_line, .static_next_line => {},
+            }
         }
         self.max_top_height = above;
         self.max_bottom_height = below;
@@ -1903,10 +1961,18 @@ const IFCLineSplitState = struct {
             if (info.at >= self.line_box.elements[1]) continue;
             const top = switch (info.line_relative) {
                 .no => self.line_box.baseline - info.above,
-                .top => self.line_box.baseline - above,
+                .top, .static_in_line => self.line_box.baseline - above,
                 .bottom => self.line_box.baseline + below - info.height,
+                .static_next_line => self.line_box.baseline + below,
             };
-            info.offset.* = .{ .x = info.cursor, .y = top };
+            // A static position among the line's trailing spaces is at the
+            // end of its content: those spaces hang (CSS Text 3 §4.1.2).
+            const x = switch (info.line_relative) {
+                .static_next_line => self.line_box.x_offset,
+                .static_in_line => @min(info.cursor, self.cursor),
+                else => info.cursor,
+            };
+            info.offset.* = .{ .x = x, .y = top };
         }
     }
 
@@ -2162,6 +2228,9 @@ pub fn splitIntoLineBoxes(
                     metrics.advance = advance;
                 },
                 .InlineBlock, .ZeroGlyphIndex => s.at_line_start = false,
+                // Out of flow: not content of the line (spaces around it
+                // collapse as if it were not there).
+                .OutOfFlowInline, .OutOfFlowBlock => {},
             }
         } else if (s.at_line_start) {
             if (spaceAt(ifc, i)) |space| {
@@ -2204,10 +2273,33 @@ pub fn splitIntoLineBoxes(
                     const block_box_index = @as(Subtree.Size, special.data);
                     try s.inline_blocks_in_this_line_box.append(layout.allocator, inlineBlockPlacement(layout, subtree, ifc, block_box_index, s.cursor, i, s.current_inline_box));
                 },
+                // Its static position (CSS 2.1 §10.3.7), set with the line's.
+                .OutOfFlowInline, .OutOfFlowBlock => |kind| {
+                    const block_box_index = @as(Subtree.Size, special.data);
+                    try s.inline_blocks_in_this_line_box.append(layout.allocator, .{
+                        .offset = &subtree.items(.offset)[block_box_index],
+                        .cursor = s.cursor,
+                        .at = i,
+                        .above = 0,
+                        .height = 0,
+                        .line_relative = if (kind == .OutOfFlowInline) .static_in_line else .static_next_line,
+                    });
+                },
                 .LineBreak => unreachable,
                 else => {},
             }
+            // A soft wrap opportunity just before an out-of-flow box moves
+            // past it: taking no space, it stays on the line it follows when
+            // the line ends there (as Blink does).
+            const kind_tag = @as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)));
+            const moves_break = (kind_tag == .OutOfFlowInline or kind_tag == .OutOfFlowBlock) and
+                last_break_i != null and last_break_elements_1 == s.line_box.elements[1];
             s.line_box.elements[1] += 2;
+            if (moves_break) {
+                last_break_i = i;
+                last_break_elements_1 = s.line_box.elements[1];
+                continue;
+            }
         } else {
             s.line_box.elements[1] += 1;
         }

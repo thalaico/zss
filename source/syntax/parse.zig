@@ -448,8 +448,7 @@ fn consumeListOfRules(parser: *Parser, ast: *AstManaged, top_level: bool) !Ast.S
                 parser.setLocation(location);
                 const rule_index = try ast.addComplexComponent(.qualified_rule, location);
                 try parser.increaseDepth(location);
-                parser.rule_stack.top = .{ .index = rule_index, .is_style_rule = top_level };
-                try consumeQualifiedRule(parser, ast);
+                try consumeQualifiedRuleAt(parser, ast, .{ .index = rule_index, .is_style_rule = top_level });
             },
         }
     }
@@ -521,8 +520,7 @@ fn consumeBlockRuleList(parser: *Parser, ast: *AstManaged, brace_location: Locat
                 const rule_index = try ast.addComplexComponent(.qualified_rule, location);
                 try parser.increaseDepth(location);
                 // Nested rules in @media are style rules (same as top-level).
-                parser.rule_stack.top = .{ .index = rule_index, .is_style_rule = true };
-                try consumeQualifiedRule(parser, ast);
+                try consumeQualifiedRuleAt(parser, ast, .{ .index = rule_index, .is_style_rule = true });
             },
         }
     }
@@ -530,8 +528,25 @@ fn consumeBlockRuleList(parser: *Parser, ast: *AstManaged, brace_location: Locat
     ast.finishComplexComponent(index);
 }
 
-fn consumeQualifiedRule(parser: *Parser, ast: *AstManaged) !void {
-    while (parser.rule_stack.top) |*qualified_rule| {
+/// The number of qualified rules being parsed (the enclosing rules of the
+/// current one included).
+fn ruleDepth(parser: *const Parser) usize {
+    return if (parser.rule_stack.top == null) 0 else parser.rule_stack.rest.items.len + 1;
+}
+
+/// Parse the qualified rule `rule` (whose component was just added) to its
+/// end. It may be nested in rules still being parsed — a style rule inside
+/// `@media` inside a style rule (CSS Nesting) — which stay on the stack.
+fn consumeQualifiedRuleAt(parser: *Parser, ast: *AstManaged, rule: Parser.QualifiedRule) !void {
+    const base = ruleDepth(parser);
+    if (parser.rule_stack.top == null) parser.rule_stack.top = rule else try parser.rule_stack.push(parser.allocator, rule);
+    try consumeQualifiedRule(parser, ast, base);
+}
+
+/// Parse rules from the top of the stack until it is back at `base` rules.
+fn consumeQualifiedRule(parser: *Parser, ast: *AstManaged, base: usize) !void {
+    while (ruleDepth(parser) > base) {
+        const qualified_rule = &parser.rule_stack.top.?;
         if (qualified_rule.index_of_block == null) {
             try consumeQualifiedRulePrelude(parser, ast, qualified_rule);
             if (qualified_rule.discarded) {
@@ -1024,4 +1039,24 @@ test "parser fuzz test" {
     // TODO: It could be useful to include a corpus.
     try std.testing.fuzz({}, ns.fuzzFn(.css), .{});
     try std.testing.fuzz({}, ns.fuzzFn(.zml), .{});
+}
+
+test "a rule nested in @media inside a style rule leaves the enclosing rules intact" {
+    // CSS Nesting: `@media` inside a style rule holds a rule list; parsing
+    // it used to replace the enclosing rule on the rule stack.
+    const allocator = std.testing.allocator;
+    const input = ".a { color: red; @media screen { .b { color: blue } } margin: 0 } .c { color: green }";
+    const source_code = try SourceCode.init(input);
+    var parser = Parser.init(source_code, allocator);
+    defer parser.deinit();
+    var ast, const rule_list = try parser.parseCssStylesheet(allocator);
+    defer ast.deinit(allocator);
+
+    // Both top-level rules, in order.
+    var count: usize = 0;
+    var it = rule_list.children(ast);
+    while (it.nextSkipSpaces(ast)) |child| {
+        if (child.tag(ast) == .qualified_rule) count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), count);
 }

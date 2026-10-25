@@ -37,6 +37,8 @@ pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size
     subtree.blocks.items(.block_margins)[new_len - 1] = .{ 0, 0 };
     subtree.blocks.items(.min_block_size)[new_len - 1] = 0;
     subtree.blocks.items(.max_block_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
+    subtree.blocks.items(.min_inline_size)[new_len - 1] = 0;
+    subtree.blocks.items(.max_inline_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
     subtree.blocks.items(.bfc_floats)[new_len - 1] = false;
     subtree.blocks.items(.containing_block)[new_len - 1] = .{ -1, -1 };
     subtree.blocks.items(.creates_absolute_cb)[new_len - 1] = false;
@@ -75,6 +77,13 @@ pub const SpecialGlyph = union(enum(u16)) {
     /// Represents a mandatory line break in the text.
     /// data has no meaning.
     LineBreak,
+    /// Where an absolutely positioned box would have been in the line (its
+    /// static position, CSS 2.1 §10.3.7), for a box that was inline-level
+    /// before it was blockified: in the line. Takes no space.
+    /// data is the index of the block box.
+    OutOfFlowInline: Subtree.Size,
+    /// Likewise for a block-level one: at the start of the next line.
+    OutOfFlowBlock: Subtree.Size,
 };
 
 pub fn appendSpecialGlyph(
@@ -87,7 +96,7 @@ pub fn appendSpecialGlyph(
         .kind = zss.meta.coerceEnum(Ifc.Special.Kind, tag),
         .data = switch (tag) {
             .ZeroGlyphIndex, .LineBreak => undefined,
-            .BoxStart, .BoxEnd, .InlineBlock, .Tab => data,
+            .BoxStart, .BoxEnd, .InlineBlock, .Tab, .OutOfFlowInline, .OutOfFlowBlock => data,
         },
     };
     try ifc.glyphs.append(box_tree.ptr.allocator, .{ .index = 0, .metrics = undefined });

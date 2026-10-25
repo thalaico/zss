@@ -504,8 +504,8 @@ fn takeBlocks(box_gen: *BoxGen, previous: *BoxTree, old_subtree: Subtree.Id, sub
     }
 }
 
-/// An IFC's inline-block glyphs name their block by index in the IFC's
-/// parent subtree.
+/// An IFC's inline-block and out-of-flow glyphs name their block by index
+/// in the IFC's parent subtree.
 fn shiftInlineBlocks(ifc: *Ifc, delta: i32) void {
     const indices = ifc.glyphs.items(.index);
     var g: usize = 0;
@@ -515,7 +515,7 @@ fn shiftInlineBlocks(ifc: *Ifc, delta: i32) void {
             continue;
         }
         var special = Ifc.Special.decode(indices[g + 1]);
-        if (special.kind == .InlineBlock) {
+        if (special.kind == .InlineBlock or special.kind == .OutOfFlowInline or special.kind == .OutOfFlowBlock) {
             special.data = @intCast(@as(i32, special.data) + delta);
             indices[g + 1] = @bitCast(special);
         }

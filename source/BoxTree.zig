@@ -361,6 +361,10 @@ pub const IntrinsicFlags = packed struct(u8) {
         /// Used min/max-height of the content box.
         min_block_size: math.Unit = 0,
         max_block_size: math.Unit = std.math.maxInt(math.Unit),
+        /// The used min-width and max-width (content box): relayout
+        /// clamps a width it resolves again (CSS 2.1 §10.4).
+        min_inline_size: math.Unit = 0,
+        max_inline_size: math.Unit = std.math.maxInt(math.Unit),
         /// This block is a BFC root with floats in its formatting context:
         /// its content is laid out by `Layout/bfc.zig`.
         bfc_floats: bool = false,
@@ -618,6 +622,12 @@ pub const InlineFormattingContext = struct {
             /// the next tab stop; its advance is set by line breaking.
             /// data is the advance of a space in its font.
             Tab,
+            /// The static position of an absolutely positioned box that was
+            /// inline-level (in the line) or block-level (at the start of
+            /// the next line); takes no space. data is the index of the
+            /// block box.
+            OutOfFlowInline = 7,
+            OutOfFlowBlock = 8,
             /// Any other value of this enum should never appear in an end user's code.
             _,
         };

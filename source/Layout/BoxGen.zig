@@ -270,6 +270,10 @@ fn dispatchBlockElement(
             },
             .stf => try stf.blockElement(box_gen, node, inner_box_style, box_style.position),
             .@"inline" => {
+                // Out of flow: the line goes on (CSS 2.1 §9.6).
+                if (box_style.position == .absolute or box_style.position == .fixed) {
+                    return @"inline".outOfFlowElement(box_gen, node, inner_box_style, box_style.position);
+                }
                 const result = try @"inline".blockElement(box_gen);
                 box_gen.afterInlineMode(result);
                 const parent_mode = box_gen.stacks.mode.top orelse {
@@ -1238,6 +1242,8 @@ fn setDataBlock(
     subtree.items(.specified_margins)[index] = used.specified_margins;
     subtree.items(.block_margins)[index] = .{ used.margin_block_start, used.margin_block_end };
     subtree.items(.min_block_size)[index] = used.min_block_size;
+    subtree.items(.min_inline_size)[index] = used.min_inline_size;
+    subtree.items(.max_inline_size)[index] = used.max_inline_size;
     subtree.items(.max_block_size)[index] = used.max_block_size;
     subtree.items(.bfc_floats)[index] = false;
     // Default to false; popFlowBlock and other layout entry points

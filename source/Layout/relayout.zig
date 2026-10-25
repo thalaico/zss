@@ -64,7 +64,7 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
     const specified = subtree.items(.specified_margins)[index];
     var margin_left: Unit = if (flags.margin_start_auto) 0 else if (specified[0] != 0) specified[0] else margins.left;
     var margin_right: Unit = if (flags.margin_end_auto) 0 else if (specified[1] != 0) specified[1] else if (flags.width == .auto) margins.right else 0;
-    const content_w: Unit = switch (flags.width) {
+    var content_w: Unit = switch (flags.width) {
         .fixed => bo.content_size.w,
         .percentage => blk: {
             const resolved: Unit = switch (subtree.items(.percent_width)[index]) {
@@ -75,7 +75,12 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
         },
         .auto => @max(0, cb_width - edges - margin_left - margin_right),
     };
-    if (flags.width != .auto) {
+    // CSS 2.1 §10.4: a width outside min/max-width is computed again with
+    // the limit as the specified width — auto margins included.
+    const clamped_w = solve.clampSize(content_w, subtree.items(.min_inline_size)[index], subtree.items(.max_inline_size)[index]);
+    const clamped = clamped_w != content_w;
+    content_w = clamped_w;
+    if (flags.width != .auto or clamped) {
         // CSS 2.1 §10.3.3: auto margins take the remaining space (equally
         // when both are auto); with neither auto the end margin is ignored.
         const remaining = cb_width - content_w - edges;

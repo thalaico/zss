@@ -66,7 +66,7 @@ pub const Context = struct {
                 stacking_context_id: ?StackingContextTree.Id,
                 // absolute_containing_block_id: ?Layout.Absolute.ContainingBlock.Id,
             },
-            flow_normal: BlockRef,
+            flow_normal: FlowNormal,
             ifc: struct {
                 subtree_id: Subtree.Id,
                 layout_result: @"inline".Result,
@@ -74,6 +74,15 @@ pub const Context = struct {
         };
     };
     const ObjectTree = MultiArrayList(Object);
+
+    /// A block with a definite width inside a shrink-to-fit container: laid
+    /// out at once with its auto and percentage inline margins at 0, which
+    /// resolve once the container's width is known (CSS 2.1 §10.3.3).
+    const FlowNormal = struct {
+        ref: BlockRef,
+        margin_start: zss.values.types.Margin,
+        margin_end: zss.values.types.Margin,
+    };
 
     pub fn deinit(ctx: *Context, allocator: Allocator) void {
         ctx.main_object.deinit(allocator);
@@ -169,7 +178,7 @@ pub const Context = struct {
     fn appendFlowNormalObject(
         ctx: *Context,
         allocator: Allocator,
-        ref: BlockRef,
+        data: FlowNormal,
         node: NodeId,
         full_width: Unit,
     ) !void {
@@ -177,7 +186,7 @@ pub const Context = struct {
             .skip = 1,
             .tag = .flow_normal,
             .node = node,
-            .data = .{ .flow_normal = ref },
+            .data = .{ .flow_normal = data },
         });
 
         const parent = &ctx.object.top.?;
@@ -273,6 +282,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
 fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, position: BoxStyle.Position) !void {
     const computer = &box_gen.getLayout().computer;
     const containing_block_size = box_gen.containingBlockSize();
+    const specified_edges = computer.getSpecifiedValue(.box_gen, .horizontal_edges);
     var sizes = flow.solveAllSizes(computer, position, .stf, containing_block_size.height, false);
     form_controls.applyIntrinsicSizes(box_gen.getLayout(), node, &sizes);
     const stacking_context = flow.solveStackingContext(computer, position);
@@ -298,9 +308,15 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
             if (sizes.get(.inline_size)) |inline_size| {
                 _ = try box_gen.pushSubtree();
                 const box_style = BoxTree.BoxStyle{ .outer = .{ .block = inner_block }, .position = position };
+                if (sizes.isAuto(.margin_inline_start)) sizes.setValue(.margin_inline_start, 0);
+                if (sizes.isAuto(.margin_inline_end)) sizes.setValue(.margin_inline_end, 0);
                 const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
                 try box_gen.getLayout().box_tree.setGeneratedBox(node, .{ .block_ref = ref });
-                try box_gen.stf_context.appendFlowNormalObject(box_gen.getLayout().allocator, ref, node, inline_size + edge_width);
+                try box_gen.stf_context.appendFlowNormalObject(box_gen.getLayout().allocator, .{
+                    .ref = ref,
+                    .margin_start = specified_edges.margin_left,
+                    .margin_end = specified_edges.margin_right,
+                }, node, inline_size + edge_width);
                 try box_gen.getLayout().pushNode();
                 return box_gen.beginFlowMode(.not_root);
             } else {
@@ -444,7 +460,8 @@ fn realizeObjects(box_gen: *BoxGen, main_object_index: Context.Size) !Result {
                     },
                     .flow_normal => {
                         const data = &datas[object_index].flow_normal;
-                        try box_gen.addSubtreeProxy(data.subtree);
+                        resolveFlowNormalMargins(box_gen, data, containing_block_width);
+                        try box_gen.addSubtreeProxy(data.ref.subtree);
                     },
                     .ifc => {
                         const data = datas[object_index].ifc;
@@ -459,6 +476,46 @@ fn realizeObjects(box_gen: *BoxGen, main_object_index: Context.Size) !Result {
     }
 
     return ctx.result;
+}
+
+/// CSS 2.1 §10.3.3 for a definite-width block whose containing block is a
+/// shrink-to-fit container, now that the container's width is known:
+/// percentage margins resolve against it, and the auto margins take the
+/// remaining space (halved when both are auto; zero when over-constrained).
+fn resolveFlowNormalMargins(box_gen: *BoxGen, data: *const Context.FlowNormal, containing_block_width: Unit) void {
+    const subtree = box_gen.getLayout().box_tree.ptr.getSubtree(data.ref.subtree).view();
+    const index = data.ref.index;
+    const margins = &subtree.items(.margins)[index];
+    const box_offsets = &subtree.items(.box_offsets)[index];
+    const resolve = struct {
+        fn f(margin: zss.values.types.Margin, cbw: Unit, current: Unit) ?Unit {
+            return switch (margin) {
+                .auto => null,
+                .percentage => |pct| solve.percentage(pct, cbw),
+                else => current,
+            };
+        }
+    }.f;
+    var start = resolve(data.margin_start, containing_block_width, margins.left);
+    var end = resolve(data.margin_end, containing_block_width, margins.right);
+    const border_width = box_offsets.border_size.w;
+    if (start == null or end == null) {
+        const leftover = containing_block_width - border_width - (start orelse 0) - (end orelse 0);
+        if (leftover < 0) {
+            start = start orelse 0;
+            end = end orelse 0;
+        } else if (start == null and end == null) {
+            start = @divFloor(leftover, 2);
+            end = leftover - start.?;
+        } else if (start == null) {
+            start = leftover;
+        } else {
+            end = leftover;
+        }
+    }
+    margins.left = start.?;
+    margins.right = end.?;
+    box_offsets.border_pos.x = start.?;
 }
 
 fn popFlowBlock(box_gen: *BoxGen, ctx: *RealizeObjectsContext, object_tree_slice: Context.ObjectTree.Slice) void {

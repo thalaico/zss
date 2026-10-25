@@ -452,13 +452,13 @@ pub fn attributeValueIsEmpty(env: *const Environment, value: AttributeValue) boo
 
 /// Helper to extract attribute value string for substring matching.
 /// Allocates a temporary buffer — caller must free the returned slice.
+/// The string of `value`, ASCII-lowercased when `case` is insensitive (so
+/// that callers compare insensitively with plain equality). `value` indexes
+/// the interner the environment's case option interns values in.
 pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Allocator, value: AttributeValue, case: Utf8StringInterner.Case) ![]u8 {
     const interner = switch (env.case_options.attribute_values) {
         .insensitive => &env.attribute_values_insensitive,
-        .sensitive => switch (case) {
-            .sensitive => &env.attribute_values_sensitive,
-            .insensitive => &env.attribute_values_insensitive,
-        },
+        .sensitive => &env.attribute_values_sensitive,
     };
 
     const index = @intFromEnum(value);
@@ -473,6 +473,9 @@ pub fn getAttributeValueString(env: *const Environment, allocator: std.mem.Alloc
     var it = interner.string.iterator(range.position, range.len);
     while (it.next()) |segment| {
         result.appendSliceAssumeCapacity(segment);
+    }
+    if (case == .insensitive) {
+        for (result.items) |*byte| byte.* = std.ascii.toLower(byte.*);
     }
 
     return try result.toOwnedSlice(allocator);
