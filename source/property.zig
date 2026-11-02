@@ -718,7 +718,8 @@ test "parsing properties from a stylesheet" {
 
     try ns.expectEqual(.vertical_edges, &env.decls, block, .{
         .padding_top = .unset,
-        .padding_bottom = .{ .declared = .{ .px = -7 } },
+        // Negative padding is invalid (CSS 2.1 §8.4).
+        .padding_bottom = .unset,
         .border_top = .{ .declared = .medium },
         .border_bottom = .{ .declared = .thick },
         .margin_top = .{ .declared = .{ .px = 0 } },

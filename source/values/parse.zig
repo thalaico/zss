@@ -501,6 +501,48 @@ pub fn lengthPercentageNone(ctx: *Context, comptime Type: type) ?Type {
     return mathLengthPercentage(ctx, Type) orelse length(ctx, Type) orelse percentage(ctx, Type) orelse keyword(ctx, Type, &.{.{ "none", .none }});
 }
 
+/// <length-percentage [0,∞]> and its `auto` / `none` forms (CSS 2.1 §8.4
+/// padding, §10.2/§10.4/§10.5/§10.7 sizes; CSS Values 4 §2.4 ranges): a
+/// negative <length> or <percentage> is invalid, so the declaration is
+/// dropped. A math function is valid whatever it evaluates to — its result
+/// is clamped to the range (CSS Values 4 §10.12).
+pub fn nonNegativeLengthPercentage(ctx: *Context, comptime Type: type) ?Type {
+    if (mathLengthPercentage(ctx, Type)) |value| return clampFolded(Type, value);
+    return nonNegativeLiteral(ctx, Type);
+}
+
+pub fn nonNegativeLengthPercentageAuto(ctx: *Context, comptime Type: type) ?Type {
+    if (mathLengthPercentage(ctx, Type)) |value| return clampFolded(Type, value);
+    return nonNegativeLiteral(ctx, Type) orelse keyword(ctx, Type, &.{.{ "auto", .auto }});
+}
+
+pub fn nonNegativeLengthPercentageNone(ctx: *Context, comptime Type: type) ?Type {
+    if (mathLengthPercentage(ctx, Type)) |value| return clampFolded(Type, value);
+    return nonNegativeLiteral(ctx, Type) orelse keyword(ctx, Type, &.{.{ "none", .none }});
+}
+
+/// A math function folded to a plain length or percentage is its computed
+/// value: clamped to [0,∞] (CSS Values 4 §10.12). One left as `.calc` is
+/// clamped where layout resolves it.
+fn clampFolded(comptime Type: type, value: Type) Type {
+    return switch (value) {
+        inline else => |payload, tag| if (@TypeOf(payload) == f32) @unionInit(Type, @tagName(tag), @max(payload, 0)) else value,
+    };
+}
+
+/// A <length> or <percentage>, or null — leaving it unconsumed, so the
+/// declaration fails — if it is negative (any px / em / percentage payload).
+fn nonNegativeLiteral(ctx: *Context, comptime Type: type) ?Type {
+    const save = ctx.savePoint();
+    const value = length(ctx, Type) orelse percentage(ctx, Type) orelse return null;
+    const negative = switch (value) {
+        inline else => |payload| if (@TypeOf(payload) == f32) payload < 0 else false,
+    };
+    if (!negative) return value;
+    ctx.resetPoint(save);
+    return null;
+}
+
 pub fn string(ctx: *Context) ?Location {
     const item = ctx.next() orelse return null;
     if (item.tag == .token_string) {

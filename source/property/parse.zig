@@ -335,70 +335,70 @@ pub fn @"box-sizing"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@
 
 pub fn width(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.width) {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_width = .{ .width = .{ .declared = value } } };
 }
 
 pub fn @"min-width"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"min-width") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_width = .{ .min_width = .{ .declared = value } } };
 }
 
 pub fn @"max-width"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"max-width") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentageNone(ctx, types.MaxSize) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentageNone(ctx, types.MaxSize) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_width = .{ .max_width = .{ .declared = value } } };
 }
 
 pub fn height(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.height) {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_height = .{ .height = .{ .declared = value } } };
 }
 
 pub fn @"min-height"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"min-height") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_height = .{ .min_height = .{ .declared = value } } };
 }
 
 pub fn @"max-height"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"max-height") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentageNone(ctx, types.MaxSize) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentageNone(ctx, types.MaxSize) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .content_height = .{ .max_height = .{ .declared = value } } };
 }
 
 pub fn @"padding-left"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-left") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .horizontal_edges = .{ .padding_left = .{ .declared = value } } };
 }
 
 pub fn @"padding-right"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-right") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .horizontal_edges = .{ .padding_right = .{ .declared = value } } };
 }
 
 pub fn @"padding-top"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-top") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .vertical_edges = .{ .padding_top = .{ .declared = value } } };
 }
 
 pub fn @"padding-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-bottom") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .vertical_edges = .{ .padding_bottom = .{ .declared = value } } };
 }
@@ -409,28 +409,28 @@ pub fn @"padding-bottom"(ctx: *Context, declaration_index: Ast.Index) ?ReturnTyp
 // their padding entirely because zss skips unknown property names.
 pub fn @"padding-inline-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-inline-start") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .horizontal_edges = .{ .padding_left = .{ .declared = value } } };
 }
 
 pub fn @"padding-inline-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-inline-end") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .horizontal_edges = .{ .padding_right = .{ .declared = value } } };
 }
 
 pub fn @"padding-block-start"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-block-start") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .vertical_edges = .{ .padding_top = .{ .declared = value } } };
 }
 
 pub fn @"padding-block-end"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"padding-block-end") {
     ctx.initDecl(declaration_index);
-    const value = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse return null;
+    const value = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .vertical_edges = .{ .padding_bottom = .{ .declared = value } } };
 }
@@ -440,7 +440,7 @@ pub fn padding(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.padding
     var sizes: [4]values.groups.SingleValue(types.LengthPercentage) = undefined;
     var num: u3 = 0;
     for (0..4) |i| {
-        const size = values.parse.lengthPercentage(ctx, types.LengthPercentage) orelse break;
+        const size = values.parse.nonNegativeLengthPercentage(ctx, types.LengthPercentage) orelse break;
         sizes[i] = .{ .declared = size };
         num += 1;
     }

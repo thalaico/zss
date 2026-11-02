@@ -390,26 +390,7 @@ const RuleProcessor = struct {
                 else => {},
             }
         };
-        const env = ctx.env;
-        const source_text = try std.fmt.allocPrint(ctx.allocator, "x{{{s}}}", .{text[open + 1 .. close]});
-        defer ctx.allocator.free(source_text);
-        const source = SourceCode.init(source_text) catch return false;
-        var parser = zss.syntax.Parser.init(source, env.allocator);
-        defer parser.deinit();
-        var ast, const rules_index = parser.parseCssStylesheet(env.allocator) catch return false;
-        defer ast.deinit(env.allocator);
-        var rules = rules_index.children(ast);
-        const rule = rules.nextSkipSpaces(ast) orelse return false;
-        if (rule.tag(ast) != .qualified_rule) return false;
-        const last_declaration = ast.qualifiedRulePrelude(rule).end.extra(ast).index;
-        // Exactly one declaration.
-        if (@intFromEnum(last_declaration) == 0) return false;
-        if (@intFromEnum(last_declaration.extra(ast).index) != 0) return false;
-        var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
-        var urls = Urls.init(env);
-        defer urls.deinit(env.allocator);
-        const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator));
-        return env.decls.hasValues(block, .normal) or env.decls.hasValues(block, .important);
+        return declarationParses(ctx.allocator, ctx.env, text[open + 1 .. close], .any);
     }
 
     /// selector( <complex-selector> ) (CSS Conditional 4 §6.1): supported if
@@ -425,6 +406,115 @@ const RuleProcessor = struct {
         return !selectors.complexSelectorHasUnsupported(data_list.items, 0);
     }
 };
+
+/// Whether `declaration` ("property: value") is one declaration this
+/// implementation parses (a custom property, or a value with var(), always
+/// parses): `@supports (declaration)`, `CSS.supports()`. It is parsed as a
+/// one-declaration style block, the way `zss.custom_properties` parses
+/// substituted values; `env` only gains an unreferenced declaration block.
+fn declarationParses(allocator: Allocator, env: *Environment, declaration: []const u8, importance: enum { any, normal }) !bool {
+    const source_text = try std.fmt.allocPrint(allocator, "x{{{s}}}", .{declaration});
+    defer allocator.free(source_text);
+    const source = SourceCode.init(source_text) catch return false;
+    var parser = zss.syntax.Parser.init(source, env.allocator);
+    defer parser.deinit();
+    var ast, const rules_index = parser.parseCssStylesheet(env.allocator) catch return false;
+    defer ast.deinit(env.allocator);
+    var rules = rules_index.children(ast);
+    const rule = rules.nextSkipSpaces(ast) orelse return false;
+    if (rule.tag(ast) != .qualified_rule) return false;
+    // One rule: the declaration did not close the block.
+    if (rules.nextSkipSpaces(ast) != null) return false;
+    const last_declaration = ast.qualifiedRulePrelude(rule).end.extra(ast).index;
+    // Exactly one declaration.
+    if (@intFromEnum(last_declaration) == 0) return false;
+    if (@intFromEnum(last_declaration.extra(ast).index) != 0) return false;
+    var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
+    var urls = Urls.init(env);
+    defer urls.deinit(env.allocator);
+    const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator));
+    return switch (importance) {
+        .any => env.decls.hasValues(block, .normal) or env.decls.hasValues(block, .important),
+        .normal => env.decls.hasValues(block, .normal),
+    };
+}
+
+/// `CSS.supports(conditionText)` (CSS Conditional 3 §6.1): whether
+/// `condition_text`, parsed and evaluated as a <supports-condition> — or,
+/// failing that, wrapped in parentheses — is true.
+pub fn supportsConditionText(allocator: Allocator, env: *Environment, condition_text: []const u8) !bool {
+    if (try evaluateSupportsCondition(allocator, env, condition_text) orelse false) return true;
+    const wrapped = try std.fmt.allocPrint(allocator, "({s})", .{condition_text});
+    defer allocator.free(wrapped);
+    return try evaluateSupportsCondition(allocator, env, wrapped) orelse false;
+}
+
+/// `text` parsed as a list of component values (CSS Syntax 3 §5.3.10) and
+/// evaluated as a <supports-condition>; null if it does not match the
+/// grammar.
+fn evaluateSupportsCondition(allocator: Allocator, env: *Environment, text: []const u8) !?bool {
+    const source = SourceCode.init(text) catch return null;
+    var parser = zss.syntax.Parser.init(source, allocator);
+    defer parser.deinit();
+    var ast, const list = parser.parseListOfComponentValues(allocator) catch |err| switch (err) {
+        error.OutOfMemory => |e| return e,
+        else => return null,
+    };
+    defer ast.deinit(allocator);
+    var stylesheet = Stylesheet{ .namespaces = .{}, .decl_urls = .init(env), .cascade_source = .{} };
+    defer stylesheet.deinit(allocator);
+    var ctx = RuleProcessor{
+        .allocator = allocator,
+        .ast = ast,
+        .source_code = source,
+        .env = env,
+        .stylesheet = &stylesheet,
+        .selector_parser = selectors.Parser.init(env, allocator, source, ast, &stylesheet.namespaces),
+        .unsorted_selectors = .{},
+    };
+    defer ctx.selector_parser.deinit();
+    defer ctx.unsorted_selectors.deinit(allocator);
+    var sequence = list.children(ast);
+    return ctx.supportsCondition(&sequence);
+}
+
+/// `CSS.supports(property, value)` (CSS Conditional 3 §6.1): whether
+/// `property` is a supported property (ASCII case-insensitive) or a custom
+/// property name and `value` parses for it. `value` must be a value alone:
+/// no `!important`, nothing that ends the declaration or its block.
+pub fn supportsPropertyValue(allocator: Allocator, env: *Environment, property: []const u8, value: []const u8) !bool {
+    // The property: one <ident-token>.
+    {
+        const source = SourceCode.init(property) catch return false;
+        var tokenizer = zss.syntax.Tokenizer.init(source);
+        const first, _ = (tokenizer.next() catch return false) orelse return false;
+        if (first != .token_ident) return false;
+        if ((tokenizer.next() catch return false) != null) return false;
+    }
+    // The value: balanced, with no `;` and no `{}` block outside a function
+    // or block (they would end or nest the declaration).
+    {
+        const source = SourceCode.init(value) catch return false;
+        var tokenizer = zss.syntax.Tokenizer.init(source);
+        var depth: usize = 0;
+        while (tokenizer.next() catch return false) |next| {
+            const token, _ = next;
+            switch (token) {
+                .token_left_paren, .token_left_square, .token_function => depth += 1,
+                .token_right_paren, .token_right_square => {
+                    if (depth == 0) return false;
+                    depth -= 1;
+                },
+                .token_left_curly, .token_right_curly => return false,
+                .token_semicolon => if (depth == 0) return false,
+                else => {},
+            }
+        }
+    }
+    const declaration = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ property, value });
+    defer allocator.free(declaration);
+    return declarationParses(allocator, env, declaration, .normal);
+}
 
 /// Handle @namespace at-rule (separated because it doesn't need RuleProcessor context).
 fn handleNamespace(
