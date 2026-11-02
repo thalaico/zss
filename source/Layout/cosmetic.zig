@@ -338,6 +338,7 @@ fn blockBoxCosmeticLayout(layout: *Layout, context: Context, ref: BlockRef, comp
         .static => false,
         .relative, .absolute, .fixed, .sticky => true,
     };
+    subtree.items(.fixed_position)[ref.index] = computed_box_style.position == .fixed;
 
     layout.computer.setComputedValue(.cosmetic, .box_style, computed_box_style);
     layout.computer.setComputedValue(.cosmetic, .insets, computed_insets);
@@ -656,6 +657,7 @@ fn anonymousBlockBoxCosmeticLayout(box_tree: Layout.BoxTreeManaged, ref: BlockRe
     subtree.items(.overflow)[ref.index] = .visible;
     subtree.items(.opacity)[ref.index] = 1.0;
     subtree.items(.creates_absolute_cb)[ref.index] = false;
+    subtree.items(.fixed_position)[ref.index] = false;
 }
 
 fn inlineBoxCosmeticLayout(

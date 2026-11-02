@@ -42,6 +42,7 @@ pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size
     subtree.blocks.items(.bfc_floats)[new_len - 1] = false;
     subtree.blocks.items(.containing_block)[new_len - 1] = .{ -1, -1 };
     subtree.blocks.items(.creates_absolute_cb)[new_len - 1] = false;
+    subtree.blocks.items(.fixed_position)[new_len - 1] = false;
     subtree.blocks.items(.collapsed_borders)[new_len - 1] = false;
     return new_len - 1;
 }

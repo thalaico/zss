@@ -649,6 +649,7 @@ pub fn popInitialContainingBlock(box_gen: *BoxGen) void {
     subtree.items(.overflow)[index] = .visible;
     subtree.items(.opacity)[index] = 1.0;
     subtree.items(.creates_absolute_cb)[index] = false;
+    subtree.items(.fixed_position)[index] = false;
 }
 
 pub fn pushFlowBlock(
@@ -1255,6 +1256,7 @@ fn setDataBlock(
     subtree.items(.overflow)[index] = .visible;
     subtree.items(.opacity)[index] = 1.0;
     subtree.items(.creates_absolute_cb)[index] = false;
+    subtree.items(.fixed_position)[index] = false;
 
     const box_offsets = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
@@ -1313,6 +1315,7 @@ fn writeBlockCosmetic(
         .static => false,
         .relative, .absolute, .fixed => true,
     };
+    subtree.items(.fixed_position)[index] = position == .fixed;
     subtree.items(.overflow)[index] = if (bgc.box_style) |bs| blk: {
         const computed_bs, _ = solve.boxStyle(bs, .not_root, false);
         break :blk computed_bs.overflow;

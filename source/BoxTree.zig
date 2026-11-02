@@ -308,6 +308,10 @@ pub const IntrinsicFlags = packed struct(u8) {
         /// ancestor — `insets == 0` alone can't distinguish position:relative-with-no-offsets
         /// from position:static, and the latter must fall through to its positioned ancestor.
         creates_absolute_cb: bool = false,
+        /// `position: fixed` (CSS Position 3 §2.1): the containing block is
+        /// the viewport, so the box and its subtree stay in place when the
+        /// viewport scrolls (the renderer cancels the scroll offset for it).
+        fixed_position: bool = false,
         /// Float side for this block (none = not floated)
         float_side: values.types.Float,
         /// Clear value for this block
