@@ -169,14 +169,15 @@ pub fn layoutGridChildrenInSubtree(
 
     // --- Phase 2: Resolve column track sizes ---
     var col_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
-    resolveTrackSizes(&col_sizes, num_cols, &template_columns, container_width, column_gap, &intrinsic_col_sizes);
+    resolveTrackSizes(&col_sizes, num_cols, &template_columns, container_width, column_gap, &intrinsic_col_sizes, true);
 
     // --- Phase 3: Resolve row track sizes ---
     // For rows, we need content heights. First pass: use specified sizes.
     // min-content and auto rows will be sized after children are laid out.
     const available_height = container_height orelse 0;
     var row_sizes: [MAX_TRACKS]Unit = [_]Unit{0} ** MAX_TRACKS;
-    resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap, null);
+    // Auto rows are stretched only after their content sized them (below).
+    resolveTrackSizes(&row_sizes, num_rows, &template_rows, available_height, row_gap, null, false);
 
     // --- Phase 4: Place children and size rows ---
     // Record placement info so we can reposition after row sizes are finalized.
@@ -284,7 +285,9 @@ pub fn layoutGridChildrenInSubtree(
         // Spanning items' contributions are complex (CSS Grid §11.5) and
         // would require distributing their height across spanned tracks.
         // Skipping them is safe when non-spanning items exist in those rows.
-        const child_border_h = box_offsets[child].border_pos.y + box_offsets[child].border_size.h;
+        // The item's outer (margin-box) height (CSS Grid 1 §11.5): its
+        // top margin is `border_pos.y`.
+        const child_border_h = box_offsets[child].border_pos.y + box_offsets[child].border_size.h + subtree.items(.margins)[child].bottom;
         if (span_rows == 1) {
             if (row_sizes[placed_row] == 0 or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .auto) or (template_rows.count > placed_row and template_rows.tracks[placed_row].kind == .min_content)) {
                 // Auto or min-content row: grow to fit content
@@ -316,6 +319,12 @@ pub fn layoutGridChildrenInSubtree(
 
         child += skips[child];
     }
+
+    // CSS Grid 1 §12.8 "Stretch auto Tracks" (`align-content: normal`, the
+    // only value — it is not parsed — behaves as stretch): with a definite
+    // container height, divide the positive free space left after content
+    // sizing equally among the rows with an auto max sizing function.
+    if (container_height != null) stretchAutoRows(&row_sizes, num_rows, &template_rows, available_height, row_gap);
 
     // --- Phase 5: Reposition children using finalized row sizes ---
     // Row sizes are now correct (auto-sized from content). Recompute Y positions.
@@ -374,6 +383,10 @@ fn resolveTrackSizes(
     available_space: Unit,
     gap_size: Unit,
     intrinsic_sizes: ?*const [MAX_TRACKS]Unit,
+    /// Grow auto tracks into the leftover space here (columns: their
+    /// intrinsic sizes are already known). Rows pass false: they are
+    /// content-sized after placement, and `stretchAutoRows` runs then.
+    stretch_auto: bool,
 ) void {
     if (count == 0) return;
 
@@ -527,7 +540,7 @@ fn resolveTrackSizes(
 
     // Third pass: auto tracks may grow if remaining space exists
     // Don't shrink below intrinsic sizes already set in pass 1.
-    if (auto_count > 0) {
+    if (stretch_auto and auto_count > 0) {
         var used: Unit = 0;
         for (0..count) |i| used += sizes[i];
         const auto_space = remaining - used;
@@ -544,6 +557,29 @@ fn resolveTrackSizes(
             }
         }
     }
+}
+
+fn stretchAutoRows(sizes: *[MAX_TRACKS]Unit, count: u8, template: *const types.GridTrackList, available: Unit, gap: Unit) void {
+    if (count == 0) return;
+    var used: Unit = gap * @as(Unit, count - 1);
+    var auto_rows: Unit = 0;
+    for (0..count) |i| {
+        used += sizes[i];
+        if (hasAutoMax(template, i)) auto_rows += 1;
+    }
+    const free = available - used;
+    if (free <= 0 or auto_rows == 0) return;
+    const share = @divFloor(free, auto_rows);
+    for (0..count) |i| {
+        if (hasAutoMax(template, i)) sizes[i] += share;
+    }
+}
+
+/// The track's max track sizing function is auto (an implicit track's is:
+/// `grid-auto-rows` is not parsed, its initial value is auto).
+fn hasAutoMax(template: *const types.GridTrackList, i: usize) bool {
+    const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
+    return track.kind == .auto or (track.kind == .minmax and track.max_kind == .auto);
 }
 
 /// Measure the intrinsic content width of a grid item.
