@@ -180,7 +180,7 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
 /// `parent_blockifies` is true when the parent block is a flex or grid
 /// container, triggering CSS Display §2.7 blockification.
 fn analyzeNode(layout: *Layout, comptime is_root: IsRoot, parent_blockifies: bool) !?struct { NodeId, BoxTree.BoxStyle } {
-    const node = layout.currentNode() orelse return null;
+    const node = (try layout.currentNode()) orelse return null;
     try layout.computer.setCurrentNode(.box_gen, node);
 
     switch (layout.inputs.env.getNodeProperty(.category, node)) {

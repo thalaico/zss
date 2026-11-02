@@ -25,6 +25,9 @@ pub const Display = enum {
     inline_grid,
     grid,
     list_item,
+    /// CSS Display 3 §2.5: the element generates no box; its children
+    /// take its place (`Layout.skipContents`).
+    contents,
     none,
 };
 

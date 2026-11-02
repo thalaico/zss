@@ -111,6 +111,24 @@ fn StageData(comptime stage: Stage) type {
         /// valid, and `completeTable` leaves the unvisited ones alone.
         /// Indexed by node value; values past its end count as blocked.
         blocked: ?[]const bool = null,
+
+        /// The current-node state, for computing another element's values
+        /// in the middle of the current one's (`Layout.commitContents`).
+        pub const SavedCurrent = struct {
+            computed: stage.ComputedValues(),
+            index: u32,
+            saved: stage.ComputedValues(),
+        };
+
+        pub fn saveCurrent(s: *const @This()) SavedCurrent {
+            return .{ .computed = s.current_computed, .index = s.current_index, .saved = s.saved };
+        }
+
+        pub fn restoreCurrent(s: *@This(), c: SavedCurrent) void {
+            s.current_computed = c.computed;
+            s.current_index = c.index;
+            s.saved = c.saved;
+        }
     };
 }
 
@@ -496,7 +514,9 @@ fn getSpecifiedValueForElement(
 
     var inherited_value = InheritedValue(group){ .node = node };
     if (cascaded_value == null and default == .inherit) {
-        return inherited_value.get(self, stage);
+        var specified: SpecifiedValues(group) = inherited_value.get(self, stage);
+        if (group == .box_style) contentsBehavesAsNone(self.env, node, &specified);
+        return specified;
     }
 
     var specified: SpecifiedValues(group) = undefined;
@@ -518,7 +538,22 @@ fn getSpecifiedValueForElement(
         };
     }
 
+    if (group == .box_style) contentsBehavesAsNone(self.env, node, &specified);
     return specified;
+}
+
+/// CSS Display 3 Appendix B: on elements whose rendering is not controlled
+/// by CSS boxes alone (replaced elements, form controls, `br`, `wbr`,
+/// frames, SVG roots), `display: contents` behaves as `display: none` —
+/// and computes to `none`, as in Chromium.
+fn contentsBehavesAsNone(env: *const Environment, node: NodeId, specified: *SpecifiedValues(.box_style)) void {
+    if (specified.display != .contents) return;
+    inline for (.{ "br", "wbr", "meter", "progress", "canvas", "embed", "object", "audio", "iframe", "img", "video", "frame", "frameset", "input", "textarea", "select", "svg" }) |tag| {
+        if (env.nodeTagEql(node, tag)) {
+            specified.display = .none;
+            return;
+        }
+    }
 }
 
 fn InheritedValue(comptime group: groups.Tag) type {

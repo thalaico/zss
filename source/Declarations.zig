@@ -55,6 +55,9 @@ current: struct {
     pending: PendingBlock = .empty,
 } = .{},
 debug: Debug = .{},
+/// Whether any block declares `display: contents`: box generation looks
+/// for such elements only then (`Layout.skipContents`).
+has_display_contents: bool = false,
 
 /// Storage for custom CSS properties (--name: value)
 pub const CustomProp = struct {
@@ -294,6 +297,9 @@ pub fn addValues(decls: *Declarations, allocator: Allocator, importance: Importa
             switch (size) {
                 .single => header.set(field, importance, value),
                 .multi => try header.set(field, importance, value, &arena),
+            }
+            if (comptime group == .box_style and std.mem.eql(u8, value_field.name, "display")) {
+                if (value == .declared and value.declared == .contents) decls.has_display_contents = true;
             }
         }
     }

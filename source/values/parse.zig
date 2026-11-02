@@ -807,6 +807,7 @@ pub fn display(ctx: *Context) ?types.Display {
         .{ "table-cell", .table_cell },
         .{ "table-caption", .table_caption },
         .{ "none", .none },
+        .{ "contents", .contents },
         .{ "flex", .flex },
         .{ "inline-flex", .inline_flex },
         .{ "grid", .grid },

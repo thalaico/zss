@@ -490,12 +490,13 @@ pub fn blockElement(box_gen: *BoxGen) !Result {
     // top of the stack and needs to survive, so we save it, pop the
     // intermediate entries, then restore it.
     const layout = box_gen.getLayout();
-    const saved_node = layout.node_stack.pop();
+    // (With the levels of `display: contents` children above it.)
+    try layout.takeLevel();
     while (box_gen.inline_context.ifc.top.?.depth > 1) {
         _ = try popInlineBox(box_gen);
         layout.popNode();
     }
-    try layout.node_stack.push(layout.allocator, saved_node);
+    try layout.restoreLevel();
 
     // Now at depth 1, end the IFC normally
     return try endMode(box_gen);

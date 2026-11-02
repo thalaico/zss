@@ -136,6 +136,13 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
         computed.display = .none;
         return .{ computed, .{ .outer = .none, .position = .static } };
     }
+    // CSS Display 3 §2.5: no box (box generation steps over the element,
+    // `Layout.skipContents`), and no blockification — `position` and
+    // `float` do not apply. On the root it computes to `block` (below).
+    if (specified.display == .contents and is_root == .not_root) {
+        computed.display = .contents;
+        return .{ computed, .{ .outer = .none, .position = .static } };
+    }
 
     var position: BoxTree.BoxStyle.Position = undefined;
     switch (is_root) {
@@ -214,7 +221,7 @@ pub fn boxStyle(specified: SpecifiedValues(.box_style), comptime is_root: zss.La
             .inline_flex => .{ .@"inline" = .{ .block = .flex } },
             .grid => .{ .block = .grid },
             .inline_grid => .{ .@"inline" = .{ .block = .grid } },
-            .none => unreachable,
+            .contents, .none => unreachable,
         },
         .position = position,
     };
@@ -234,6 +241,8 @@ fn blockify(display: types.Display) types.Display {
             .table_row_group, .table_header_group, .table_footer_group => .block,
         .flex, .inline_flex => .flex,
         .grid, .inline_grid => .grid,
+        // The root element (CSS Display 3 §2.5).
+        .contents => .block,
         .none => unreachable,
     };
 }
@@ -246,7 +255,7 @@ fn innerBlockType(computed_display: types.Display) BoxTree.BoxStyle.InnerBlock {
         .table_cell, .table_caption, .table_column, .table_column_group => .flow,
         .flex, .inline_flex => .flex,
         .grid, .inline_grid => .grid,
-        .@"inline", .inline_block, .none => unreachable,
+        .@"inline", .inline_block, .contents, .none => unreachable,
             .table_row_group, .table_header_group, .table_footer_group => .flow,
     };
 }

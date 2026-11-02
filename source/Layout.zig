@@ -1,6 +1,7 @@
 const Layout = @This();
 
 const std = @import("std");
+const solve = @import("Layout/solve.zig");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
@@ -24,6 +25,14 @@ viewport: math.Size,
 inputs: Inputs,
 allocator: Allocator,
 node_stack: zss.Stack(?NodeId),
+/// The `node_stack` depths (`rest.items.len`) of levels holding the children
+/// of a `display: contents` element (CSS Display 3 §2.5: the element
+/// generates no box and its children take its place in the box tree). Box
+/// generation never sees such an element or the end of such a level:
+/// `skipContents` steps into it and out of it.
+contents_levels: std.ArrayListUnmanaged(usize) = .empty,
+/// Levels `takeLevel` took off `node_stack`, top first.
+taken_levels: std.ArrayListUnmanaged(struct { node: ?NodeId, contents: bool }) = .empty,
 box_gen: BoxGen,
 /// Lay out again from the previous layout of the same document: unchanged
 /// elements take over their boxes (`Layout/reuse.zig`). Set before `run`,
@@ -131,6 +140,8 @@ pub fn deinit(layout: *Layout) void {
     layout.reuse_state.deinit(layout.allocator);
     layout.computer.deinit();
     layout.node_stack.deinit(layout.allocator);
+    layout.contents_levels.deinit(layout.allocator);
+    layout.taken_levels.deinit(layout.allocator);
     layout.box_gen.deinit();
 }
 
@@ -166,6 +177,7 @@ pub fn run(layout: *Layout, allocator: Allocator) Error!BoxTree {
 
     {
         layout.node_stack.top = layout.inputs.env.root_node;
+        layout.contents_levels.clearRetainingCapacity();
         layout.computer.active_stage = .box_gen;
         if (layout.incremental) |inc| {
             if (std.meta.eql(inc.previous.viewport, layout.viewport)) {
@@ -261,7 +273,10 @@ test "layout retains per-element computed styles" {
     try std.testing.expect(root.content_width.?.width == .auto);
 }
 
-pub fn currentNode(layout: Layout) ?NodeId {
+/// The next node box generation visits, or `null` at the end of the
+/// current level. Steps over `display: contents` elements (`skipContents`).
+pub fn currentNode(layout: *Layout) !?NodeId {
+    try layout.skipContents();
     return layout.node_stack.top.?;
 }
 
@@ -275,11 +290,101 @@ pub fn pushNode(layout: *Layout) !void {
     try layout.node_stack.push(layout.allocator, child);
 }
 
+/// Pop the current level (with the `display: contents` levels above it, when
+/// a caller unwinds levels whose nodes are not done — `inline.blockElement`).
 pub fn popNode(layout: *Layout) void {
+    while (layout.topIsContentsLevel()) {
+        _ = layout.node_stack.pop();
+        _ = layout.contents_levels.pop();
+    }
     _ = layout.node_stack.pop();
 }
 
 pub fn advanceNode(layout: *Layout) void {
     const node = &layout.node_stack.top.?;
     node.* = layout.inputs.env.boxNextSibling(node.*.?);
+}
+
+/// Take the current level off `node_stack` (with the `display: contents`
+/// levels above it: one level of the box tree), for callers that unwind the
+/// levels beneath it and put it back (`inline.blockElement`).
+pub fn takeLevel(layout: *Layout) !void {
+    assert(layout.taken_levels.items.len == 0);
+    while (true) {
+        const contents = layout.topIsContentsLevel();
+        if (contents) _ = layout.contents_levels.pop();
+        try layout.taken_levels.append(layout.allocator, .{ .node = layout.node_stack.pop(), .contents = contents });
+        if (!contents) return;
+    }
+}
+
+pub fn restoreLevel(layout: *Layout) !void {
+    while (layout.taken_levels.pop()) |level| {
+        try layout.node_stack.push(layout.allocator, level.node);
+        if (level.contents) try layout.contents_levels.append(layout.allocator, layout.node_stack.rest.items.len);
+    }
+}
+
+fn topIsContentsLevel(layout: *const Layout) bool {
+    const depth = layout.contents_levels.getLastOrNull() orelse return false;
+    return layout.node_stack.top != null and depth == layout.node_stack.rest.items.len;
+}
+
+/// CSS Display 3 §2.5: an element with `display: contents` generates no box;
+/// its children (and ::before / ::after) are laid out as if they were the
+/// element's in its place. Steps over such elements at the top of
+/// `node_stack` — into a level of their children — and out of such levels
+/// once they are done, so the current node is one that generates boxes (or
+/// the end of a real level). The element still has computed values
+/// (CSS Cascade 4 §4.4), committed here: its children inherit from it.
+fn skipContents(layout: *Layout) !void {
+    const env = layout.inputs.env;
+    if (!env.decls.has_display_contents) return;
+    while (true) {
+        if (layout.node_stack.top.?) |node| {
+            if (!layout.isContents(node)) return;
+            try layout.commitContents(node);
+            layout.node_stack.top.? = env.boxNextSibling(node);
+            try layout.node_stack.push(layout.allocator, env.boxFirstChild(node));
+            try layout.contents_levels.append(layout.allocator, layout.node_stack.rest.items.len);
+        } else {
+            if (!layout.topIsContentsLevel()) return;
+            _ = layout.node_stack.pop();
+            _ = layout.contents_levels.pop();
+        }
+    }
+}
+
+fn isContents(layout: *const Layout, node: NodeId) bool {
+    const env = layout.inputs.env;
+    if (env.getNodeProperty(.category, node) != .element) return false;
+    // The root element's `display: contents` computes to `block`.
+    if (env.root_node) |root| if (std.meta.eql(root, node)) return false;
+    if (layout.computer.getSpecifiedValueForNode(.box_gen, .box_style, node).display != .contents) return false;
+    // CSS Pseudo 4 §2.6: a ::before / ::after whose content computes to
+    // none generates nothing (box generation makes it `display: none`).
+    if (env.isPseudoElement(node)) switch (layout.computer.getSpecifiedValueForNode(.box_gen, .generated_content, node).content) {
+        .normal, .none => return false,
+        else => {},
+    };
+    return true;
+}
+
+/// Commit the computed values of a `display: contents` element without
+/// disturbing the style computer's current node (the caller's).
+fn commitContents(layout: *Layout, node: NodeId) !void {
+    const sc = &layout.computer;
+    const saved_current = sc.current;
+    const saved_stage = sc.box_gen_stage.saveCurrent();
+    defer {
+        sc.current = saved_current;
+        sc.box_gen_stage.restoreCurrent(saved_stage);
+    }
+    try sc.setCurrentNode(.box_gen, node);
+    if (sc.getComputedValue(.box_gen, .box_style) == null) {
+        const computed, _ = solve.boxStyle(sc.getSpecifiedValue(.box_gen, .box_style), .not_root, false);
+        sc.setComputedValue(.box_gen, .box_style, computed);
+    }
+    sc.stageCosmeticValues(.box_gen);
+    sc.commitNode(.box_gen);
 }
