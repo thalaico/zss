@@ -384,21 +384,17 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 
             writeInlineBoxCosmetic(layout, ifc.ptr, inline_box_index, node);
 
-            // CSS 2.1 §9.4.2: inline boxes are visible content only when they
-            // have non-zero margins, padding, or borders. An empty <a> wrapping
+            // CSS Inline 3 §2.3: inline boxes are content only when they
+            // have non-zero inline-axis margins, padding, or borders. An empty <a> wrapping
             // only an abs-positioned child must NOT set this flag — doing so
             // gives the IFC a non-zero strut that shifts subsequent floats down.
             if (!ctx.ifc.top.?.has_visible_content) {
                 const ifc_slice = ifc.ptr.slice();
                 const s = ifc_slice.items(.inline_start)[inline_box_index];
                 const e = ifc_slice.items(.inline_end)[inline_box_index];
-                const bs = ifc_slice.items(.block_start)[inline_box_index];
-                const be = ifc_slice.items(.block_end)[inline_box_index];
                 const m = ifc_slice.items(.margins)[inline_box_index];
                 if (s.border != 0 or s.padding != 0 or
                     e.border != 0 or e.padding != 0 or
-                    bs.border != 0 or bs.padding != 0 or
-                    be.border != 0 or be.padding != 0 or
                     m.start != 0 or m.end != 0)
                 {
                     ctx.ifc.top.?.has_visible_content = true;
@@ -1893,7 +1889,7 @@ const IFCLineSplitState = struct {
     /// box of every inline box on the line (open at its start or started on
     /// it), and the margin box of every inline-block on it; then the
     /// inline-blocks aligned to the line box itself.
-    fn finishLineBox(self: *IFCLineSplitState, lc: LineContext) !void {
+    fn finishLineBox(self: *IFCLineSplitState, lc: LineContext, phantom: bool) !void {
         // CSS Text 3 §4.1.2: spaces at the end of the line hang (they take
         // no width), past the inline box edges after them.
         {
@@ -1920,13 +1916,17 @@ const IFCLineSplitState = struct {
         const boxes = lc.ifc.inline_boxes.slice();
         var above = self.top_height;
         var below = self.bottom_height;
-        for (self.line_start_boxes.items) |b| {
+        // A phantom line box has zero height (CSS Inline 3 §2.3).
+        if (phantom) {
+            above = 0;
+            below = 0;
+        } else for (self.line_start_boxes.items) |b| {
             above = @max(above, boxes.items(.above)[b] - boxes.items(.shift)[b]);
             below = @max(below, boxes.items(.below)[b] + boxes.items(.shift)[b]);
         }
         const glyphs = lc.ifc.glyphs.slice();
         var j = self.line_box.elements[0];
-        while (j + 1 < self.line_box.elements[1]) : (j += 1) {
+        while (!phantom and j + 1 < self.line_box.elements[1]) : (j += 1) {
             if (glyphs.items(.index)[j] != 0) continue;
             j += 1;
             const special = Ifc.Special.decode(glyphs.items(.index)[j]);
@@ -2074,7 +2074,7 @@ const LineStepper = struct {
     min_w: Unit,
 
     fn next(self: LineStepper, s: *IFCLineSplitState, lc: LineContext, skipped: usize, line_top: *Unit, right: *Unit) !void {
-        try s.finishLineBox(lc);
+        try s.finishLineBox(lc, false);
         try lc.layout.box_tree.appendLineBox(lc.ifc, s.line_box);
         s.newLineBox(skipped);
         line_top.* += self.nominal_line_h;
@@ -2090,6 +2090,36 @@ const LineStepper = struct {
         s.cursor = left;
     }
 };
+
+/// Whether `line` has content for CSS Inline 3 §2.3: text or preserved
+/// white space left after line-start removal, an atomic inline, a tab, or
+/// an inline box with non-zero inline-axis margins, padding, or borders.
+/// Out-of-flow boxes are not content.
+fn lineHasContent(ifc: *const Ifc, line: Ifc.LineBox) bool {
+    const glyphs = ifc.glyphs.slice();
+    const boxes = ifc.inline_boxes.slice();
+    var j = line.elements[0];
+    while (j < line.elements[1]) : (j += 1) {
+        if (glyphs.items(.index)[j] != 0) {
+            if (j >= line.lead_end) return true;
+            continue;
+        }
+        j += 1;
+        const special = Ifc.Special.decode(glyphs.items(.index)[j]);
+        switch (@as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)))) {
+            .BoxStart, .BoxEnd => {
+                const b: Ifc.Size = @intCast(special.data);
+                const start = boxes.items(.inline_start)[b];
+                const end = boxes.items(.inline_end)[b];
+                const m = boxes.items(.margins)[b];
+                if (start.border != 0 or start.padding != 0 or end.border != 0 or end.padding != 0 or m.start != 0 or m.end != 0) return true;
+            },
+            .OutOfFlowInline, .OutOfFlowBlock => {},
+            else => return true,
+        }
+    }
+    return false;
+}
 
 /// Whether a soft wrap opportunity follows glyph `i`.
 fn isBreakAfter(ifc: *const Ifc, i: usize) bool {
@@ -2324,8 +2354,19 @@ pub fn splitIntoLineBoxes(
         }
     }
 
+    // CSS Inline 3 §2.3: the last line box (the only one not ended by a
+    // forced or soft break) is a phantom when it has no content — after a
+    // trailing <br> or preserved newline. It has zero height for what is
+    // positioned in it (out-of-flow static positions) and does not exist
+    // otherwise. (An IFC with no content at all is handled as a whole:
+    // `has_visible_content`.)
     if (s.line_box.elements[1] > s.line_box.elements[0]) {
-        try s.finishLineBox(lc);
+        if (ifc.line_boxes.items.len > 0 and !lineHasContent(ifc, s.line_box)) {
+            const top = s.line_box.baseline;
+            try s.finishLineBox(lc, true);
+            return .{ .height = top, .longest_line_box_length = s.longest_line_box_length };
+        }
+        try s.finishLineBox(lc, false);
         try layout.box_tree.appendLineBox(ifc, s.line_box);
     }
 
