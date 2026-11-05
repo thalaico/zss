@@ -588,6 +588,13 @@ pub const InlineFormattingContext = struct {
         /// `trail_start` on (spaces at its end) hang: both take no width.
         lead_end: usize = 0,
         trail_start: usize = std.math.maxInt(usize),
+        /// CSS Inline 3 §2.3: a line box with no content (after a trailing
+        /// forced break, or the only line of an IFC holding nothing but
+        /// inter-element white space and out-of-flow boxes). It is zero
+        /// height for positioning what is in it — its inline boxes are
+        /// zero-size at its start, its out-of-flow boxes at its top — and
+        /// does not exist otherwise: no height, no baseline, no painting.
+        phantom: bool = false,
 
         /// The advance a glyph on this line takes.
         pub fn advance(line: LineBox, glyph: usize, is_text: bool, stored: math.Unit) math.Unit {

@@ -2356,14 +2356,19 @@ pub fn splitIntoLineBoxes(
 
     // CSS Inline 3 §2.3: the last line box (the only one not ended by a
     // forced or soft break) is a phantom when it has no content — after a
-    // trailing <br> or preserved newline. It has zero height for what is
-    // positioned in it (out-of-flow static positions) and does not exist
-    // otherwise. (An IFC with no content at all is handled as a whole:
-    // `has_visible_content`.)
+    // trailing <br> or preserved newline, or the only line of an IFC that
+    // holds nothing but inter-element white space and out-of-flow boxes. It
+    // has zero height for what is positioned in it (out-of-flow static
+    // positions: a block-level one goes below the line, which is at the
+    // IFC's top; inline boxes: zero-size at its start) and does not exist
+    // otherwise — it is kept, flagged, so that those boxes have a position,
+    // and adds no height.
     if (s.line_box.elements[1] > s.line_box.elements[0]) {
-        if (ifc.line_boxes.items.len > 0 and !lineHasContent(ifc, s.line_box)) {
+        if (!lineHasContent(ifc, s.line_box)) {
             const top = s.line_box.baseline;
             try s.finishLineBox(lc, true);
+            s.line_box.phantom = true;
+            try layout.box_tree.appendLineBox(ifc, s.line_box);
             return .{ .height = top, .longest_line_box_length = s.longest_line_box_length };
         }
         try s.finishLineBox(lc, false);
@@ -2432,8 +2437,17 @@ fn entryBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, co
     return switch (subtree.items(.type)[index]) {
         .ifc_container => |ifc_id| blk: {
             const ifc = box_tree.getIfc(ifc_id);
-            if (!ifc.has_visible_content or ifc.line_boxes.items.len == 0) break :blk null;
-            const line = if (set == .first) ifc.line_boxes.items[0] else ifc.line_boxes.items[ifc.line_boxes.items.len - 1];
+            if (!ifc.has_visible_content) break :blk null;
+            // A phantom line box has no baseline (CSS Inline 3 §2.3).
+            const lines = ifc.line_boxes.items;
+            const line = if (set == .first) first: {
+                for (lines) |l| if (!l.phantom) break :first l;
+                break :blk null;
+            } else last: {
+                var k = lines.len;
+                while (k > 0) : (k -= 1) if (!lines[k - 1].phantom) break :last lines[k - 1];
+                break :blk null;
+            };
             break :blk bo.border_pos.y + line.baseline;
         },
         .block => if (boxBaseline(layout, subtree, index, set)) |b| bo.border_pos.y + b else null,
