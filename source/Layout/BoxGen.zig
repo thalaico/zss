@@ -1287,6 +1287,20 @@ fn setDataBlock(
     margins.bottom = used.margin_block_end;
 }
 
+/// CSS Overflow 3 §3.3: is `node` the element whose `overflow` the viewport
+/// takes — the root, or the body element (a `body` child of the root) when
+/// the root's computed overflow is visible?
+fn propagatesOverflowToViewport(layout: *Layout, node: NodeId) bool {
+    const env = layout.inputs.env;
+    const parent = node.parent(env) orelse return true;
+    if (parent.parent(env) != null) return false;
+    if (!env.nodeTagEql(node, "body")) return false;
+    const root_bgc = layout.computer.box_gen_stage.nodes[@intCast(parent.value)];
+    const root_bs = root_bgc.box_style orelse return true;
+    const computed_root, _ = solve.boxStyle(root_bs, .root, false);
+    return computed_root.overflow == .visible;
+}
+
 fn writeBlockCosmetic(
     layout: *Layout,
     subtree: Subtree.View,
@@ -1316,9 +1330,14 @@ fn writeBlockCosmetic(
         .relative, .absolute, .fixed => true,
     };
     subtree.items(.fixed_position)[index] = position == .fixed;
+    // CSS Overflow 3 §3.3: the root element's overflow is propagated to the
+    // viewport, and when the root's is visible the body element's is
+    // instead; the element it is propagated from has a used value of
+    // visible (it is no scroll container and clips nothing — the viewport
+    // does; the host reads the propagated value from the computed styles).
     subtree.items(.overflow)[index] = if (bgc.box_style) |bs| blk: {
         const computed_bs, _ = solve.boxStyle(bs, .not_root, false);
-        break :blk computed_bs.overflow;
+        break :blk if (propagatesOverflowToViewport(layout, node)) .visible else computed_bs.overflow;
     } else .visible;
 
     if (bgc.font) |font| {
