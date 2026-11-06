@@ -186,6 +186,10 @@ pub const PseudoClass = enum {
     default,
     indeterminate,
     defined,
+    valid,
+    invalid,
+    in_range,
+    out_of_range,
     /// A pseudo-class this implementation does not support: matches nothing.
     unrecognized,
 };
@@ -683,18 +687,17 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
     };
 }
 
-
 /// Returns true if the given pseudo-class matches the element.
 /// Used by both .pseudo_class and .not_pseudo_class matching.
 /// HTML attributes whose values selectors match ASCII case-insensitively
 /// (Selectors 4 §6.4 / HTML "case-sensitivity of selectors").
 const case_insensitive_html_attributes = [_][]const u8{
-    "accept",   "accept-charset", "align",    "alink",    "axis",     "bgcolor",  "charset",  "checked",
-    "clear",    "codetype",       "color",    "compact",  "declare",  "defer",    "dir",      "direction",
-    "disabled", "enctype",        "face",     "frame",    "hreflang", "http-equiv", "lang",   "language",
-    "link",     "media",          "method",   "multiple", "nohref",   "noresize", "noshade",  "nowrap",
-    "readonly", "rel",            "rev",      "rules",    "scope",    "scrolling", "selected", "shape",
-    "target",   "text",           "type",     "valign",   "valuetype", "vlink",
+    "accept",   "accept-charset", "align",  "alink",    "axis",      "bgcolor",    "charset",  "checked",
+    "clear",    "codetype",       "color",  "compact",  "declare",   "defer",      "dir",      "direction",
+    "disabled", "enctype",        "face",   "frame",    "hreflang",  "http-equiv", "lang",     "language",
+    "link",     "media",          "method", "multiple", "nohref",    "noresize",   "noshade",  "nowrap",
+    "readonly", "rel",            "rev",    "rules",    "scope",     "scrolling",  "selected", "shape",
+    "target",   "text",           "type",   "valign",   "valuetype", "vlink",
 };
 
 fn isCaseInsensitiveHtmlAttribute(env: *const Environment, name: AttributeName) bool {
@@ -1356,6 +1359,10 @@ pub fn Matcher(comptime Tree: type) type {
                 },
                 .checked => return matchChecked(tree, element, allocator),
                 .indeterminate => return tree.state(element, .indeterminate),
+                .valid => return tree.state(element, .valid),
+                .invalid => return tree.state(element, .invalid),
+                .in_range => return tree.state(element, .in_range),
+                .out_of_range => return tree.state(element, .out_of_range),
                 .placeholder_shown => {
                     if (!tree.tagEql(element, "input") and !tree.tagEql(element, "textarea")) return false;
                     return tree.state(element, .placeholder_shown);

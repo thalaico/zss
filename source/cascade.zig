@@ -276,7 +276,7 @@ pub const Database = struct {
                     },
                 }
             }
-            
+
             // Custom properties (CSS Variables 1 §2): blocks come in cascade
             // order, so the first declaration of a name wins.
             if (decls.custom_props_map.get(block_id)) |custom_props| {
@@ -441,9 +441,15 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
                 if (list.count == 1) {
                     const nested_key = extractRightmostKey(data, list.start);
                     switch (nested_key) {
-                        .id => |id| { if (found_id == null) found_id = id; },
-                        .class => |cls| { if (found_class == null) found_class = cls; },
-                        .type_name => |tn| { if (found_type == null) found_type = tn; },
+                        .id => |id| {
+                            if (found_id == null) found_id = id;
+                        },
+                        .class => |cls| {
+                            if (found_class == null) found_class = cls;
+                        },
+                        .type_name => |tn| {
+                            if (found_type == null) found_type = tn;
+                        },
                         .universal => {},
                     }
                 }
@@ -459,9 +465,15 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
                 if (list.count == 1) {
                     const nested_key = extractRightmostKey(data, list.start);
                     switch (nested_key) {
-                        .id => |id| { if (found_id == null) found_id = id; },
-                        .class => |cls| { if (found_class == null) found_class = cls; },
-                        .type_name => |tn| { if (found_type == null) found_type = tn; },
+                        .id => |id| {
+                            if (found_id == null) found_id = id;
+                        },
+                        .class => |cls| {
+                            if (found_class == null) found_class = cls;
+                        },
+                        .type_name => |tn| {
+                            if (found_type == null) found_type = tn;
+                        },
                         .universal => {},
                     }
                 }
@@ -608,7 +620,7 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
                 idx += 1;
                 const pc = data[idx].pseudo_class_selector;
                 switch (pc) {
-                    .checked, .enabled, .disabled, .hover, .active, .focus, .focus_within, .focus_visible, .target, .indeterminate, .placeholder_shown => return true,
+                    .checked, .enabled, .disabled, .hover, .active, .focus, .focus_within, .focus_visible, .target, .indeterminate, .placeholder_shown, .valid, .invalid, .in_range, .out_of_range => return true,
                     else => {},
                 }
                 idx += selectors.pseudoClassPayload(pc);
@@ -633,14 +645,59 @@ fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_select
     return false;
 }
 
+/// True if the rightmost compound uses a constraint-validation pseudo-class
+/// (`:valid`, `:invalid`, `:in-range`, `:out-of-range`). Answering them
+/// costs the host a script call per control, so the sharing key only
+/// carries them for sheets that use them (`elementStateSignature`).
+fn rightmostCompoundHasConstraintState(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    const start = data[last_trailing_idx].trailing.compound_selector_start;
+    var idx = start;
+    while (idx < last_trailing_idx) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .has, .has_anchor => {
+                if (data[idx].simple_selector_tag == .has) {
+                    idx += 1;
+                    idx = selectors.nestedListEnd(data, data[idx].has_selector_list) - 1;
+                }
+            },
+            .pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                switch (pc) {
+                    .valid, .invalid, .in_range, .out_of_range => return true,
+                    else => {},
+                }
+                idx += selectors.pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where, .not => |_, tag| {
+                idx += 1;
+                const list = selectors.nestedList(data[idx], tag);
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    if (rightmostCompoundHasConstraintState(data, sel_idx)) return true;
+                    sel_idx = data[sel_idx].next_complex_selector;
+                }
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return false;
+}
+
 /// What the state pseudo-classes can observe about an element. Only form
 /// controls can carry control state (`:enabled`/`:disabled` are gated on
 /// `isFormElement`, `:checked` on input/option, `:placeholder-shown` on text
 /// controls), so every other element gets a constant without asking the host
 /// — the host's answer for `.disabled` walks the ancestor chain (disabled
 /// fieldsets), which must not be paid per element.
-fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 {
-    const stateful = inline for (.{ "input", "button", "select", "textarea", "fieldset", "option", "optgroup" }) |tag| {
+fn elementStateSignature(env: *const Environment, node: Environment.NodeId, constraint: bool) u64 {
+    const stateful = inline for (.{ "input", "button", "select", "textarea", "fieldset", "option", "optgroup", "form" }) |tag| {
         if (env.nodeTagEql(node, tag)) break true;
     } else false;
     var bits: u64 = 0;
@@ -658,6 +715,12 @@ fn elementStateSignature(env: *const Environment, node: Environment.NodeId) u64 
         if (env.nodeState(node, .disabled)) bits |= 4;
         if (env.nodeState(node, .indeterminate)) bits |= 512;
         if (env.nodeState(node, .placeholder_shown)) bits |= 1024;
+        if (constraint) {
+            if (env.nodeState(node, .valid)) bits |= 2048;
+            if (env.nodeState(node, .invalid)) bits |= 4096;
+            if (env.nodeState(node, .in_range)) bits |= 8192;
+            if (env.nodeState(node, .out_of_range)) bits |= 16384;
+        }
     }
     return (bits +% 1) *% 0xd6e8feb86659fd93;
 }
@@ -1102,7 +1165,7 @@ fn extractAncestorHashesFromWrappedPseudo(data: []const selectors.Data, complex_
                 idx = skip_idx - 1;
             },
             .type, .class, .id, .pseudo_element => idx += 1,
-                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -1172,7 +1235,7 @@ fn extractAltAncestorHashes(
                             idx = skip_idx - 1;
                         },
                         .type, .class, .id, .pseudo_element => idx += 1,
-                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+                        .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
                         .attribute => |op_case| {
                             idx += 1;
                             if (op_case != null) idx += 1;
@@ -1252,7 +1315,7 @@ fn extractAltAncestorHashesWrapped(
                 idx = skip_idx - 1;
             },
             .type, .class, .id, .pseudo_element => idx += 1,
-                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
             .attribute => |op_case| {
                 idx += 1;
                 if (op_case != null) idx += 1;
@@ -1333,7 +1396,7 @@ fn compoundCanMatchInDoc(data: []const selectors.Data, start: selectors.Data.Lis
                 if (op_case != null) idx += 1;
             },
             .pseudo_element => idx += 1,
-                .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
+            .pseudo_class => idx += 1 + selectors.pseudoClassPayload(data[idx + 1].pseudo_class_selector),
         }
     }
     return true;
@@ -1431,6 +1494,8 @@ const RuleIndex = struct {
     positional_selectors: bool = false,
     /// Likewise for host-owned element state (see rightmostCompoundHasElementState).
     state_selectors: bool = false,
+    /// Whether some selector uses a constraint-validation pseudo-class.
+    constraint_selectors: bool = false,
     /// The attribute names some selector tests: the only attributes that
     /// can tell two siblings' verdicts apart (the L1 sharing key).
     tested_attributes: std.AutoHashMapUnmanaged(Environment.AttributeName, void) = .empty,
@@ -1468,6 +1533,7 @@ const RuleIndex = struct {
                 };
                 if (!entry.fast_match and rightmostCompoundIsPositional(data, selector)) index.positional_selectors = true;
                 if (rightmostCompoundHasElementState(data, selector)) index.state_selectors = true;
+                if (rightmostCompoundHasConstraintState(data, selector)) index.constraint_selectors = true;
                 try selectors.collectAttributeNames(data, selector, &index.tested_attributes, allocator);
                 switch (key) {
                     .id => |id| {
@@ -1992,6 +2058,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
     const universal = &rule_index.universal;
     const positional_selectors = rule_index.positional_selectors;
     const state_selectors = rule_index.state_selectors;
+    const constraint_selectors = rule_index.constraint_selectors;
 
     const t_index = std.time.milliTimestamp();
 
@@ -2110,7 +2177,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             }
         }
         if (positional_selectors) full_key ^= positionalSignature(env, node);
-        if (state_selectors) full_key ^= elementStateSignature(env, node);
+        if (state_selectors) full_key ^= elementStateSignature(env, node, constraint_selectors);
 
         if (!has_id) {
             // L1: same-parent full sharing (siblings skip all matching)

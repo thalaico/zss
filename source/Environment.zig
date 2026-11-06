@@ -588,6 +588,15 @@ pub const ElementState = enum {
     indeterminate,
     /// `:placeholder-shown`: a text control with a placeholder and an empty value.
     placeholder_shown,
+    /// Constraint validation state (HTML §4.10.20, §4.16.3): `:valid` /
+    /// `:invalid` for a candidate control (or a form / fieldset whose
+    /// controls are all valid / not), `:in-range` / `:out-of-range` for an
+    /// input with range limits. Only a host that models form values knows
+    /// them; the attribute defaults match nothing.
+    valid,
+    invalid,
+    in_range,
+    out_of_range,
 };
 
 pub const DocumentTreeVtable = struct {
@@ -629,7 +638,7 @@ pub fn nodeState(env: *const Environment, node: NodeId, state: ElementState) boo
 /// unless it is inside that fieldset's first `legend` child.
 pub fn attributeElementState(env: *const Environment, node: NodeId, state: ElementState) bool {
     switch (state) {
-        .hover, .active, .focus, .focus_within, .focus_visible, .target => return false,
+        .hover, .active, .focus, .focus_within, .focus_visible, .target, .valid, .invalid, .in_range, .out_of_range => return false,
         // Without scripts nothing sets the indeterminate flag; a radio group
         // with no checked member is also indeterminate, but that needs the
         // group walk a host does from its form model.

@@ -782,9 +782,25 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                 // Try mapIdentifierEnum for single-word pseudo-classes first
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass)) |pc| {
                     switch (pc) {
-                        .root, .link, .visited, .hover, .active, .focus,
-                        .enabled, .disabled, .checked, .empty,
-                        .scope, .target, .required, .optional, .default, .indeterminate, .defined,
+                        .root,
+                        .link,
+                        .visited,
+                        .hover,
+                        .active,
+                        .focus,
+                        .enabled,
+                        .disabled,
+                        .checked,
+                        .empty,
+                        .scope,
+                        .target,
+                        .required,
+                        .optional,
+                        .default,
+                        .indeterminate,
+                        .defined,
+                        .valid,
+                        .invalid,
                         => return pc,
                         .unrecognized => {},
                         // Hyphenated names won't match via mapIdentifierEnum
@@ -862,6 +878,8 @@ fn matchHyphenatedPseudoClass(parser: *Parser, index: Ast.Index) ?selectors.Pseu
         .{ "read-only", selectors.PseudoClass.read_only },
         .{ "read-write", selectors.PseudoClass.read_write },
         .{ "placeholder-shown", selectors.PseudoClass.placeholder_shown },
+        .{ "in-range", selectors.PseudoClass.in_range },
+        .{ "out-of-range", selectors.PseudoClass.out_of_range },
     };
     inline for (map) |entry| {
         if (std.mem.eql(u8, name, entry[0])) return entry[1];
