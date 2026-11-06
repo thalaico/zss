@@ -219,6 +219,7 @@ fn parseComplexOrRelativeSelector(parser: *Parser, data_list: DataListManaged, l
             const pe_combinator: selectors.Combinator = switch (last_valid_pe) {
                 .before => .end_before,
                 .after => .end_after,
+                .slotted => .end_slotted,
                 .unrecognized => .end_none,
             };
             try data_list.append(.{ .trailing = .{ .combinator = pe_combinator, .compound_selector_start = compound_start } });
@@ -236,6 +237,7 @@ fn parseComplexOrRelativeSelector(parser: *Parser, data_list: DataListManaged, l
                 const pe_combinator: selectors.Combinator = switch (last_valid_pe) {
                     .before => .end_before,
                     .after => .end_after,
+                    .slotted => .end_slotted,
                     .unrecognized => .end_none,
                 };
                 data_list.list.items[data_list.len() - 1].trailing.combinator = pe_combinator;
@@ -735,7 +737,7 @@ fn parseListArgument(parser: *Parser, data_list: DataListManaged, kind: ListPseu
     // No pseudo-elements inside these arguments.
     const last_trailing = data_list.list.items[start].next_complex_selector - 1;
     switch (data_list.list.items[last_trailing].trailing.combinator) {
-        .end_before, .end_after => return false,
+        .end_before, .end_after, .end_slotted => return false,
         else => {},
     }
     // The argument must end here: a comma or the end of the function.
@@ -749,6 +751,26 @@ fn parseListArgument(parser: *Parser, data_list: DataListManaged, kind: ListPseu
 
 fn parsePseudoElementSelector(parser: *Parser, data_list: DataListManaged) !?void {
     const element_index = parser.accept(.token_colon) orelse return null;
+    // ::slotted(<compound-selector>) (CSS Scoping 1 §3.2): the pseudo-element,
+    // then its argument as an `:is` list.
+    {
+        const saved = parser.sequence;
+        if (parser.accept(.token_colon) != null) {
+            if (parser.next()) |nx| {
+                if (nx[0] == .function and parser.source_code.mapIdentifierValue(nx[1].location(parser.ast), enum { slotted }, &.{.{ "slotted", .slotted }}) != null) {
+                    try data_list.appendSlice(&.{
+                        .{ .simple_selector_tag = .pseudo_element },
+                        .{ .pseudo_element_selector = .slotted },
+                    });
+                    parser.addSpecificity(.pseudo_element);
+                    try parseSelectorListPseudoClass(parser, data_list, nx[1], .is);
+                    parser.last_pseudo_element = .slotted;
+                    return;
+                }
+            }
+        }
+        parser.sequence = saved;
+    }
     const pseudo_element: selectors.PseudoElement = blk: {
         if (parser.accept(.token_colon)) |_| {
             break :blk parsePseudo(.element, parser);
@@ -843,7 +865,7 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoElement)) |pe| {
                     switch (pe) {
                         .before, .after => return pe,
-                        .unrecognized => {},
+                        .unrecognized, .slotted => {},
                     }
                 }
             }

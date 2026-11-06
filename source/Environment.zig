@@ -624,6 +624,9 @@ pub const DocumentTreeVtable = struct {
     nodeHostScope: ?*const fn (env: *const Environment, node: NodeId) u32 = null,
     /// The shadow host of the tree scope `scope`.
     scopeHost: ?*const fn (env: *const Environment, scope: u32) ?NodeId = null,
+    /// Appends every (slot, assigned element) pair of the tree scope `scope`,
+    /// grouped by slot.
+    scopeSlotAssignments: ?*const fn (env: *const Environment, scope: u32, out: *std.ArrayListUnmanaged(SlotAssignment), allocator: std.mem.Allocator) std.mem.Allocator.Error!void = null,
 
     pub const empty_document: DocumentTreeVtable = .{
         .nodeRelative = &empty_document_fns.nodeRelative,
@@ -655,6 +658,14 @@ pub fn selectorRelative(env: *const Environment, node: NodeId, relative: NodeRel
 pub fn nodeHostScope(env: *const Environment, node: NodeId) u32 {
     const f = env.document_tree_vtable.nodeHostScope orelse return 0;
     return f(env, node);
+}
+
+pub const SlotAssignment = struct { slot: NodeId, node: NodeId };
+
+/// The (slot, assigned element) pairs of the tree scope `scope`.
+pub fn scopeSlotAssignments(env: *const Environment, scope: u32, out: *std.ArrayListUnmanaged(SlotAssignment), allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
+    const f = env.document_tree_vtable.scopeSlotAssignments orelse return;
+    return f(env, scope, out, allocator);
 }
 
 /// The shadow host of the tree scope `scope`.

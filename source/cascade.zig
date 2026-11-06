@@ -499,7 +499,7 @@ fn extractRightmostKey(data: []const selectors.Data, complex_selector_index: sel
     return .universal;
 }
 
-const PseudoTag = enum(u2) { none, before, after, unrecognized };
+const PseudoTag = enum(u3) { none, before, after, slotted, unrecognized };
 const SelectorEntry = struct {
     selector: selectors.Data.ListIndex,
     block: Block,
@@ -1557,6 +1557,9 @@ const RuleIndex = struct {
             for (sel_items, blk_items, 0..) |selector, block, i| {
                 if (!canMatchStatic(data, selector)) continue;
                 const pe = selectors.extractPseudoElement(data, selector);
+                // ::slotted() rules apply to other elements than the one the
+                // selector's compounds match: the scope's slotted pass handles them.
+                if (pe == .slotted) continue;
                 const key = extractRightmostKey(data, selector);
                 const ah = extractAncestorHashes(data, selector);
                 const entry = SelectorEntry{
@@ -1566,6 +1569,7 @@ const RuleIndex = struct {
                     .pseudo = if (pe) |p| switch (p) {
                         .before => .before,
                         .after => .after,
+                        .slotted => .slotted,
                         .unrecognized => .unrecognized,
                     } else .none,
                     .fast_match = isFastMatch(data, selector, key),
@@ -1910,7 +1914,7 @@ pub fn restyle(indexes: *const RestyleIndexes, env: *Environment, nodes: []const
                         .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
                         .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
                         .after => try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance),
-                        .unrecognized => {},
+                        .unrecognized, .slotted => {},
                     }
                 }
                 for (phase.importances) |importance| {
@@ -2293,7 +2297,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                             try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
                             try pseudo_after_collect.append(allocator, bi);
                         },
-                        .unrecognized => {},
+                        .unrecognized, .slotted => {},
                     }
                 }
                 // Populate L1 for this (tag, classes, attributes, position, parent) combo
@@ -2361,7 +2365,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                         try ctx.appendPseudoDeclBlock(node, .after, entry.block, entry.importance);
                         try pseudo_after_collect.append(allocator, bi);
                     },
-                    .unrecognized => {},
+                    .unrecognized, .slotted => {},
                 }
             }
         }
@@ -2401,6 +2405,35 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                     if (selectors.extractPseudoElement(data, sel) != null) continue;
                     if (!zss.selectors.matchElementInScope(data, sel, env, host, allocator, source.scope)) continue;
                     try ctx.appendDeclBlock(host, block, importance);
+                }
+            }
+        }
+    }
+    // ::slotted() rules (CSS Scoping 1 §3.2): the selector matches a slot of
+    // this tree; the declarations apply to the elements assigned to it that
+    // match the pseudo-element's argument.
+    if (source.scope != Source.any_scope and source.scope != 0) {
+        var assignments: std.ArrayListUnmanaged(Environment.SlotAssignment) = .empty;
+        try env.scopeSlotAssignments(source.scope, &assignments, allocator);
+        if (assignments.items.len > 0) {
+            for (importances) |importance| {
+                const list = switch (importance) {
+                    .important => source.selectors_important,
+                    .normal => source.selectors_normal,
+                };
+                for (list.items(.selector), list.items(.block)) |sel, block| {
+                    if (selectors.extractPseudoElement(data, sel) != .slotted) continue;
+                    var last_slot: ?Environment.NodeId = null;
+                    var slot_matches = false;
+                    for (assignments.items) |a| {
+                        if (last_slot == null or !std.meta.eql(last_slot.?, a.slot)) {
+                            last_slot = a.slot;
+                            slot_matches = zss.selectors.matchElementInScope(data, sel, env, a.slot, allocator, source.scope);
+                        }
+                        if (!slot_matches) continue;
+                        if (!zss.selectors.matchSlottedArgument(data, sel, env, a.node, allocator)) continue;
+                        try ctx.appendDeclBlock(a.node, block, importance);
+                    }
                 }
             }
         }

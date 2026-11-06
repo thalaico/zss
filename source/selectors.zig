@@ -145,9 +145,15 @@ pub const Combinator = enum(u8) {
     end_before,
     /// Used only in the last trailing of a complex selector to indicate ::after.
     end_after,
+    /// Used only in the last trailing of a complex selector to indicate ::slotted().
+    end_slotted,
 };
 
-pub const PseudoElement = enum { before, after, unrecognized };
+/// `slotted` is `::slotted(<compound-selector>)` (CSS Scoping 1 §3.2): the
+/// pseudo-element entry is followed by an `:is` entry holding the argument
+/// list, which the matcher skips (the cascade checks it on the elements
+/// assigned to the slot the rest of the selector matched).
+pub const PseudoElement = enum { before, after, slotted, unrecognized };
 
 pub const PseudoClass = enum {
     root,
@@ -684,6 +690,7 @@ pub fn extractPseudoElement(data: []const Data, complex_selector_index: Data.Lis
     return switch (trailing.combinator) {
         .end_before => .before,
         .end_after => .after,
+        .end_slotted => .slotted,
         .end_none => null,
         // Older data or non-last trailing: no pseudo-element.
         else => null,
@@ -753,6 +760,94 @@ pub fn matchElementInScope(
 }
 
 pub const any_scope = std.math.maxInt(u32);
+
+/// Whether the compound selector `data[start..end]` holds `:host` itself.
+fn compoundHasHost(data: []const Data, start: Data.ListIndex, end: Data.ListIndex) bool {
+    var idx = start;
+    while (idx < end) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                if (pc == .host) return true;
+                idx += pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where, .not => |_, tag| {
+                idx += 1;
+                const list = nestedList(data[idx], tag);
+                var sel_idx = list.start;
+                for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+                idx = sel_idx - 1;
+            },
+            .has, .has_anchor => {
+                if (data[idx].simple_selector_tag == .has) {
+                    idx += 1;
+                    idx = nestedListEnd(data, data[idx].has_selector_list) - 1;
+                }
+            },
+        }
+    }
+    return false;
+}
+
+/// Whether `element` matches the argument of the `::slotted()` ending the
+/// complex selector (the argument is evaluated on the slotted element alone,
+/// in its own tree). False when the selector has no `::slotted()`.
+pub fn matchSlottedArgument(
+    data: []const Data,
+    complex_selector_index: Data.ListIndex,
+    env: *const Environment,
+    element: NodeId,
+    allocator: std.mem.Allocator,
+) bool {
+    const last_trailing = data[complex_selector_index].next_complex_selector - 1;
+    var idx = data[last_trailing].trailing.compound_selector_start;
+    while (idx < last_trailing) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .pseudo_element => {
+                idx += 1;
+                if (data[idx].pseudo_element_selector != .slotted) continue;
+                const list = nestedList(data[idx + 2], .is);
+                const tree: EnvTree = .{ .env = env };
+                var sel_idx = list.start;
+                for (0..list.count) |_| {
+                    const next = data[sel_idx].next_complex_selector;
+                    if (Matcher(EnvTree).matchComplexSelector(data, sel_idx + 1, next - 1, env, tree, element, allocator, null)) return true;
+                    sel_idx = next;
+                }
+                return false;
+            },
+            .type, .id, .class => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            .pseudo_class => {
+                idx += 1;
+                idx += pseudoClassPayload(data[idx].pseudo_class_selector);
+            },
+            inline .is, .where, .not => |_, tag| {
+                idx += 1;
+                const list = nestedList(data[idx], tag);
+                var sel_idx = list.start;
+                for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+                idx = sel_idx - 1;
+            },
+            .has, .has_anchor => {
+                if (data[idx].simple_selector_tag == .has) {
+                    idx += 1;
+                    idx = nestedListEnd(data, data[idx].has_selector_list) - 1;
+                }
+            },
+        }
+    }
+    return false;
+}
 
 /// The Environment's own retained document tree, as the matcher sees it:
 /// what the cascade matches against.
@@ -945,6 +1040,7 @@ pub fn Matcher(comptime Tree: type) type {
                     var element = tree.parent(anchor);
                     while (element) |e| : (element = tree.parent(e)) {
                         if (!tree.isElement(e)) break;
+                        if (!ancestorCompoundApplies(data, left_start, trailing_index, tree, e)) continue;
                         if (matchCompoundSelector(data, left_start, trailing_index, env, tree, e, allocator, has_anchor) and
                             matchLeftOfCompound(data, first_compound, left_start, env, tree, e, allocator, has_anchor)) return true;
                     }
@@ -953,6 +1049,7 @@ pub fn Matcher(comptime Tree: type) type {
                 .child => {
                     const parent = tree.parent(anchor) orelse return false;
                     if (!tree.isElement(parent)) return false;
+                    if (!ancestorCompoundApplies(data, left_start, trailing_index, tree, parent)) return false;
                     if (!matchCompoundSelector(data, left_start, trailing_index, env, tree, parent, allocator, has_anchor)) return false;
                     return matchLeftOfCompound(data, first_compound, left_start, env, tree, parent, allocator, has_anchor);
                 },
@@ -977,8 +1074,17 @@ pub fn Matcher(comptime Tree: type) type {
                 // columns; no browser implements it, and neither does this.
                 .column => return false,
                 // end_* values only appear in the last trailing and are never reached here.
-                .end_none, .end_before, .end_after => unreachable,
+                .end_none, .end_before, .end_after, .end_slotted => unreachable,
             }
+        }
+
+        /// CSS Scoping 1 §3.1: inside a shadow tree the shadow host is visible
+        /// to a compound only through `:host`; any other compound cannot be
+        /// anchored at it.
+        fn ancestorCompoundApplies(data: []const Data, start: Data.ListIndex, end: Data.ListIndex, tree: Tree, element: Node) bool {
+            if (!@hasDecl(Tree, "matchesHost")) return true;
+            if (!tree.matchesHost(element)) return true;
+            return compoundHasHost(data, start, end);
         }
 
         /// Case for comparing a selector's attribute value with an element's
@@ -1081,6 +1187,14 @@ pub fn Matcher(comptime Tree: type) type {
                         switch (pseudo_element) {
                             // Skip recognized pseudo-elements — the cascade handles them.
                             .before, .after => {},
+                            // ::slotted(): skip its argument list too (an `:is` entry).
+                            .slotted => {
+                                index += 2; // the `.is` tag, then its list entry
+                                const list = nestedList(data[index], .is);
+                                var sel_idx = list.start;
+                                for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+                                index = sel_idx - 1;
+                            },
                             .unrecognized => return false,
                         }
                     },
