@@ -432,7 +432,20 @@ pub const InlineFormattingContext = struct {
     glyphs: MultiArrayList(struct {
         index: GlyphIndex,
         metrics: Metrics,
+        /// UTF-8 byte offset, in the glyph's text node's (case-transformed)
+        /// data, of the character cluster the glyph renders (its HarfBuzz
+        /// cluster); `TextNode` says which node. Boxes without a source
+        /// (inline boxes, inline-blocks) and the escape slot of a special
+        /// glyph carry the default. Non-decreasing within a text node
+        /// (left-to-right text); Range client rects map offsets to glyphs
+        /// through it.
+        src: u32 = 0,
     }) = .{},
+
+    /// One entry per text node laid out in this IFC, in layout order: the
+    /// glyphs from `glyph_start` up to the next entry's belong to `node`.
+    /// A node whose text collapsed away entirely has an entry with no glyphs.
+    text_nodes: ArrayListUnmanaged(TextNode) = .{},
 
     /// Sorted list of glyph indices (into `glyphs`) that represent soft-wrap
     /// break opportunities — typically the last glyph of a CSS-collapsed
@@ -498,6 +511,15 @@ pub const InlineFormattingContext = struct {
     descender: math.Unit = undefined,
 
     inline_boxes: InlineBoxList = .{},
+
+    pub const TextNode = struct {
+        node: NodeId,
+        glyph_start: u32,
+        /// Length in bytes of the text the glyphs were made from (the
+        /// case-transformed text; differs from the node's data length only
+        /// when `text-transform` changed it, e.g. "ß" to "SS").
+        text_len: u32,
+    };
 
     pub const FontRun = struct {
         /// Glyph index range [start, end) in the IFC glyph list.
@@ -657,6 +679,7 @@ pub const InlineFormattingContext = struct {
 
     fn deinit(ifc: *InlineFormattingContext, allocator: Allocator) void {
         ifc.glyphs.deinit(allocator);
+        ifc.text_nodes.deinit(allocator);
         ifc.break_opportunities.deinit(allocator);
         ifc.atomic_breaks.deinit(allocator);
         ifc.spaces.deinit(allocator);

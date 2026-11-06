@@ -322,6 +322,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                         }
                     }
                 }
+                try ifc.ptr.text_nodes.append(layout.allocator, .{ .node = node, .glyph_start = glyph_start, .text_len = @intCast(text.len) });
                 try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font, font.white_space);
                 const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
                 if (glyph_end > glyph_start) {
@@ -827,6 +828,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
             try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
             if (white_space == .pre_line) dropTrailingCollapsibleSpace(ifc);
             try ifcAddLineBreak(box_tree, ifc);
+            setSrc(ifc, 2, i);
             // pre-line: spaces after the break collapse away too.
             ifc.ends_in_collapsible_space = collapse;
             run_begin = i + 1;
@@ -837,7 +839,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
         if (collapse) {
             try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
             if (!ifc.ends_in_collapsible_space) {
-                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", wrap);
+                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", i, wrap);
                 try ifc.spaces.append(allocator, .{ .glyph = @intCast(ifc.glyphs.len - 1), .collapsible = true });
                 ifc.ends_in_collapsible_space = true;
             }
@@ -847,6 +849,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
             const space = try shapeRun(buffer, font, " ");
             const space_advance: u16 = if (space.len > 0) @intCast(@max(0, space[0].advance)) else 0;
             try box_tree.appendSpecialGlyph(ifc, .Tab, space_advance);
+            setSrc(ifc, 2, i);
             if (wrap) try ifc.break_opportunities.append(allocator, @intCast(ifc.glyphs.len - 1));
             run_begin = i + 1;
         } else if (ch == ' ') {
@@ -856,7 +859,7 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
             var end = i;
             while (end < text.len and text[end] == ' ') end += 1;
             const first: u32 = @intCast(ifc.glyphs.len);
-            try ifcAddTextRun(box_tree, ifc, buffer, font, text[i..end], wrap);
+            try ifcAddTextRun(box_tree, ifc, buffer, font, text[i..end], i, wrap);
             if (white_space == .pre_wrap) {
                 var g = first;
                 while (g < ifc.glyphs.len) : (g += 1) try ifc.spaces.append(allocator, .{ .glyph = g, .collapsible = false });
@@ -867,6 +870,13 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
         }
     }
     try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, text.len);
+}
+
+/// The last `count` glyph entries (a special glyph is two) came from byte
+/// `src` of the text node being added.
+fn setSrc(ifc: *Ifc, count: usize, src: usize) void {
+    const srcs = ifc.glyphs.items(.src);
+    for (srcs[ifc.glyphs.len - count ..]) |*s| s.* = @intCast(src);
 }
 
 /// pre-line: a collapsible space right before a segment break is removed.
@@ -883,13 +893,13 @@ fn dropTrailingCollapsibleSpace(ifc: *Ifc) void {
 
 fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, run_begin: usize, run_end: usize) !void {
     if (run_end > run_begin) {
-        try ifcAddTextRun(box_tree, ifc, buffer, font, text[run_begin..run_end], false);
+        try ifcAddTextRun(box_tree, ifc, buffer, font, text[run_begin..run_end], run_begin, false);
         ifc.ends_in_collapsible_space = false;
     }
 }
 
 /// One shaped glyph as the shaping cache stores it.
-const ShapedGlyph = struct { index: GlyphIndex, advance: Unit };
+const ShapedGlyph = struct { index: GlyphIndex, advance: Unit, cluster: u32 };
 
 /// Per-layout word shaping cache (Blink's CachingWordShaper idea): text is
 /// shaped one collapsed-whitespace-delimited run at a time, and on real
@@ -962,14 +972,14 @@ fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]c
     for (glyphs, 0..) |*g, i| {
         total_26_6 += glyph_positions[i].x_advance;
         const end_units: Unit = @intCast(@divFloor(total_26_6 * units_per_pixel + 32, 64));
-        g.* = .{ .index = glyph_infos[i].codepoint, .advance = end_units - placed_units };
+        g.* = .{ .index = glyph_infos[i].codepoint, .advance = end_units - placed_units, .cluster = glyph_infos[i].cluster };
         placed_units = end_units;
     }
     try shape_cache.put(arena, .{ .font = key.font, .text = try arena.dupe(u8, text) }, glyphs);
     return glyphs;
 }
 
-fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8, is_break_opportunity: bool) !void {
+fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8, src_base: usize, is_break_opportunity: bool) !void {
     const shaped = try shapeRun(buffer, font, text);
     const t_glyphs = Layout.now();
     defer Layout.profile.glyph_ns += Layout.now() - t_glyphs;
@@ -986,15 +996,18 @@ fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, f
             try ifc.glyphs.append(box_tree.ptr.allocator, .{
                 .index = 0,
                 .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
+                .src = @intCast(src_base + sg.cluster),
             });
             try ifc.glyphs.append(box_tree.ptr.allocator, .{
                 .index = @bitCast(special),
                 .metrics = undefined,
+                .src = @intCast(src_base + sg.cluster),
             });
         } else {
             try ifc.glyphs.append(box_tree.ptr.allocator, .{
                 .index = glyph_index,
                 .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
+                .src = @intCast(src_base + sg.cluster),
             });
         }
     }
