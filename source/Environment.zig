@@ -611,6 +611,20 @@ pub const DocumentTreeVtable = struct {
     /// element state use `attributeElementState`.
     nodeState: *const fn (env: *const Environment, node: NodeId, state: ElementState) bool,
 
+    /// Tree scoping (CSS Scoping 1, shadow trees). The tree `nodeRelative`
+    /// describes is the one boxes are generated from (the flat tree); selectors
+    /// match against the DOM tree of their own scope, which a host with shadow
+    /// trees answers through `selectorRelative`. Hosts without shadow trees
+    /// leave both null (the selectors then use `nodeRelative`).
+    selectorRelative: ?*const fn (env: *const Environment, node: NodeId, relative: NodeRelative) ?NodeId = null,
+    /// The tree scope `node` belongs to: 0 for the document, otherwise the id
+    /// of its shadow root (the scope id of the `Source`s of that tree).
+    nodeScope: ?*const fn (env: *const Environment, node: NodeId) u32 = null,
+    /// The scope id of the shadow tree `node` hosts (0: not a shadow host).
+    nodeHostScope: ?*const fn (env: *const Environment, node: NodeId) u32 = null,
+    /// The shadow host of the tree scope `scope`.
+    scopeHost: ?*const fn (env: *const Environment, scope: u32) ?NodeId = null,
+
     pub const empty_document: DocumentTreeVtable = .{
         .nodeRelative = &empty_document_fns.nodeRelative,
         .nodeState = &empty_document_fns.nodeState,
@@ -625,6 +639,35 @@ pub const DocumentTreeVtable = struct {
         }
     };
 };
+
+/// The relative of `node` in the tree selectors match against.
+pub fn selectorRelative(env: *const Environment, node: NodeId, relative: NodeRelative) ?NodeId {
+    if (env.pseudoLink(node)) |link| return switch (relative) {
+        .parent => link.parent,
+        .first_child, .last_child => link.child,
+        .previous_sibling, .next_sibling => null,
+    };
+    const f = env.document_tree_vtable.selectorRelative orelse return env.document_tree_vtable.nodeRelative(env, node, relative);
+    return f(env, node, relative);
+}
+
+/// The scope id of the shadow tree `node` hosts (0: not a shadow host).
+pub fn nodeHostScope(env: *const Environment, node: NodeId) u32 {
+    const f = env.document_tree_vtable.nodeHostScope orelse return 0;
+    return f(env, node);
+}
+
+/// The shadow host of the tree scope `scope`.
+pub fn scopeHost(env: *const Environment, scope: u32) ?NodeId {
+    const f = env.document_tree_vtable.scopeHost orelse return null;
+    return f(env, scope);
+}
+
+/// The tree scope of `node` (0 = the document).
+pub fn nodeScope(env: *const Environment, node: NodeId) u32 {
+    const f = env.document_tree_vtable.nodeScope orelse return 0;
+    return f(env, node);
+}
 
 pub fn nodeState(env: *const Environment, node: NodeId, state: ElementState) bool {
     return env.document_tree_vtable.nodeState(env, node, state);

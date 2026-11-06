@@ -443,6 +443,17 @@ fn parseSubclassSelector(parser: *Parser, data_list: DataListManaged) !?void {
             const after_colon_tag, const after_colon_index = parser.next() orelse break :pseudo_class_selector;
             if (after_colon_tag == .function) {
                 const fn_loc = after_colon_index.location(parser.ast);
+                // :host(<compound-selector>) (CSS Scoping 1 §3.1): the host,
+                // and the host matching the argument.
+                if (parser.source_code.mapIdentifierValue(fn_loc, enum { host }, &.{.{ "host", .host }}) != null) {
+                    try data_list.appendSlice(&.{
+                        .{ .simple_selector_tag = .pseudo_class },
+                        .{ .pseudo_class_selector = .host },
+                    });
+                    parser.addSpecificity(.pseudo_class);
+                    try parseSelectorListPseudoClass(parser, data_list, after_colon_index, .is);
+                    return;
+                }
                 const list_kind = parser.source_code.mapIdentifierValue(fn_loc, ListPseudoClass, &.{
                     .{ "is", .is },
                     .{ "where", .where },
@@ -783,6 +794,7 @@ fn parsePseudo(comptime pseudo: Pseudo, parser: *Parser) ?switch (pseudo) {
                 if (parser.source_code.mapIdentifierEnum(main_component_index.location(parser.ast), selectors.PseudoClass)) |pc| {
                     switch (pc) {
                         .root,
+                        .host,
                         .link,
                         .visited,
                         .hover,

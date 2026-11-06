@@ -55,6 +55,13 @@ pub const Source = struct {
     /// This list must be sorted such that selectors with higher cascade order appear earlier.
     selectors_normal: std.MultiArrayList(SelectorBlock) = .empty,
     selector_data: std.ArrayList(selectors.Data) = .empty,
+    /// The tree scope this source's selectors apply in (CSS Scoping 1): 0 is
+    /// the document tree, another value a shadow tree's id (see
+    /// `Environment.nodeScope`). `any_scope` (UA sheets, and every document
+    /// without shadow trees) applies to nodes of any scope.
+    scope: u32 = any_scope,
+
+    pub const any_scope = std.math.maxInt(u32);
 
     pub const SelectorBlock = struct {
         selector: selectors.Data.ListIndex,
@@ -602,6 +609,41 @@ fn rightmostCompoundIsPositional(data: []const selectors.Data, complex_selector_
 /// state (`:checked`, `:enabled`, `:disabled`), which two elements with equal
 /// type, classes and attributes may still differ in — the L1 sibling key must
 /// then carry the state (`elementStateSignature`).
+/// Whether the rightmost compound of the complex selector holds `:host`.
+fn rightmostCompoundHasHost(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
+    const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
+    var idx = data[last_trailing_idx].trailing.compound_selector_start;
+    while (idx < last_trailing_idx) : (idx += 1) {
+        switch (data[idx].simple_selector_tag) {
+            .has, .has_anchor => {
+                if (data[idx].simple_selector_tag == .has) {
+                    idx += 1;
+                    idx = selectors.nestedListEnd(data, data[idx].has_selector_list) - 1;
+                }
+            },
+            .pseudo_class => {
+                idx += 1;
+                const pc = data[idx].pseudo_class_selector;
+                if (pc == .host) return true;
+                idx += selectors.pseudoClassPayload(pc);
+            },
+            .type, .id, .class, .pseudo_element => idx += 1,
+            .attribute => |op_case| {
+                idx += 1;
+                if (op_case != null) idx += 1;
+            },
+            inline .is, .where, .not => |_, tag| {
+                idx += 1;
+                const list = selectors.nestedList(data[idx], tag);
+                var sel_idx = list.start;
+                for (0..list.count) |_| sel_idx = data[sel_idx].next_complex_selector;
+                idx = sel_idx - 1;
+            },
+        }
+    }
+    return false;
+}
+
 fn rightmostCompoundHasElementState(data: []const selectors.Data, complex_selector_index: selectors.Data.ListIndex) bool {
     const last_trailing_idx = data[complex_selector_index].next_complex_selector - 1;
     const start = data[last_trailing_idx].trailing.compound_selector_start;
@@ -1863,7 +1905,7 @@ pub fn restyle(indexes: *const RestyleIndexes, env: *Environment, nodes: []const
                 }
                 try index.candidates(env, node, &candidates, allocator);
                 for (candidates.items) |entry| {
-                    if (!zss.selectors.matchElement(data, entry.selector, env, node, allocator)) continue;
+                    if (!zss.selectors.matchElementInScope(data, entry.selector, env, node, allocator, source.scope)) continue;
                     switch (entry.pseudo) {
                         .none => try ctx.appendDeclBlock(node, entry.block, entry.importance),
                         .before => try ctx.appendPseudoDeclBlock(node, .before, entry.block, entry.importance),
@@ -2149,6 +2191,9 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             try ctx.document_node_stack.push(allocator, first_child);
         }
 
+        // A scoped source applies to the elements of its own tree scope only.
+        if (source.scope != Source.any_scope and env.nodeScope(node) != source.scope) continue;
+
         node_count += 1;
         const element_type = env.getNodeProperty(.type, node);
         const has_id = env.nodes_to_ids.get(node) != null;
@@ -2223,7 +2268,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                             dep_no_bloom += 1;
                         }
                         dep_match_elem += 1;
-                        break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
+                        break :blk zss.selectors.matchElementInScope(data, entry.selector, env, node, allocator, source.scope);
                     };
                     if (matched) try hit_merged.append(allocator, entry);
                 }
@@ -2288,7 +2333,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                     }
                     if (!any_alt_match) break :blk false;
                 }
-                break :blk zss.selectors.matchElement(data, entry.selector, env, node, allocator);
+                break :blk zss.selectors.matchElementInScope(data, entry.selector, env, node, allocator, source.scope);
             };
             // Classify for cross_cache:
             // - fast_match / element_only matched → shared blocks (no re-eval on L2 hit)
@@ -2339,6 +2384,24 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
                     .fast_entries = duped_fast,
                     .dependent_candidates = duped_dep,
                 });
+            }
+        }
+    }
+    // :host rules (CSS Scoping 1 §3.1) apply to the shadow host, an element of
+    // the outer scope that the node loop above skipped for this source.
+    if (source.scope != Source.any_scope and source.scope != 0) {
+        if (env.scopeHost(source.scope)) |host| {
+            for (importances) |importance| {
+                const list = switch (importance) {
+                    .important => source.selectors_important,
+                    .normal => source.selectors_normal,
+                };
+                for (list.items(.selector), list.items(.block)) |sel, block| {
+                    if (!rightmostCompoundHasHost(data, sel)) continue;
+                    if (selectors.extractPseudoElement(data, sel) != null) continue;
+                    if (!zss.selectors.matchElementInScope(data, sel, env, host, allocator, source.scope)) continue;
+                    try ctx.appendDeclBlock(host, block, importance);
+                }
             }
         }
     }

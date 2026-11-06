@@ -151,6 +151,9 @@ pub const PseudoElement = enum { before, after, unrecognized };
 
 pub const PseudoClass = enum {
     root,
+    /// `:host` / `:host(<compound>)` (CSS Scoping 1 §3.1): the shadow host of the
+    /// tree scope the rule's style sheet belongs to.
+    host,
     link,
     visited,
     hover,
@@ -734,29 +737,58 @@ pub fn matchElement(
     return Matcher(EnvTree).matchElement(data, complex_selector_index, env, .{ .env = env }, match_candidate, allocator);
 }
 
+/// `matchElement` for a selector of a style sheet scoped to the tree scope
+/// `scope` (`cascade.Source.scope`; `any_scope` = unscoped): the selector sees
+/// only its own tree — the shadow host is the parent of the tree's top-level
+/// elements, and the elements outside the tree have no parent.
+pub fn matchElementInScope(
+    data: []const Data,
+    complex_selector_index: Data.ListIndex,
+    env: *const Environment,
+    match_candidate: NodeId,
+    allocator: std.mem.Allocator,
+    scope: u32,
+) bool {
+    return Matcher(EnvTree).matchElement(data, complex_selector_index, env, .{ .env = env, .scope_id = scope }, match_candidate, allocator);
+}
+
+pub const any_scope = std.math.maxInt(u32);
+
 /// The Environment's own retained document tree, as the matcher sees it:
 /// what the cascade matches against.
 pub const EnvTree = struct {
     env: *const Environment,
     /// The `:scope` element; null means the root element.
     scope: ?NodeId = null,
+    /// The tree scope of the style sheet being matched (`any_scope`: none).
+    scope_id: u32 = any_scope,
 
     pub const Node = NodeId;
+
+    /// `:host`: the shadow host of this selector's tree scope.
+    pub fn matchesHost(t: EnvTree, n: NodeId) bool {
+        return t.scope_id != any_scope and t.env.nodeHostScope(n) == t.scope_id;
+    }
 
     pub fn isElement(t: EnvTree, n: NodeId) bool {
         return t.env.getNodeProperty(.category, n) == .element;
     }
     pub fn parent(t: EnvTree, n: NodeId) ?NodeId {
-        return n.parent(t.env);
+        const p = t.env.selectorRelative(n, .parent);
+        if (t.scope_id == any_scope) return p;
+        // A scoped selector sees its tree only: the host above the top-level
+        // elements, nothing above the host or beside the tree.
+        if (t.env.nodeScope(n) != t.scope_id) return null;
+        return p orelse t.env.scopeHost(t.scope_id);
     }
     pub fn previousSibling(t: EnvTree, n: NodeId) ?NodeId {
-        return n.previousSibling(t.env);
+        return t.env.selectorRelative(n, .previous_sibling);
     }
     pub fn nextSibling(t: EnvTree, n: NodeId) ?NodeId {
-        return n.nextSibling(t.env);
+        return t.env.selectorRelative(n, .next_sibling);
     }
     pub fn firstChild(t: EnvTree, n: NodeId) ?NodeId {
-        return n.firstChild(t.env);
+        return t.env.selectorRelative(n, .first_child);
     }
     pub fn isRoot(t: EnvTree, n: NodeId) bool {
         return t.env.root_node != null and std.meta.eql(n, t.env.root_node.?);
@@ -1326,6 +1358,7 @@ pub fn Matcher(comptime Tree: type) type {
         fn matchPseudoClass(pseudo_class: PseudoClass, payload: Data, element: Node, env: *const Environment, tree: Tree, allocator: Allocator) bool {
             switch (pseudo_class) {
                 .root => return tree.isRoot(element),
+                .host => return if (@hasDecl(Tree, "matchesHost")) tree.matchesHost(element) else false,
                 // Selectors 4 §9.1: the scoping root, or the root element when
                 // there is none.
                 .scope => return if (tree.scopeNode()) |s| eql(s, element) else tree.isRoot(element),
