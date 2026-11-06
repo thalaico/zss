@@ -2189,3 +2189,17 @@ pub fn gridAreaPlacement(ctx: *Context) ?types.GridAreaPlacement {
     const loc = identifier(ctx) orelse return null;
     return hashIdentAtLocation(ctx, loc);
 }
+/// `text` as one CSS <color> and nothing else (the canvas `fillStyle` /
+/// `strokeStyle` / `addColorStop` grammar): null when it is not.
+pub fn colorFromText(allocator: std.mem.Allocator, text: []const u8) ?types.Color {
+    const source_code = SourceCode.init(text) catch return null;
+    var parser = zss.syntax.Parser.init(source_code, allocator);
+    defer parser.deinit();
+    var ast, const list = parser.parseListOfComponentValues(allocator) catch return null;
+    defer ast.deinit(allocator);
+    var ctx = Context.init(ast, source_code);
+    ctx.initSequence(list.children(ast));
+    const value = color(&ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return value;
+}
