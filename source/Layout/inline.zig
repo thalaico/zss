@@ -189,15 +189,30 @@ pub const Context = struct {
         parent_float_ctx: ?flow.FloatContext,
     }) = .init(undefined),
     inline_box: zss.Stack(InlineBox) = .init(undefined),
+    /// The inline boxes a block-level box split (CSS 2.1 §9.2.1.1), whose
+    /// elements are still open in the document walk: outermost first,
+    /// continued in the next IFC at their level (`reopenSplitInlines`) or
+    /// closed when their level ends (`closeSplitInline`).
+    split: std.ArrayListUnmanaged(SplitInline) = .empty,
 
     const InlineBox = struct {
         index: Ifc.Size,
         skip: Ifc.Size,
+        /// The element (null for the root inline box) and the `node_stack`
+        /// level its children are walked at.
+        node: ?NodeId = null,
+        level: usize = 0,
+    };
+
+    const SplitInline = struct {
+        node: NodeId,
+        level: usize,
     };
 
     pub fn deinit(ctx: *Context, allocator: Allocator) void {
         ctx.ifc.deinit(allocator);
         ctx.inline_box.deinit(allocator);
+        ctx.split.deinit(allocator);
     }
 
     fn pushIfc(
@@ -384,23 +399,10 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 
             writeInlineBoxCosmetic(layout, ifc.ptr, inline_box_index, node);
 
-            // CSS Inline 3 §2.3: inline boxes are content only when they
-            // have non-zero inline-axis margins, padding, or borders. An empty <a> wrapping
-            // only an abs-positioned child must NOT set this flag — doing so
-            // gives the IFC a non-zero strut that shifts subsequent floats down.
-            if (!ctx.ifc.top.?.has_visible_content) {
-                const ifc_slice = ifc.ptr.slice();
-                const s = ifc_slice.items(.inline_start)[inline_box_index];
-                const e = ifc_slice.items(.inline_end)[inline_box_index];
-                const m = ifc_slice.items(.margins)[inline_box_index];
-                if (s.border != 0 or s.padding != 0 or
-                    e.border != 0 or e.padding != 0 or
-                    m.start != 0 or m.end != 0)
-                {
-                    ctx.ifc.top.?.has_visible_content = true;
-                }
-            }
+            noteInlineBoxEdges(ctx, ifc.ptr.slice(), inline_box_index);
             try layout.pushNode();
+            ctx.inline_box.top.?.node = node;
+            ctx.inline_box.top.?.level = layout.node_stack.rest.items.len;
         },
         .block => |block_inner| switch (block_inner) {
             .flow, .flex, .grid => {
@@ -479,23 +481,115 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
     }
 }
 
+/// A block-level box inside an inline box (CSS 2.1 §9.2.1.1): the inline
+/// boxes around it are broken, the IFC ends and the block becomes a
+/// sibling of the IFC's container; the inline boxes are continued in the
+/// IFC after the block (`reopenSplitInlines`) when their elements have
+/// more inline-level content, and closed where their elements end
+/// (`closeSplitInline`). A broken box has no end edge at the break and the
+/// continuation no start edge (`box-decoration-break: slice`, CSS Break 3
+/// §5 — as across line breaks).
 pub fn blockElement(box_gen: *BoxGen) !Result {
-    // Close nested inline boxes down to depth 1.
-    // Each inline box was opened with pushInlineBox + pushNode. We must pop
-    // the corresponding node entries. The block element's node sits at the
-    // top of the stack and needs to survive, so we save it, pop the
-    // intermediate entries, then restore it.
+    const ctx = &box_gen.inline_context;
     const layout = box_gen.getLayout();
-    // (With the levels of `display: contents` children above it.)
-    try layout.takeLevel();
-    while (box_gen.inline_context.ifc.top.?.depth > 1) {
-        _ = try popInlineBox(box_gen);
-        layout.popNode();
+    const first = ctx.split.items.len;
+    while (ctx.ifc.top.?.depth > 1) {
+        const open = ctx.inline_box.top.?;
+        const ifc_slice = ctx.ifc.top.?.ptr.slice();
+        ifc_slice.items(.inline_end)[open.index].border = 0;
+        ifc_slice.items(.inline_end)[open.index].padding = 0;
+        ifc_slice.items(.margins)[open.index].end = 0;
+        const skip = try popInlineBox(box_gen);
+        ctx.accumulateSkip(skip);
+        // Innermost first here; outermost first in the list.
+        try ctx.split.insert(layout.allocator, first, .{ .node = open.node.?, .level = open.level });
     }
-    try layout.restoreLevel();
-
-    // Now at depth 1, end the IFC normally
     return try endMode(box_gen);
+}
+
+/// The level of `node_stack` whose nodes are walked now (the top).
+fn currentLevel(layout: *const Layout) usize {
+    return layout.node_stack.rest.items.len;
+}
+
+fn isContentsLevel(layout: *const Layout, level: usize) bool {
+    for (layout.contents_levels.items) |l| if (l == level) return true;
+    return false;
+}
+
+/// At a null node in block (flow or shrink-to-fit) mode: whether the level
+/// that ended is a split inline box's — its element has no more children
+/// after the block. Its last fragment (an empty one with the end edges, as
+/// Chromium's) then goes in an IFC after the block: the caller begins
+/// inline mode, `reopenSplitInlines` continues the box and the null node
+/// closes it there.
+pub fn splitInlineEnds(box_gen: *BoxGen) bool {
+    const ctx = &box_gen.inline_context;
+    const last = ctx.split.getLastOrNull() orelse return false;
+    return last.level == currentLevel(box_gen.getLayout());
+}
+
+/// At the start of an IFC in block mode: the split inline boxes whose
+/// elements the content about to be laid out is inside of — the innermost
+/// of them has the current level (through `display: contents` levels), each
+/// next one the level just outside — are continued in this IFC, outermost
+/// first, without their start edges. A split inline box whose element
+/// holds the block container this IFC is in stays split around it.
+pub fn reopenSplitInlines(box_gen: *BoxGen) !void {
+    const ctx = &box_gen.inline_context;
+    const layout = box_gen.getLayout();
+    const entries = ctx.split.items;
+    var count: usize = 0;
+    var level = currentLevel(layout);
+    while (count < entries.len) {
+        const entry = entries[entries.len - 1 - count];
+        while (level > entry.level and isContentsLevel(layout, level)) level -= 1;
+        if (entry.level != level) break;
+        count += 1;
+        if (level == 0) break;
+        level -= 1;
+    }
+    if (count == 0) return;
+
+    const sc = &layout.computer;
+    const saved_current = sc.current;
+    const saved_stage = sc.box_gen_stage.saveCurrent();
+    defer {
+        sc.current = saved_current;
+        sc.box_gen_stage.restoreCurrent(saved_stage);
+    }
+    const ifc = ctx.ifc.top.?;
+    for (entries[entries.len - count ..]) |entry| {
+        try sc.setCurrentNode(.box_gen, entry.node);
+        const index = try pushInlineBox(box_gen, entry.node);
+        const ifc_slice = ifc.ptr.slice();
+        ifc_slice.items(.inline_start)[index].border = 0;
+        ifc_slice.items(.inline_start)[index].padding = 0;
+        ifc_slice.items(.margins)[index].start = 0;
+        // The element's generated box stays its first fragment's.
+        writeInlineBoxCosmetic(layout, ifc.ptr, index, entry.node);
+        noteInlineBoxEdges(ctx, ifc_slice, index);
+        ctx.inline_box.top.?.node = entry.node;
+        ctx.inline_box.top.?.level = entry.level;
+    }
+    ctx.split.shrinkRetainingCapacity(entries.len - count);
+}
+
+/// CSS Inline 3 §2.3: inline boxes are content only when they have
+/// non-zero inline-axis margins, padding, or borders. An empty <a> wrapping
+/// only an abs-positioned child must NOT set this flag — doing so gives the
+/// IFC a non-zero strut that shifts subsequent floats down.
+fn noteInlineBoxEdges(ctx: *Context, ifc_slice: Ifc.Slice, inline_box_index: Ifc.Size) void {
+    if (ctx.ifc.top.?.has_visible_content) return;
+    const s = ifc_slice.items(.inline_start)[inline_box_index];
+    const e = ifc_slice.items(.inline_end)[inline_box_index];
+    const m = ifc_slice.items(.margins)[inline_box_index];
+    if (s.border != 0 or s.padding != 0 or
+        e.border != 0 or e.padding != 0 or
+        m.start != 0 or m.end != 0)
+    {
+        ctx.ifc.top.?.has_visible_content = true;
+    }
 }
 
 pub fn nullNode(box_gen: *BoxGen) !?Result {

@@ -308,6 +308,9 @@ fn dispatchInlineElement(
                 .@"inline" => break :blk,
             };
             try beginInlineMode(box_gen, .not_root, size_mode);
+            // The inline boxes a block split go on in this IFC (CSS 2.1
+            // §9.2.1.1).
+            try @"inline".reopenSplitInlines(box_gen);
         },
     }
     return @"inline".inlineElement(box_gen, node, box_style.outer.@"inline", box_style.position);
@@ -324,11 +327,28 @@ fn dispatchNullNode(
     switch (is_root) {
         .root => initial.nullNode(box_gen),
         .not_root => switch (current_mode) {
+            // The end of a split inline box's element (CSS 2.1 §9.2.1.1)
+            // closes its last fragment in an IFC after the block, not the
+            // block.
             .flow => {
+                if (@"inline".splitInlineEnds(box_gen)) {
+                    try beginInlineMode(box_gen, .not_root, flow.beforeInlineMode());
+                    try @"inline".reopenSplitInlines(box_gen);
+                    const result = (try @"inline".nullNode(box_gen)) orelse return;
+                    afterInlineMode(box_gen, result);
+                    return;
+                }
                 flow.nullNode(box_gen) orelse return;
                 afterFlowMode(box_gen);
             },
             .stf => {
+                if (@"inline".splitInlineEnds(box_gen)) {
+                    try beginInlineMode(box_gen, .not_root, try stf.beforeInlineMode(box_gen));
+                    try @"inline".reopenSplitInlines(box_gen);
+                    const result = (try @"inline".nullNode(box_gen)) orelse return;
+                    afterInlineMode(box_gen, result);
+                    return;
+                }
                 const result = (try stf.nullNode(box_gen)) orelse return;
                 afterStfMode(box_gen, result);
             },
@@ -1030,7 +1050,6 @@ pub fn popAbsoluteContainingBlock(box_gen: *BoxGen) void {
 pub fn fixupAbsoluteContainingBlock(box_gen: *BoxGen, id: Absolute.ContainingBlock.Id, ref: BlockRef) void {
     return box_gen.absolute.fixupContainingBlock(id, ref);
 }
-
 
 pub const BlockComputedSizes = struct {
     content_width: ComputedValues(.content_width),

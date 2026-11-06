@@ -208,8 +208,12 @@ const Pass = struct {
         const ifc = pass.layout.box_tree.ptr.getIfc(ifc_id);
         const bo = &pass.subtree.items(.box_offsets)[index];
         if (!ifc.has_visible_content) {
-            // Inter-element white space: no line boxes (§9.2.2.1).
-            pass.top(index).* = pass.y;
+            // Inter-element white space: no line boxes (§9.2.2.1). The
+            // margins around it collapse through it: its top — the static
+            // position of what is in it (an empty inline box, an
+            // out-of-flow box) — is where they resolve, not the position
+            // before them.
+            try pass.pending.append(pass.layout.allocator, index);
             return;
         }
         try pass.resolve();

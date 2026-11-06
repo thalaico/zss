@@ -31,8 +31,6 @@ node_stack: zss.Stack(?NodeId),
 /// generation never sees such an element or the end of such a level:
 /// `skipContents` steps into it and out of it.
 contents_levels: std.ArrayListUnmanaged(usize) = .empty,
-/// Levels `takeLevel` took off `node_stack`, top first.
-taken_levels: std.ArrayListUnmanaged(struct { node: ?NodeId, contents: bool }) = .empty,
 box_gen: BoxGen,
 /// Lay out again from the previous layout of the same document: unchanged
 /// elements take over their boxes (`Layout/reuse.zig`). Set before `run`,
@@ -141,7 +139,6 @@ pub fn deinit(layout: *Layout) void {
     layout.computer.deinit();
     layout.node_stack.deinit(layout.allocator);
     layout.contents_levels.deinit(layout.allocator);
-    layout.taken_levels.deinit(layout.allocator);
     layout.box_gen.deinit();
 }
 
@@ -290,8 +287,7 @@ pub fn pushNode(layout: *Layout) !void {
     try layout.node_stack.push(layout.allocator, child);
 }
 
-/// Pop the current level (with the `display: contents` levels above it, when
-/// a caller unwinds levels whose nodes are not done — `inline.blockElement`).
+/// Pop the current level (with the `display: contents` levels above it).
 pub fn popNode(layout: *Layout) void {
     while (layout.topIsContentsLevel()) {
         _ = layout.node_stack.pop();
@@ -303,26 +299,6 @@ pub fn popNode(layout: *Layout) void {
 pub fn advanceNode(layout: *Layout) void {
     const node = &layout.node_stack.top.?;
     node.* = layout.inputs.env.boxNextSibling(node.*.?);
-}
-
-/// Take the current level off `node_stack` (with the `display: contents`
-/// levels above it: one level of the box tree), for callers that unwind the
-/// levels beneath it and put it back (`inline.blockElement`).
-pub fn takeLevel(layout: *Layout) !void {
-    assert(layout.taken_levels.items.len == 0);
-    while (true) {
-        const contents = layout.topIsContentsLevel();
-        if (contents) _ = layout.contents_levels.pop();
-        try layout.taken_levels.append(layout.allocator, .{ .node = layout.node_stack.pop(), .contents = contents });
-        if (!contents) return;
-    }
-}
-
-pub fn restoreLevel(layout: *Layout) !void {
-    while (layout.taken_levels.pop()) |level| {
-        try layout.node_stack.push(layout.allocator, level.node);
-        if (level.contents) try layout.contents_levels.append(layout.allocator, layout.node_stack.rest.items.len);
-    }
 }
 
 fn topIsContentsLevel(layout: *const Layout) bool {
