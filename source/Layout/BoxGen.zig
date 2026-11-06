@@ -796,15 +796,17 @@ pub fn popFlowBlock(
     }
 
     // If the parent is a grid container, record this child's grid-area hash.
-    // IFC containers (generated for inter-element whitespace) are not grid
-    // items per CSS Grid §9.1 — they must not be counted, otherwise
-    // child_area_hashes alignment breaks and later children get auto-placed
-    // into extra rows instead of their named areas.
+    // The list is indexed by element child in order (grid.zig consumes one
+    // entry per element item): anonymous IFC containers (text runs, which
+    // are auto-placed anonymous items, or inter-element white space) and
+    // out-of-flow children (not grid items, CSS Grid 1 §9) are not counted,
+    // otherwise later children get auto-placed into extra rows instead of
+    // their named areas.
     if (box_gen.stacks.block_info.top) |*parent_info| {
         if (parent_info.is_grid_container) {
             const subtree_view = layout.box_tree.ptr.getSubtree(box_gen.currentSubtree()).view();
             const is_ifc = subtree_view.items(.type)[block.index] == .ifc_container;
-            if (!is_ifc) {
+            if (!is_ifc and !block_info.out_of_flow) {
                 if (block_info.grid_area_hash != 0) {
                     if (parent_info.grid_child_count < parent_info.grid_child_area_hashes.len) {
                         parent_info.grid_child_area_hashes[parent_info.grid_child_count] = block_info.grid_area_hash;

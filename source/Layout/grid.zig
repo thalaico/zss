@@ -73,7 +73,6 @@ pub fn layoutGridChildrenInSubtree(
     child_count: u8,
 ) Unit {
     const skips = subtree.items(.skip);
-    const out_of_flow_flags = subtree.items(.out_of_flow);
     const box_offsets = subtree.items(.box_offsets);
     const offsets = subtree.items(.offset);
     const block_types = subtree.items(.type);
@@ -85,11 +84,11 @@ pub fn layoutGridChildrenInSubtree(
 
     // If no explicit template, count children for auto-grid
     if (num_cols == 0) {
-        // Count in-flow children
+        // Count the grid items
         var inflow_count: u32 = 0;
         var child = index + 1;
         while (child < end) {
-            if (!out_of_flow_flags[child]) inflow_count += 1;
+            if (isGridItem(layout.box_tree.ptr, subtree, child)) inflow_count += 1;
             child += skips[child];
         }
         if (inflow_count == 0) return 0;
@@ -134,21 +133,25 @@ pub fn layoutGridChildrenInSubtree(
         // Pre-scan: determine column placement for each grid item
         var pre_idx: u8 = 0;
         var pre_child = index + 1;
-        while (pre_child < end and pre_idx < child_count) {
-            if (out_of_flow_flags[pre_child] or block_types[pre_child] == .ifc_container) {
+        while (pre_child < end) {
+            if (!isGridItem(layout.box_tree.ptr, subtree, pre_child)) {
                 pre_child += skips[pre_child];
                 continue;
             }
             var col: u8 = 0;
-            if (pre_idx < child_count) {
-                const area_hash = child_area_hashes[pre_idx];
-                if (area_hash != 0) {
-                    if (template_areas.findArea(area_hash)) |area| {
-                        col = area.col_start;
+            // An anonymous item (a text run) has no `grid-area`; only
+            // element children consume an area hash.
+            if (block_types[pre_child] != .ifc_container) {
+                if (pre_idx < child_count and pre_idx < child_area_hashes.len) {
+                    const area_hash = child_area_hashes[pre_idx];
+                    if (area_hash != 0) {
+                        if (template_areas.findArea(area_hash)) |area| {
+                            col = area.col_start;
+                        }
                     }
                 }
+                pre_idx +|= 1;
             }
-            pre_idx +|= 1;
 
             // Check if this column needs intrinsic measurement
             if (col < num_cols) {
@@ -199,13 +202,13 @@ pub fn layoutGridChildrenInSubtree(
     var auto_col: u8 = 0;
     var child_index: u8 = 0; // index into child_area_hashes
 
-
     var child = index + 1;
-    while (child < end and child_index < child_count) {
-        // Skip out-of-flow and anonymous inline formatting context boxes.
-        // IFC containers are generated for whitespace text between block children
-        // and must not be treated as grid items.
-        if (out_of_flow_flags[child] or block_types[child] == .ifc_container) {
+    while (child < end) {
+        // Out-of-flow boxes and white-space-only anonymous inline
+        // formatting contexts (inter-element white space) are not grid
+        // items (CSS Grid 1 §6.1); they take no cell and no space.
+        if (!isGridItem(layout.box_tree.ptr, subtree, child)) {
+            offsets[child] = .{ .x = 0, .y = 0 };
             child += skips[child];
             continue;
         }
@@ -215,32 +218,36 @@ pub fn layoutGridChildrenInSubtree(
         var span_rows: u8 = 1;
         var span_cols: u8 = 1;
 
-        // Try named area placement
+        // Try named area placement. An anonymous item (a text run wrapped
+        // in an anonymous block container, §6.1) has no `grid-area` and is
+        // auto-placed; only element children consume an area hash.
         var named_placement = false;
-        if (child_index < child_count) {
-            const area_hash = child_area_hashes[child_index];
-            if (area_hash != 0) {
-                if (template_areas.findArea(area_hash)) |area| {
-                    placed_row = area.row_start;
-                    placed_col = area.col_start;
-                    span_rows = area.row_end - area.row_start;
-                    span_cols = area.col_end - area.col_start;
-                    named_placement = true;
+        if (block_types[child] != .ifc_container) {
+            if (child_index < child_count and child_index < child_area_hashes.len) {
+                const area_hash = child_area_hashes[child_index];
+                if (area_hash != 0) {
+                    if (template_areas.findArea(area_hash)) |area| {
+                        placed_row = area.row_start;
+                        placed_col = area.col_start;
+                        span_rows = area.row_end - area.row_start;
+                        span_cols = area.col_end - area.col_start;
+                        named_placement = true;
 
-                    // Extend grid if named area exceeds explicit dimensions
-                    if (area.row_end > num_rows and area.row_end <= MAX_TRACKS) {
-                        for (num_rows..area.row_end) |r| {
-                            row_sizes[r] = 0;
+                        // Extend grid if named area exceeds explicit dimensions
+                        if (area.row_end > num_rows and area.row_end <= MAX_TRACKS) {
+                            for (num_rows..area.row_end) |r| {
+                                row_sizes[r] = 0;
+                            }
+                            num_rows = area.row_end;
                         }
-                        num_rows = area.row_end;
-                    }
-                    if (area.col_end > num_cols and area.col_end <= MAX_TRACKS) {
-                        num_cols = area.col_end;
+                        if (area.col_end > num_cols and area.col_end <= MAX_TRACKS) {
+                            num_cols = area.col_end;
+                        }
                     }
                 }
             }
+            child_index +|= 1;
         }
-        child_index +|= 1;
 
         if (!named_placement) {
             // Auto-placement: advance to next empty cell
@@ -372,6 +379,20 @@ pub fn layoutGridChildrenInSubtree(
     // DIAGNOSTIC: dump grid container track sizes and item widths.
     // Enable with ZSS_DUMP_GRID=1
     return total_height;
+}
+
+/// Whether in-flow child `child` of a grid container is a grid item (CSS
+/// Grid 1 §6.1): element children are; a contiguous run of child text is
+/// wrapped in an anonymous block container item — the anonymous inline
+/// formatting context generated for it — unless it holds only white
+/// space, in which case it is not rendered (same as a flex container's
+/// anonymous items, Flexbox §4). Out-of-flow children are not items.
+fn isGridItem(box_tree: *BoxTree, subtree: Subtree.View, child: Subtree.Size) bool {
+    if (subtree.items(.out_of_flow)[child]) return false;
+    return switch (subtree.items(.type)[child]) {
+        .ifc_container => |ifc_id| box_tree.getIfc(ifc_id).has_visible_content,
+        else => true,
+    };
 }
 
 /// Resolve track sizes for one dimension (columns or rows).
