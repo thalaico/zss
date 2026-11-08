@@ -1361,6 +1361,16 @@ pub fn visibility(ctx: *Context) ?types.Visibility {
     });
 }
 
+pub fn userSelect(ctx: *Context) ?types.UserSelect {
+    return keyword(ctx, types.UserSelect, &.{
+        .{ "auto", .auto },
+        .{ "text", .text },
+        .{ "none", .none },
+        .{ "all", .all },
+        .{ "contain", .contain },
+    });
+}
+
 /// CSS-UI-3 §8.1 `cursor` keywords. Keyword table built from the enum so the
 /// two cannot drift: `context_menu` <-> `context-menu`.
 pub fn cursor(ctx: *Context) ?types.Cursor {

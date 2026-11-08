@@ -1025,6 +1025,20 @@ pub fn visibility(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.visi
     return .{ .font = .{ .visibility = .{ .declared = value } } };
 }
 
+pub fn @"user-select"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"user-select") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.userSelect(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .user_select = .{ .declared = value } } };
+}
+
+pub fn @"-webkit-user-select"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"-webkit-user-select") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.userSelect(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .user_select = .{ .declared = value } } };
+}
+
 pub fn cursor(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.cursor) {
     ctx.initDecl(declaration_index);
     const value = values.parse.cursor(ctx) orelse return null;

@@ -666,6 +666,11 @@ pub const VerticalAlign = union(enum) {
     percentage: f32,
 };
 
+/// CSS UI 4 §6.2 `user-select`. Treated as inherited (see groups.zig): the used value of `auto`
+/// is taken from the parent, which the consumers resolve by walking to the nearest
+/// ancestor-or-self whose computed value is not `auto`.
+pub const UserSelect = enum { auto, text, none, all, contain };
+
 pub const Visibility = enum {
     visible,
     hidden,

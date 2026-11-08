@@ -270,6 +270,7 @@ pub const Font = struct {
     overflow_wrap: types.OverflowWrap,
     list_style_type: types.ListStyleType,
     cursor: types.Cursor,
+    user_select: types.UserSelect,
     pub const initial_values = Font{
         .font = .default,
         .font_family = .serif, // the UA "standard font" (Chrome: Times New Roman)
@@ -290,6 +291,7 @@ pub const Font = struct {
         .overflow_wrap = .normal,
         .list_style_type = .disc,
         .cursor = .auto,
+        .user_select = .auto,
     };
 };
 
