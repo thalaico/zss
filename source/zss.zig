@@ -3,6 +3,7 @@ pub const debug = @import("debug.zig");
 pub const math = @import("math.zig");
 pub const meta = @import("meta.zig");
 pub const media = @import("media.zig");
+pub const font_face = @import("font_face.zig");
 pub const property = @import("property.zig");
 pub const selectors = @import("selectors.zig");
 pub const syntax = @import("syntax.zig");

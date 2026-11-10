@@ -44,6 +44,67 @@ pub fn deinit(stylesheet: *Stylesheet, allocator: Allocator) void {
     stylesheet.cascade_source.deinit(allocator);
 }
 
+/// One `@font-face` rule (CSS Fonts 4 §4): its descriptors as written.
+pub const FontFaceRule = struct {
+    descriptors: []const Descriptor,
+
+    pub const Descriptor = struct {
+        /// ASCII-lowercased.
+        name: []const u8,
+        /// The value's source text, without surrounding whitespace.
+        value: []const u8,
+    };
+
+    /// The value of the descriptor `name`; a repeated descriptor's last
+    /// declaration wins, as in any declaration block.
+    pub fn get(rule: FontFaceRule, name: []const u8) ?[]const u8 {
+        var i = rule.descriptors.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, rule.descriptors[i].name, name)) return rule.descriptors[i].value;
+        }
+        return null;
+    }
+};
+
+/// The `@font-face` rules of the style sheet in `ast` that apply — those at
+/// the top level and those inside `@media` / `@supports` rules whose
+/// condition holds for `env` — in order. Everything returned is allocated
+/// with `arena`. A host runs this before `create`, because the names of the
+/// families the rules define decide how `font-family` values are parsed
+/// (`Environment.custom_font_names`).
+pub fn collectFontFaceRules(
+    allocator: Allocator,
+    arena: Allocator,
+    ast: Ast,
+    rule_list_index: Ast.Index,
+    source_code: SourceCode,
+    env: *Environment,
+) ![]const FontFaceRule {
+    var stylesheet = Stylesheet{ .namespaces = .{}, .decl_urls = .init(env), .cascade_source = .{} };
+    defer stylesheet.deinit(allocator);
+    var collector: FontFaceCollector = .{ .arena = arena };
+    var ctx = RuleProcessor{
+        .allocator = allocator,
+        .ast = ast,
+        .source_code = source_code,
+        .env = env,
+        .stylesheet = &stylesheet,
+        .selector_parser = selectors.Parser.init(env, allocator, source_code, ast, &stylesheet.namespaces),
+        .unsorted_selectors = .{},
+        .font_faces = &collector,
+    };
+    defer ctx.selector_parser.deinit();
+    defer ctx.unsorted_selectors.deinit(allocator);
+    try ctx.processRuleList(rule_list_index);
+    return collector.rules.items;
+}
+
+const FontFaceCollector = struct {
+    arena: Allocator,
+    rules: std.ArrayListUnmanaged(FontFaceRule) = .empty,
+};
+
 pub fn parseAndCreate(allocator: Allocator, source_code: SourceCode, env: *Environment) !Stylesheet {
     var parser = zss.syntax.Parser.init(source_code, allocator);
     defer parser.deinit();
@@ -135,6 +196,9 @@ const RuleProcessor = struct {
     stylesheet: *Stylesheet,
     selector_parser: selectors.Parser,
     unsorted_selectors: std.MultiArrayList(struct { index: selectors.Data.ListIndex, specificity: Specificity }),
+    /// Set by `collectFontFaceRules`: the pass only gathers `@font-face`
+    /// rules; style rules and `@namespace` are left to `create`.
+    font_faces: ?*FontFaceCollector = null,
 
     /// Process all rules in a rule_list AST node.
     fn processRuleList(ctx: *RuleProcessor, rule_list_index: Ast.Index) anyerror!void {
@@ -160,7 +224,7 @@ const RuleProcessor = struct {
                     };
                 },
                 .qualified_rule => {
-                    try ctx.processQualifiedRule(index);
+                    if (ctx.font_faces == null) try ctx.processQualifiedRule(index);
                 },
                 else => unreachable,
             }
@@ -225,6 +289,7 @@ const RuleProcessor = struct {
         switch (at_rule) {
             .import => return error.UnrecognizedAtRule,
             .namespace => {
+                if (ctx.font_faces != null) return;
                 try handleNamespace(ctx.stylesheet, ctx.allocator, ctx.ast, ctx.source_code, ctx.env, at_rule_index);
             },
             .media => {
@@ -233,8 +298,75 @@ const RuleProcessor = struct {
             .supports => {
                 try ctx.handleSupportsRule(at_rule_index);
             },
-            .@"font-face" => {},
+            .@"font-face" => {
+                if (ctx.font_faces) |collector| try ctx.collectFontFace(collector, at_rule_index);
+            },
         }
+    }
+
+    /// `@font-face { <declaration-list> }`: record each `name: value`
+    /// declaration of the block. The block is a list of component values;
+    /// declarations end at top-level semicolons (CSS Syntax 3 §5.4.5).
+    fn collectFontFace(ctx: *RuleProcessor, collector: *FontFaceCollector, at_rule_index: Ast.Index) !void {
+        var children = at_rule_index.children(ctx.ast);
+        const block = while (children.nextSkipSpaces(ctx.ast)) |child| {
+            if (child.tag(ctx.ast) == .simple_block_curly) break child;
+        } else return;
+        const text = ctx.source_code.text;
+        // The end of the block: its closing brace, or the end of the text.
+        const block_end: usize = blk: {
+            var tokenizer = zss.syntax.Tokenizer.init(ctx.source_code);
+            tokenizer.setLocation(block.location(ctx.ast));
+            var depth: usize = 0;
+            while (true) {
+                const token, const location = (tokenizer.next() catch break :blk text.len) orelse break :blk text.len;
+                switch (token) {
+                    .token_left_curly, .token_left_paren, .token_left_square, .token_function => depth += 1,
+                    .token_right_curly, .token_right_paren, .token_right_square => {
+                        depth -|= 1;
+                        if (depth == 0) break :blk @intFromEnum(location);
+                    },
+                    else => {},
+                }
+            }
+        };
+
+        var descriptors: std.ArrayListUnmanaged(FontFaceRule.Descriptor) = .empty;
+        var contents = block.children(ctx.ast);
+        while (true) {
+            // One declaration: <ident> : <value> up to the next top-level `;`.
+            const name_index = contents.nextSkipSpaces(ctx.ast) orelse break;
+            var colon: ?Ast.Index = null;
+            var end: usize = block_end;
+            if (name_index.tag(ctx.ast) == .token_semicolon) continue;
+            var first = true;
+            var more = false;
+            while (contents.nextKeepSpaces(ctx.ast)) |component| {
+                switch (component.tag(ctx.ast)) {
+                    .token_semicolon => {
+                        end = @intFromEnum(component.location(ctx.ast));
+                        more = true;
+                        break;
+                    },
+                    .token_whitespace, .token_comments => {},
+                    else => |tag| {
+                        if (first and tag == .token_colon) colon = component;
+                        first = false;
+                    },
+                }
+            }
+            if (name_index.tag(ctx.ast) == .token_ident) {
+                if (colon) |colon_index| {
+                    const name = try ctx.source_code.copyIdentifier(name_index.location(ctx.ast), .{ .allocator = collector.arena });
+                    for (name) |*ch| ch.* = std.ascii.toLower(ch.*);
+                    const value_start = @intFromEnum(colon_index.location(ctx.ast)) + 1;
+                    const value = std.mem.trim(u8, text[@min(value_start, end)..end], " \t\r\n\x0c");
+                    try descriptors.append(collector.arena, .{ .name = name, .value = try collector.arena.dupe(u8, value) });
+                }
+            }
+            if (!more) break;
+        }
+        try collector.rules.append(collector.arena, .{ .descriptors = descriptors.items });
     }
 
     /// @media (CSS Conditional 3 §5): process the contained rules if the media

@@ -76,6 +76,10 @@ media_settings: MediaSettings = .{},
 /// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
 /// Used by the CSS font-family parser to recognize custom font names.
 custom_font_names: []const []const u8 = &.{},
+/// Bit i: some parsed `font-family` value resolved to `custom_font_names[i]`
+/// (its first available family) — the custom fonts style rules refer to
+/// (CSS Fonts 4 §4.9: only those may be downloaded).
+custom_fonts_referenced: u32 = 0,
 /// The distinct specified font-family lists, serialized (CSSOM), indexed by
 /// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
 font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,

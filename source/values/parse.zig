@@ -1193,6 +1193,10 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
         if (separator.tag != .token_comma) return null;
     }
 
+    if (resolved) |family| switch (family) {
+        .custom => |idx| env.custom_fonts_referenced |= @as(u32, 1) << @intCast(idx),
+        else => {},
+    };
     return .{
         .family = resolved orelse .serif,
         .list = try env.internFontFamilyList(serialized.items),
