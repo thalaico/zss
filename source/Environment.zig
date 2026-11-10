@@ -70,6 +70,9 @@ viewport_height_px: u32 = 0,
 /// an iframe sized to nothing — not "unknown"). While false, every @media
 /// block is included.
 viewport_configured: bool = false,
+/// The media type and user preferences media queries are evaluated for, next
+/// to the viewport (`mediaDevice`).
+media_settings: MediaSettings = .{},
 /// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
 /// Used by the CSS font-family parser to recognize custom font names.
 custom_font_names: []const []const u8 = &.{},
@@ -1196,3 +1199,25 @@ pub const Testing = struct {
         try std.testing.expect(iterator.eql(expected));
     }
 };
+
+pub const MediaSettings = struct {
+    media_type: zss.media.Device.MediaType = .screen,
+    color_scheme: zss.media.Device.ColorScheme = .light,
+    reduced_motion: zss.media.Device.Reduce = .@"no-preference",
+    contrast: zss.media.Device.Contrast = .@"no-preference",
+    forced_colors: zss.media.Device.ForcedColors = .none,
+};
+
+/// The device `@media` rules of this environment are evaluated for.
+pub fn mediaDevice(env: *const Environment) zss.media.Device {
+    return .{
+        .width_px = @floatFromInt(env.viewport_width_px),
+        .height_px = @floatFromInt(env.viewport_height_px),
+        .configured = env.viewport_configured,
+        .media_type = env.media_settings.media_type,
+        .color_scheme = env.media_settings.color_scheme,
+        .reduced_motion = env.media_settings.reduced_motion,
+        .contrast = env.media_settings.contrast,
+        .forced_colors = env.media_settings.forced_colors,
+    };
+}

@@ -91,7 +91,7 @@ pub const Linear = struct {
         };
     }
 
-    fn eval(a: Linear, font_size: f32, base: ?f32) ?f32 {
+    pub fn eval(a: Linear, font_size: f32, base: ?f32) ?f32 {
         if (a.percentage != 0 and base == null) return null;
         return a.px + a.em * font_size + a.percentage * (base orelse 0);
     }

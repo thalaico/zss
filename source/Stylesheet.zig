@@ -237,56 +237,27 @@ const RuleProcessor = struct {
         }
     }
 
-    /// Handle @media: evaluate the condition, and if it matches, process the
-    /// contained rule list recursively.
+    /// @media (CSS Conditional 3 §5): process the contained rules if the media
+    /// query list in the prelude matches the environment's device.
     fn handleMediaRule(ctx: *RuleProcessor, at_rule_index: Ast.Index) !void {
-        const media = zss.media;
-
-        // Extract the media condition text from the source code.
-        // The at-rule's children are: prelude tokens + rule_list node.
-        // We find the rule_list child and extract the prelude text between
-        // the @media keyword location and the rule_list's location.
-        var children = at_rule_index.children(ctx.ast);
-        var rule_list_child: ?Ast.Index = null;
-
-        while (children.nextKeepSpaces(ctx.ast)) |child| {
+        var prelude = at_rule_index.children(ctx.ast);
+        var rule_list: ?Ast.Index = null;
+        var probe = prelude;
+        while (probe.nextKeepSpaces(ctx.ast)) |child| {
             if (child.tag(ctx.ast) == .rule_list) {
-                rule_list_child = child;
+                rule_list = child;
+                prelude.end = child;
                 break;
             }
         }
-
-        const nested_rule_list = rule_list_child orelse {
-            // @media without a block — skip silently.
-            return;
-        };
-
-        // Extract prelude text from source. The at-rule location is at '@',
-        // so skip past "@media" (6 bytes) to get the condition text.
-        // The rule_list location is at '{', so the condition is between them.
-        const at_loc = @intFromEnum(at_rule_index.location(ctx.ast));
-        const block_loc = @intFromEnum(nested_rule_list.location(ctx.ast));
-
-        // Skip "@media" prefix (6 chars). Guard against malformed input.
-        const prelude_start = @min(at_loc + 6, @as(u32, @intCast(ctx.source_code.text.len)));
-        const prelude_end = @min(block_loc, @as(u32, @intCast(ctx.source_code.text.len)));
-
-        const condition = if (prelude_start < prelude_end)
-            std.mem.trim(u8, ctx.source_code.text[prelude_start..prelude_end], " \t\n\r")
-        else
-            "";
-
-        const viewport: media.Viewport = .{
-            .width_px = ctx.env.viewport_width_px,
-            .height_px = ctx.env.viewport_height_px,
-            .configured = ctx.env.viewport_configured,
-        };
-
-        if (!media.evaluate(condition, viewport)) {
-            return; // Media condition doesn't match -- skip this block.
+        // @media without a block.
+        const nested_rule_list = rule_list orelse return;
+        const device = ctx.env.mediaDevice();
+        if (device.configured) {
+            var queries = try zss.media.QueryList.parseSequence(ctx.allocator, ctx.ast, ctx.source_code, prelude);
+            defer queries.deinit();
+            if (!queries.matches(ctx.allocator, device)) return;
         }
-
-        // Condition matches — process the contained rules.
         try ctx.processRuleList(nested_rule_list);
     }
 
