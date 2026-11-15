@@ -903,18 +903,21 @@ pub const EnvTree = struct {
     pub fn hasClass(t: EnvTree, n: NodeId, class_name: ClassName) bool {
         return t.env.nodeHasClass(n, class_name);
     }
-    pub fn hasAttribute(t: EnvTree, n: NodeId, name: AttributeName) bool {
-        return t.env.nodeHasAttribute(n, name);
+    pub fn hasAttribute(t: EnvTree, n: NodeId, sel: Environment.ElementAttribute) bool {
+        return t.env.nodeAttributeMatching(n, sel, 0) != null;
     }
     pub fn hasAttributeByName(t: EnvTree, n: NodeId, name: []const u8) bool {
         return t.env.nodeHasAttributeByName(n, name);
     }
-    pub fn attributeEquals(t: EnvTree, n: NodeId, name: AttributeName, value: AttributeValue, case: Utf8StringInterner.Case) bool {
-        const node_value = t.env.nodeGetAttributeValue(n, name) orelse return false;
-        return t.env.eqlAttributeValues(case, node_value, value);
+    pub fn attributeEquals(t: EnvTree, n: NodeId, sel: Environment.ElementAttribute, value: AttributeValue, case: Utf8StringInterner.Case) bool {
+        var nth: usize = 0;
+        while (t.env.nodeAttributeMatching(n, sel, nth)) |node_value| : (nth += 1) {
+            if (t.env.eqlAttributeValues(case, node_value, value)) return true;
+        }
+        return false;
     }
-    pub fn attributeString(t: EnvTree, allocator: Allocator, n: NodeId, name: AttributeName, case: Utf8StringInterner.Case) Allocator.Error!?[]u8 {
-        const node_value = t.env.nodeGetAttributeValue(n, name) orelse return null;
+    pub fn attributeString(t: EnvTree, allocator: Allocator, n: NodeId, sel: Environment.ElementAttribute, nth: usize, case: Utf8StringInterner.Case) Allocator.Error!?[]u8 {
+        const node_value = t.env.nodeAttributeMatching(n, sel, nth) orelse return null;
         return try t.env.getAttributeValueString(allocator, node_value, case);
     }
     pub fn attributeStringByName(t: EnvTree, allocator: Allocator, n: NodeId, name: []const u8, case: Utf8StringInterner.Case) Allocator.Error!?[]u8 {
@@ -951,7 +954,12 @@ pub const EnvTree = struct {
 /// `hasAttribute`, `hasAttributeByName`, `attributeEquals`,
 /// `attributeString`, `attributeStringByName`, `tagEql`, `localNameHasDash`,
 /// `hasText`, `state`. Selector names come from `env`'s interners, so a host
-/// tree compares its own strings against them.
+/// tree compares its own strings against them. An attribute selector names
+/// its attribute by namespace and local name (`Environment.ElementAttribute`;
+/// Selectors 4 §6.4): `*|attr` can name several attributes of one element,
+/// so `attributeEquals` is "any of them equals" and `attributeString` takes
+/// which (`nth`, null past the last). The `ByName` forms read an attribute
+/// in no namespace.
 pub fn Matcher(comptime Tree: type) type {
     return struct {
         const Node = Tree.Node;
@@ -1102,18 +1110,26 @@ pub fn Matcher(comptime Tree: type) type {
             env: *const Environment,
             tree: Tree,
             element: Node,
-            name: AttributeName,
+            sel: Environment.ElementAttribute,
             oc: Data.AttributeOperatorCase,
             selector_value: AttributeValue,
             allocator: Allocator,
         ) bool {
+            const name = sel.name;
             const case = attributeCase(env, name, oc);
-            if (oc.operator == .equals) return tree.attributeEquals(element, name, selector_value, case);
-            const node_str = (tree.attributeString(allocator, element, name, case) catch return false) orelse return false;
-            defer allocator.free(node_str);
+            if (oc.operator == .equals) return tree.attributeEquals(element, sel, selector_value, case);
             const selector_str = env.getAttributeValueString(allocator, selector_value, case) catch return false;
             defer allocator.free(selector_str);
-            switch (oc.operator) {
+            var nth: usize = 0;
+            while (true) : (nth += 1) {
+                const node_str = (tree.attributeString(allocator, element, sel, nth, case) catch return false) orelse return false;
+                defer allocator.free(node_str);
+                if (operatorMatches(oc.operator, node_str, selector_str)) return true;
+            }
+        }
+
+        fn operatorMatches(operator: AttributeOperator, node_str: []const u8, selector_str: []const u8) bool {
+            switch (operator) {
                 .equals => unreachable,
                 // [attr~=val]: val is one of the whitespace-separated words
                 .list_contains => {
@@ -1168,10 +1184,10 @@ pub fn Matcher(comptime Tree: type) type {
                         if (op_case) |oc| {
                             index += 1;
                             const selector_value = data[index].attribute_selector_value;
-                            if (!matchAttributeOperator(env, tree, element, attr_selector.name, oc, selector_value, allocator)) return false;
+                            if (!matchAttributeOperator(env, tree, element, attr_selector, oc, selector_value, allocator)) return false;
                         } else {
                             // [attr] — attribute just needs to exist
-                            if (!tree.hasAttribute(element, attr_selector.name)) return false;
+                            if (!tree.hasAttribute(element, attr_selector)) return false;
                         }
                     },
                     .pseudo_class => {

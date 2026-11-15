@@ -917,9 +917,45 @@ pub const ElementAttribute = packed struct {
 /// A DOM node's attribute: interned name paired with interned value.
 /// Used for CSS attribute selector matching ([attr], [attr=val], etc.).
 pub const NodeAttribute = struct {
+    /// The attribute's local name.
     name: AttributeName,
     value: AttributeValue,
+    /// The attribute's namespace; `.none` for an attribute in no namespace
+    /// (every attribute HTML itself reads, and the only ones a selector
+    /// without a namespace prefix matches — Selectors 4 §6.4).
+    namespace: Namespaces.Id = .none,
 };
+
+/// Whether an attribute in `actual` is named by a selector's attribute
+/// namespace `wanted` (`.any` is `*|attr`, `.none` is `attr` and `|attr`).
+pub fn attributeNamespaceMatches(actual: Namespaces.Id, wanted: Namespaces.Id) bool {
+    return wanted == .any or actual == wanted;
+}
+
+/// The id of a namespace given as a string (a host tree's attribute
+/// namespace), interned with the style sheets' `@namespace` URLs.
+pub fn addNamespaceFromString(env: *Environment, namespace: []const u8) !Namespaces.Id {
+    if (namespace.len == 0) return .none;
+    if (env.namespaces.map.getIndex(namespace)) |index| return @enumFromInt(index);
+    if (env.namespaces.map.count() >= @intFromEnum(Namespaces.Id.none)) return error.MaxNamespaceLimitReached;
+    const owned = try env.allocator.dupe(u8, namespace);
+    errdefer env.allocator.free(owned);
+    try env.namespaces.map.put(env.allocator, owned, {});
+    return @enumFromInt(env.namespaces.map.count() - 1);
+}
+
+/// The `nth` (from 0) of the node's attributes that the selector attribute
+/// `sel` names, or null: more than one can match `*|attr`.
+pub fn nodeAttributeMatching(env: *const Environment, node: NodeId, sel: ElementAttribute, nth: usize) ?AttributeValue {
+    const attrs = env.nodes_to_attributes.get(node) orelse return null;
+    var seen: usize = 0;
+    for (attrs) |attr| {
+        if (attr.name != sel.name or !attributeNamespaceMatches(attr.namespace, sel.namespace)) continue;
+        if (seen == nth) return attr.value;
+        seen += 1;
+    }
+    return null;
+}
 
 pub const NodeProperty = struct {
     category: NodeCategory = .text,
@@ -1145,18 +1181,17 @@ pub fn registerAttributes(env: *Environment, node: NodeId, attrs: []const NodeAt
     try env.nodes_to_attributes.put(env.allocator, node, attrs);
 }
 
-/// Return the value of a named attribute on a node, or null if the attribute is absent.
+/// Return the value of the node's attribute `name` in no namespace, or
+/// null if it is absent.
 pub fn nodeGetAttributeValue(env: *const Environment, node: NodeId, name: AttributeName) ?AttributeValue {
-    const attrs = env.nodes_to_attributes.get(node) orelse return null;
-    for (attrs) |attr| {
-        if (attr.name == name) return attr.value;
-    }
-    return null;
+    return env.nodeAttributeMatching(node, .{ .namespace = .none, .name = name }, 0);
 }
 
-/// Return true if the node has an attribute with the given name (any value).
+/// Return true if the node has an attribute with the given local name in
+/// any namespace — a necessary condition for every attribute selector
+/// naming it (the invalidation prefilters ask this).
 pub fn nodeHasAttribute(env: *const Environment, node: NodeId, name: AttributeName) bool {
-    return env.nodeGetAttributeValue(node, name) != null;
+    return env.nodeAttributeMatching(node, .{ .namespace = .any, .name = name }, 0) != null;
 }
 
 /// The value of the node's attribute whose interned name matches the given
@@ -1165,6 +1200,7 @@ pub fn nodeHasAttribute(env: *const Environment, node: NodeId, name: AttributeNa
 pub fn nodeAttributeValueByName(env: *const Environment, node: NodeId, name_str: []const u8) ?AttributeValue {
     const attrs = env.nodes_to_attributes.get(node) orelse return null;
     for (attrs) |attr| {
+        if (attr.namespace != .none) continue;
         var it = env.attribute_names.iterator(@intFromEnum(attr.name));
         if (it.eql(name_str)) return attr.value;
     }
@@ -1178,6 +1214,7 @@ pub fn nodeAttributeValueByName(env: *const Environment, node: NodeId, name_str:
 pub fn nodeHasAttributeByName(env: *const Environment, node: NodeId, name_str: []const u8) bool {
     const attrs = env.nodes_to_attributes.get(node) orelse return false;
     for (attrs) |attr| {
+        if (attr.namespace != .none) continue;
         var it = env.attribute_names.iterator(@intFromEnum(attr.name));
         if (it.eql(name_str)) return true;
     }

@@ -2223,6 +2223,7 @@ fn applySourceImpl(ctx: *RunContext, source: *const Source, env: *const Environm
             for (attrs) |attr| {
                 if (!rule_index.tested_attributes.contains(attr.name) and !ctx.readByPseudoClasses(attr.name)) continue;
                 full_key = full_key *% 0x100000001b3 +% (@as(u64, @intFromEnum(attr.name)) << 32) +% @intFromEnum(attr.value);
+                if (attr.namespace != .none) full_key = full_key *% 0x100000001b3 +% @intFromEnum(attr.namespace);
             }
         }
         if (positional_selectors) full_key ^= positionalSignature(env, node);
