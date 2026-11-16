@@ -31,19 +31,21 @@ pub fn newSubtree(box_tree: BoxTreeManaged) !*Subtree {
 pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size {
     const new_len = std.math.add(Subtree.Size, @intCast(subtree.blocks.len), 1) catch return error.SizeLimitExceeded;
     try subtree.blocks.resize(box_tree.ptr.allocator, new_len);
-    subtree.blocks.items(.intrinsic)[new_len - 1] = .{};
-    subtree.blocks.items(.percent_width)[new_len - 1] = .{ .percentage = 0 };
-    subtree.blocks.items(.specified_margins)[new_len - 1] = .{ 0, 0 };
-    subtree.blocks.items(.block_margins)[new_len - 1] = .{ 0, 0 };
-    subtree.blocks.items(.min_block_size)[new_len - 1] = 0;
-    subtree.blocks.items(.max_block_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
-    subtree.blocks.items(.min_inline_size)[new_len - 1] = 0;
-    subtree.blocks.items(.max_inline_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
-    subtree.blocks.items(.bfc_floats)[new_len - 1] = false;
-    subtree.blocks.items(.containing_block)[new_len - 1] = .{ -1, -1 };
-    subtree.blocks.items(.creates_absolute_cb)[new_len - 1] = false;
-    subtree.blocks.items(.fixed_position)[new_len - 1] = false;
-    subtree.blocks.items(.collapsed_borders)[new_len - 1] = false;
+    // One slice for every column: `items` computes all of them on each call.
+    const blocks = subtree.blocks.slice();
+    blocks.items(.intrinsic)[new_len - 1] = .{};
+    blocks.items(.percent_width)[new_len - 1] = .{ .percentage = 0 };
+    blocks.items(.specified_margins)[new_len - 1] = .{ 0, 0 };
+    blocks.items(.block_margins)[new_len - 1] = .{ 0, 0 };
+    blocks.items(.min_block_size)[new_len - 1] = 0;
+    blocks.items(.max_block_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
+    blocks.items(.min_inline_size)[new_len - 1] = 0;
+    blocks.items(.max_inline_size)[new_len - 1] = std.math.maxInt(zss.math.Unit);
+    blocks.items(.bfc_floats)[new_len - 1] = false;
+    blocks.items(.containing_block)[new_len - 1] = .{ -1, -1 };
+    blocks.items(.creates_absolute_cb)[new_len - 1] = false;
+    blocks.items(.fixed_position)[new_len - 1] = false;
+    blocks.items(.collapsed_borders)[new_len - 1] = false;
     return new_len - 1;
 }
 
