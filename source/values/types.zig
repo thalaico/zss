@@ -671,6 +671,11 @@ pub const VerticalAlign = union(enum) {
 /// ancestor-or-self whose computed value is not `auto`.
 pub const UserSelect = enum { auto, text, none, all, contain };
 
+/// CSS UI 4 §7.2 / SVG 2 `pointer-events` (inherited). `none`: the element is never the
+/// target of pointer events — hit testing passes through it. The SVG-only keywords
+/// (`visiblePainted`, `all`, ...) behave as `auto` on a CSS box.
+pub const PointerEvents = enum { auto, none, visible_painted, visible_fill, visible_stroke, visible, painted, fill, stroke, bounding_box, all };
+
 pub const Visibility = enum {
     visible,
     hidden,

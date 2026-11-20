@@ -636,6 +636,25 @@ pub fn top(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.top) {
     return .{ .insets = .{ .top = .{ .declared = value } } };
 }
 
+/// CSS Logical 1 §4.3 `inset`: one to four values — top, right, bottom, left, the
+/// missing ones taken as for `margin`.
+pub fn inset(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.inset) {
+    ctx.initDecl(declaration_index);
+    var sizes: [4]values.groups.SingleValue(types.LengthPercentageAuto) = undefined;
+    var num: u3 = 0;
+    for (0..4) |i| {
+        const size = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse break;
+        sizes[i] = .{ .declared = size };
+        num += 1;
+    }
+    if (!ctx.empty()) return null;
+    const top_value = if (num >= 1) sizes[0] else return null;
+    const right_value = if (num >= 2) sizes[1] else top_value;
+    const bottom_value = if (num >= 3) sizes[2] else top_value;
+    const left_value = if (num >= 4) sizes[3] else right_value;
+    return .{ .insets = .{ .top = top_value, .right = right_value, .bottom = bottom_value, .left = left_value } };
+}
+
 pub fn bottom(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.bottom) {
     ctx.initDecl(declaration_index);
     const value = values.parse.lengthPercentageAuto(ctx, types.LengthPercentageAuto) orelse return null;
@@ -1030,6 +1049,13 @@ pub fn @"user-select"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.
     const value = values.parse.userSelect(ctx) orelse return null;
     if (!ctx.empty()) return null;
     return .{ .font = .{ .user_select = .{ .declared = value } } };
+}
+
+pub fn @"pointer-events"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"pointer-events") {
+    ctx.initDecl(declaration_index);
+    const value = values.parse.pointerEvents(ctx) orelse return null;
+    if (!ctx.empty()) return null;
+    return .{ .font = .{ .pointer_events = .{ .declared = value } } };
 }
 
 pub fn @"-webkit-user-select"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"-webkit-user-select") {

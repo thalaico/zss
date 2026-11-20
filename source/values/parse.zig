@@ -1365,6 +1365,22 @@ pub fn visibility(ctx: *Context) ?types.Visibility {
     });
 }
 
+pub fn pointerEvents(ctx: *Context) ?types.PointerEvents {
+    return keyword(ctx, types.PointerEvents, &.{
+        .{ "auto", .auto },
+        .{ "none", .none },
+        .{ "visiblepainted", .visible_painted },
+        .{ "visiblefill", .visible_fill },
+        .{ "visiblestroke", .visible_stroke },
+        .{ "visible", .visible },
+        .{ "painted", .painted },
+        .{ "fill", .fill },
+        .{ "stroke", .stroke },
+        .{ "bounding-box", .bounding_box },
+        .{ "all", .all },
+    });
+}
+
 pub fn userSelect(ctx: *Context) ?types.UserSelect {
     return keyword(ctx, types.UserSelect, &.{
         .{ "auto", .auto },
