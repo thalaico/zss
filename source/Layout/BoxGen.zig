@@ -1406,6 +1406,8 @@ fn writeBlockCosmetic(
             box_offsets_ptr,
             borders_ptr,
             used_color,
+            font_size_px,
+            layout.computer.resolvedRootFontSizePx(.box_gen),
             bg_color,
             bg_clip,
             bg,
@@ -1494,19 +1496,14 @@ pub fn resolveBlockBackgrounds(
     box_offsets: *const BoxTree.BoxOffsets,
     borders: *const BoxTree.Borders,
     current_color: math.Color,
+    font_size_px: f32,
+    root_font_size_px: f32,
     bg_color_spec: zss.values.groups.Tag.SpecifiedValues(.background_color),
     bg_clip_spec: zss.values.groups.Tag.SpecifiedValues(.background_clip),
     bg_spec: zss.values.groups.Tag.SpecifiedValues(.background),
     background_ptr: *BoxTree.BlockBoxBackground,
 ) !void {
     background_ptr.color = solve.color(bg_color_spec.color, current_color);
-    background_ptr.gradient = switch (bg_color_spec.gradient) {
-        .gradient => |g| BoxTree.LinearGradient{
-            .from = math.Color.fromRgbaInt(g.from_rgba),
-            .to = math.Color.fromRgbaInt(g.to_rgba),
-        },
-        else => null,
-    };
 
     const images = bg_spec.image;
     const clips = bg_clip_spec.clip;
@@ -1515,7 +1512,7 @@ pub fn resolveBlockBackgrounds(
     var num_images: usize = 0;
     for (images) |image| switch (image) {
         .none => {},
-        .image, .url => num_images += 1,
+        .image, .url, .gradient => num_images += 1,
     };
     if (num_images == 0) {
         background_ptr.images = .invalid;
@@ -1528,16 +1525,26 @@ pub fn resolveBlockBackgrounds(
         if (image == .none) continue;
         defer buffer_index += 1;
 
-        const image_handle = switch (image) {
+        const image_handle: ?zss.Images.Handle = switch (image) {
             .image => |ih| ih,
-            .url => |url| layout.inputs.env.urls_to_images.get(url) orelse {
+            .url => |url| layout.inputs.env.imageForUrl(url) orelse {
                 buffer[buffer_index] = .{};
                 continue;
             },
+            .gradient => null,
             .none => unreachable,
         };
 
-        const dimensions = layout.inputs.images.dimensions(image_handle);
+        // A gradient has no natural dimensions (CSS Images 3 §3).
+        const dimensions: ?zss.Images.Dimensions = if (image_handle) |ih| layout.inputs.images.dimensions(ih) else null;
+        defer if (image == .gradient) {
+            buffer[buffer_index].gradient = .{
+                .def = image.gradient,
+                .current_color = current_color,
+                .font_size_px = font_size_px,
+                .root_font_size_px = root_font_size_px,
+            };
+        };
         buffer[buffer_index] = solve.backgroundImage(
             image_handle,
             dimensions,

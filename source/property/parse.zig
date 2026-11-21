@@ -805,11 +805,6 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
 ///   <final-bg-layer> = <'background-color'> || <bg-layer>
 /// Every sub-property a layer leaves out takes its initial value. One <box> sets
 /// background-origin and background-clip, two set origin then clip.
-///
-/// A gradient is not an entry of the image list yet: the painter reads one from
-/// `BackgroundColor.gradient`. So a `linear-gradient()` is accepted as the image of a
-/// declaration with a single layer, and a gradient among several layers (or any other
-/// <gradient>) makes the declaration invalid rather than being drawn as something else.
 pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.background) {
     ctx.initDeclList(declaration_index) orelse return null;
     const url_save_point = urls.save();
@@ -826,12 +821,11 @@ pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: 
     const clips = try a.alloc(types.BackgroundClip, max_list_len);
     var n: usize = 0;
     var color_value: ?types.Color = null;
-    var gradient: ?types.LinearGradient = null;
 
     const valid = layers: {
         while (ctx.nextListItem()) |_| {
-            // A color belongs to the final layer only; a gradient to the only one.
-            if (n == max_list_len or color_value != null or gradient != null) break :layers false;
+            // A color belongs to the final layer only.
+            if (n == max_list_len or color_value != null) break :layers false;
             var layer_image: ?types.BackgroundImage = null;
             var layer_position: ?types.BackgroundPosition = null;
             var layer_size: ?types.BackgroundSize = null;
@@ -842,16 +836,10 @@ pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: 
             var boxes: u2 = 0;
             var components: usize = 0;
             while (true) : (components += 1) {
-                if (layer_image == null and gradient == null) {
-                    if (try values.parse.background.image(ctx, urls)) |v| {
-                        layer_image = v;
-                        continue;
-                    }
-                    if (values.parse.linearGradient(ctx)) |g| {
-                        gradient = g;
-                        continue;
-                    }
-                }
+                if (layer_image == null) if (try values.parse.background.image(ctx, urls)) |v| {
+                    layer_image = v;
+                    continue;
+                };
                 if (layer_position == null) if (values.parse.background.position(ctx)) |v| {
                     layer_position = v;
                     if (ctx.next()) |item| {
@@ -898,7 +886,7 @@ pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: 
             clips[n] = layer_clip orelse groups.BackgroundClip.initial_values.clip;
             n += 1;
         }
-        break :layers n > 0 and (gradient == null or n == 1);
+        break :layers n > 0;
     };
     if (!valid) {
         urls.reset(url_save_point);
@@ -908,7 +896,6 @@ pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: 
     return .{
         .background_color = .{
             .color = if (color_value) |c| .{ .declared = c } else .initial,
-            .gradient = if (gradient) |g| .{ .declared = g } else .initial,
         },
         .background = .{
             .image = .{ .declared = images[0..n] },
@@ -922,16 +909,8 @@ pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: 
     };
 }
 
-/// `background-image: <bg-image>#`. A single `linear-gradient()` is kept in
-/// `BackgroundColor.gradient` (see `background`); a list of images clears it.
+/// `background-image: <bg-image>#`.
 pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.@"background-image") {
-    ctx.initDecl(declaration_index);
-    if (values.parse.linearGradient(ctx)) |g| {
-        if (!ctx.empty()) return null;
-        const none = try fba.allocator().create([1]types.BackgroundImage);
-        none[0] = .none;
-        return .{ .background = .{ .image = .{ .declared = none[0..1] } }, .background_color = .{ .gradient = .{ .declared = g } } };
-    }
     ctx.initDeclList(declaration_index) orelse return null;
     const url_save_point = urls.save();
 
@@ -945,7 +924,7 @@ pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fb
         list[list_len] = value;
         list_len += 1;
     } else {
-        return .{ .background = .{ .image = .{ .declared = list[0..list_len] } }, .background_color = .{ .gradient = .initial } };
+        return .{ .background = .{ .image = .{ .declared = list[0..list_len] } } };
     }
 
     urls.reset(url_save_point);

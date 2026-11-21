@@ -306,7 +306,7 @@ const RuleProcessor = struct {
         // Parse the style block
         const last_declaration = selector_sequence.end.extra(ctx.ast).index;
         var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
-        const decl_block = try zss.property.parseDeclarationsFromAst(ctx.env, ctx.ast, ctx.source_code, &buffer, last_declaration, ctx.stylesheet.decl_urls.toManaged(ctx.allocator));
+        const decl_block = try zss.property.parseDeclarationsFromAst(ctx.env, ctx.ast, ctx.source_code, &buffer, last_declaration, ctx.stylesheet.decl_urls.toManaged(ctx.allocator, ctx.env));
 
         var index_of_complex_selector = first_complex_selector;
         const selector_data_len = ctx.stylesheet.cascade_source.selector_data.items.len;
@@ -743,7 +743,7 @@ fn declarationParses(allocator: Allocator, env: *Environment, declaration: []con
     var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
     var urls = Urls.init(env);
     defer urls.deinit(env.allocator);
-    const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator));
+    const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator, env));
     return switch (importance) {
         .any => env.decls.hasValues(block, .normal) or env.decls.hasValues(block, .important),
         .normal => env.decls.hasValues(block, .normal),

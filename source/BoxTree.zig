@@ -155,17 +155,10 @@ pub const InlineBoxBackground = struct {
     clip: BackgroundClip = .border,
 };
 
-pub const LinearGradient = struct {
-    from: math.Color = .transparent,
-    to: math.Color = .transparent,
-    angle_deg: f32 = 180.0, // default: top-to-bottom
-};
-
 pub const BlockBoxBackground = struct {
     color: math.Color = .transparent,
     color_clip: BackgroundClip = .border,
     images: BackgroundImages.Handle = .invalid,
-    gradient: ?LinearGradient = null,
 };
 
 pub const BackgroundImage = struct {
@@ -178,7 +171,20 @@ pub const BackgroundImage = struct {
         y: Style = .none,
     };
 
+    /// A gradient as the layer's image, with what its used value depends on: the
+    /// element's `color` (a `currentcolor` stop) and font sizes (`em` / `rem` positions).
+    /// The definition belongs to the environment.
+    pub const Gradient = struct {
+        def: *const zss.values.types.Gradient,
+        current_color: math.Color,
+        font_size_px: f32,
+        root_font_size_px: f32,
+    };
+
+    /// The layer's image: a decoded image (`handle`) or a gradient; neither when the
+    /// image is not available (nothing is painted for the layer).
     handle: ?zss.Images.Handle = null,
+    gradient: ?Gradient = null,
     position: Position = .{ .x = 0, .y = 0 },
     size: Size = .{ .w = 0, .h = 0 },
     repeat: Repeat = .{},

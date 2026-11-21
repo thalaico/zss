@@ -336,8 +336,9 @@ pub fn inlineBoxBackground(col: types.Color, clip: types.BackgroundClip, current
 }
 
 pub fn backgroundImage(
-    handle: zss.Images.Handle,
-    dimensions: zss.Images.Dimensions,
+    handle: ?zss.Images.Handle,
+    /// The image's natural dimensions; null for an image without any (a gradient).
+    dimensions: ?zss.Images.Dimensions,
     specified: struct {
         origin: types.BackgroundOrigin,
         position: types.BackgroundPosition,
@@ -358,8 +359,9 @@ pub fn backgroundImage(
     };
 
     const natural_size: NaturalSize = blk: {
-        const width = positiveLength(.px, @floatFromInt(dimensions.width_px));
-        const height = positiveLength(.px, @floatFromInt(dimensions.height_px));
+        const dims = dimensions orelse break :blk .{ .width = 0, .height = 0, .has_aspect_ratio = false };
+        const width = positiveLength(.px, @floatFromInt(dims.width_px));
+        const height = positiveLength(.px, @floatFromInt(dims.height_px));
         break :blk .{
             .width = width,
             .height = height,
@@ -401,7 +403,9 @@ pub fn backgroundImage(
             },
         },
         .contain, .cover => blk: {
-            if (!natural_size.has_aspect_ratio) break :blk BoxTree.BackgroundImage.Size{ .w = natural_size.width, .h = natural_size.height };
+            // CSS Backgrounds 3 §3.9: an image without a natural proportion is rendered
+            // at the size of the background positioning area.
+            if (!natural_size.has_aspect_ratio) break :blk BoxTree.BackgroundImage.Size{ .w = positioning_area.width, .h = positioning_area.height };
 
             const positioning_area_is_wider_than_image = positioning_area.width * natural_size.height > positioning_area.height * natural_size.width;
             const is_contain = (specified.size == .contain);
@@ -440,8 +444,10 @@ pub fn backgroundImage(
         const divRound = math.divRound;
 
         if (width_was_auto and height_was_auto) {
-            size.w = natural_size.width;
-            size.h = natural_size.height;
+            // `auto auto` is `contain` for an image without natural dimensions and
+            // without a proportion (§3.9; CSS Images 3 §5.3 default sizing).
+            size.w = if (dimensions != null) natural_size.width else positioning_area.width;
+            size.h = if (dimensions != null) natural_size.height else positioning_area.height;
         } else if (width_was_auto) {
             size.w = if (natural_size.has_aspect_ratio)
                 divRound(size.h * natural_size.width, natural_size.height)

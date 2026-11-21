@@ -13,11 +13,12 @@ const Urls = values.parse.Urls;
 //         <image> = <url> | <gradient>
 //         <gradient> = <linear-gradient()> | <repeating-linear-gradient()> | <radial-gradient()> | <repeating-radial-gradient()>
 pub fn image(ctx: *Context, urls: Urls.Managed) !?types.BackgroundImage {
-    // TODO: parse gradient functions
     if (values.parse.keyword(ctx, types.BackgroundImage, &.{.{ "none", .none }})) |value| {
         return value;
     } else if (try values.parse.urlManaged(ctx, urls, .background_image)) |value| {
         return .{ .url = value };
+    } else if (try values.parse.gradient(ctx, urls.env)) |value| {
+        return .{ .gradient = value };
     } else {
         return null;
     }

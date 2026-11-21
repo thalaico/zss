@@ -155,6 +155,8 @@ fn repaintBlock(layout: *Layout, ref: BlockRef, node: NodeId) !void {
                 &view.items(.box_offsets)[ref.index],
                 &view.items(.borders)[ref.index],
                 used_color,
+                if (entry.font) |f| f.font_size.px_val() else 16.0,
+                layout.computer.resolvedRootFontSizePx(.box_gen),
                 bg_color,
                 bg_clip,
                 bg,

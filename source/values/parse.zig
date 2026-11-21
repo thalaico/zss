@@ -340,6 +340,8 @@ pub const Urls = struct {
     pub const Managed = struct {
         unmanaged: *Urls,
         allocator: Allocator,
+        /// Where a value that outlives the declaration text is kept (gradients).
+        env: *Environment,
 
         pub fn addUrl(urls: Managed, desc: Description) !UrlId {
             const int = urls.unmanaged.nextId() orelse return error.OutOfUrls;
@@ -356,8 +358,8 @@ pub const Urls = struct {
         }
     };
 
-    pub fn toManaged(urls: *Urls, allocator: Allocator) Managed {
-        return .{ .unmanaged = urls, .allocator = allocator };
+    pub fn toManaged(urls: *Urls, allocator: Allocator, env: *Environment) Managed {
+        return .{ .unmanaged = urls, .allocator = allocator, .env = env };
     }
 };
 
@@ -1539,43 +1541,90 @@ fn parseLengthPx(ctx: *Context) ?f32 {
     }
 }
 
-/// Parse linear-gradient(color1, color2). Returns the two color stops as RGBA u32.
-pub fn linearGradient(ctx: *Context) ?types.LinearGradient {
+/// `linear-gradient()` / `repeating-linear-gradient()` (CSS Images 3 §3.1, §3.5):
+///   [ <angle> | to <side-or-corner> ]? , <color-stop-list>
+/// with the color stop list of CSS Images 4 §3.5.1 (one stop is a list, a stop has up
+/// to two positions, a color hint may stand between two stops). A unitless 0 is an
+/// angle here (as in browsers). Not parsed, so not a gradient: a color interpolation
+/// method (`in oklch`), a `calc()` that mixes lengths and percentages as a position,
+/// radial and conic gradients, the prefixed forms. Consumes nothing on failure.
+pub fn gradient(ctx: *Context, env: *Environment) !?*const types.Gradient {
     const item = ctx.next() orelse return null;
     if (item.tag != .function) {
         ctx.resetPoint(item.index);
         return null;
     }
-    const location = item.index.location(ctx.ast);
-    // Match function name "linear-gradient"
-    _ = ctx.source_code.mapIdentifierValue(location, void, &.{
-        .{ "linear-gradient", {} },
+    const repeating = ctx.source_code.mapIdentifierValue(item.index.location(ctx.ast), bool, &.{
+        .{ "linear-gradient", false },
+        .{ "repeating-linear-gradient", true },
     }) orelse {
         ctx.resetPoint(item.index);
         return null;
     };
-    // Enter function arguments
+    var stops: std.ArrayListUnmanaged(types.Gradient.Stop) = .empty;
+    defer stops.deinit(env.allocator);
     const state = ctx.enterSequence(item.index);
-    const gradient = linearGradientArguments(ctx);
+    const direction = gradientArguments(ctx, env.allocator, &stops) catch |err| {
+        ctx.resetState(state);
+        return err;
+    };
     ctx.resetState(state);
-    // Not a gradient this can hold: nothing was consumed.
-    if (gradient == null) ctx.resetPoint(item.index);
-    return gradient;
+    const dir = direction orelse {
+        ctx.resetPoint(item.index);
+        return null;
+    };
+    return try env.internGradient(.{ .repeating = repeating, .direction = dir, .stops = stops.items });
 }
 
-fn linearGradientArguments(ctx: *Context) ?types.LinearGradient {
-    // Parse first color stop
-    const from_color = parseColorRgba(ctx) orelse return null;
-    // Skip comma
-    const comma = ctx.next() orelse return null;
-    if (comma.tag != .token_comma) return null;
-    // Parse second color stop
-    const to_color = parseColorRgba(ctx) orelse return null;
-    // Two color stops without positions is all a `LinearGradient` holds: a direction, a
-    // third stop or a stop position makes this a gradient that cannot be drawn as
-    // written, so it is not one (CSS Images 3 §3.1 has no "first two stops" reading).
-    if (!ctx.empty()) return null;
-    return .{ .gradient = .{ .from_rgba = from_color, .to_rgba = to_color } };
+fn gradientArguments(ctx: *Context, allocator: Allocator, stops: *std.ArrayListUnmanaged(types.Gradient.Stop)) !?types.Gradient.Direction {
+    const Gradient = types.Gradient;
+    var direction: ?Gradient.Direction = null;
+    if (angle(ctx)) |degrees| {
+        direction = .{ .angle = degrees };
+    } else if (keyword(ctx, bool, &.{.{ "to", true }})) |_| {
+        var x: Gradient.Horizontal = .none;
+        var y: Gradient.Vertical = .none;
+        for (0..2) |_| {
+            if (x == .none) if (keyword(ctx, Gradient.Horizontal, &.{ .{ "left", .left }, .{ "right", .right } })) |v| {
+                x = v;
+                continue;
+            };
+            if (y == .none) if (keyword(ctx, Gradient.Vertical, &.{ .{ "top", .top }, .{ "bottom", .bottom } })) |v| {
+                y = v;
+                continue;
+            };
+            break;
+        }
+        if (x == .none and y == .none) return null;
+        direction = .{ .to = .{ .x = x, .y = y } };
+    } else if (ctx.next()) |item| {
+        const zero = item.tag == .token_integer and (item.index.extra(ctx.ast).integer orelse 1) == 0;
+        if (zero) direction = .{ .angle = 0 } else ctx.resetPoint(item.index);
+    }
+    if (direction != null) {
+        const comma = ctx.next() orelse return null;
+        if (comma.tag != .token_comma) return null;
+    }
+
+    var last_is_hint = false;
+    while (true) {
+        if (color(ctx)) |stop_color| {
+            const first = lengthPercentage(ctx, Gradient.Offset);
+            const second = if (first != null) lengthPercentage(ctx, Gradient.Offset) else null;
+            try stops.append(allocator, .{ .color = stop_color, .position = first });
+            if (second) |pos| try stops.append(allocator, .{ .color = stop_color, .position = pos });
+            last_is_hint = false;
+        } else if (lengthPercentage(ctx, Gradient.Offset)) |hint| {
+            // A hint stands between two color stops.
+            if (stops.items.len == 0 or last_is_hint) return null;
+            try stops.append(allocator, .{ .color = null, .position = hint });
+            last_is_hint = true;
+        } else return null;
+        const comma = ctx.next() orelse break;
+        if (comma.tag != .token_comma) return null;
+    }
+    if (last_is_hint) return null;
+    return direction orelse Gradient.to_bottom;
 }
 
 /// Parse a color and return its RGBA u32 value.
@@ -1729,7 +1778,7 @@ test "value parsers" {
                     defer env.deinit();
                     var urls = Urls.init(&env);
                     defer urls.deinit(allocator);
-                    const value = try parser(&ctx, urls.toManaged(allocator));
+                    const value = try parser(&ctx, urls.toManaged(allocator, &env));
                     urls.commit(&env);
                     return value;
                 },

@@ -421,14 +421,34 @@ pub const Color = union(enum) {
     pub const black = Color{ .rgba = 0xff };
 };
 
-pub const LinearGradient = union(enum) {
-    gradient: struct { from_rgba: u32, to_rgba: u32 },
-    none,
+/// A `linear-gradient()` or `repeating-linear-gradient()` (CSS Images 3 §3.1, §3.5;
+/// two positions on a stop and color hints from CSS Images 4 §3.5.1). Kept by the
+/// environment (`Environment.internGradient`); a value refers to it by pointer.
+pub const Gradient = struct {
+    pub const Horizontal = enum { none, left, right };
+    pub const Vertical = enum { none, top, bottom };
+    pub const Direction = union(enum) {
+        /// Degrees: 0 points up, 90 to the right.
+        angle: f32,
+        /// `to <side-or-corner>`; never both `none`.
+        to: struct { x: Horizontal, y: Vertical },
+    };
+    /// Along the gradient line; a percentage is a fraction of its length.
+    pub const Offset = union(enum) { px: f32, em: f32, rem: f32, percentage: f32 };
+    /// A color stop, or a color hint (`color == null`, the position is set).
+    pub const Stop = struct { color: ?Color, position: ?Offset };
+
+    repeating: bool,
+    direction: Direction,
+    stops: []const Stop,
+
+    pub const to_bottom = Direction{ .to = .{ .x = .none, .y = .bottom } };
 };
 
 pub const BackgroundImage = union(enum) {
     image: zss.Images.Handle,
     url: zss.Environment.UrlId,
+    gradient: *const Gradient,
     none,
 };
 

@@ -265,7 +265,7 @@ const Resolver = struct {
             var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
             var urls = zss.values.parse.Urls.init(env);
             defer urls.deinit(env.allocator);
-            const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator));
+            const block = try zss.property.parseDeclarationsFromAst(env, ast, source, &buffer, last_declaration, urls.toManaged(env.allocator, env));
             urls.recordTexts(env, source);
             urls.commit(env);
             if (env.decls.hasValues(block, .normal)) gop.value_ptr.* = block;

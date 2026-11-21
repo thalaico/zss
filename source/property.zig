@@ -236,10 +236,7 @@ pub const Property = enum {
             .@"border-radius"         => &.{.{.border_radii, &.{.top_left, .top_right, .bottom_right, .bottom_left}}},
             .color                    => &.{.{.color           , &.{.color}         }},
             .@"background-color"      => &.{.{.background_color, &.{.color}         }},
-            .@"background-image"      => &.{
-                .{.background      , &.{.image}},
-                .{.background_color, &.{.gradient}},
-            },
+            .@"background-image"      => &.{.{.background      , &.{.image}         }},
             .@"background-repeat"     => &.{.{.background      , &.{.repeat}        }},
             .@"background-attachment" => &.{.{.background      , &.{.attachment}    }},
             .@"background-position"   => &.{.{.background      , &.{.position}      }},
@@ -247,7 +244,7 @@ pub const Property = enum {
             .@"background-origin"     => &.{.{.background      , &.{.origin}        }},
             .@"background-size"       => &.{.{.background      , &.{.size}          }},
             .background               => &.{
-                .{.background_color, &.{.color, .gradient}},
+                .{.background_color, &.{.color}},
                 .{.background,       &.{.image, .repeat, .attachment, .position, .origin, .size}},
                 .{.background_clip,  &.{.clip}},
             },
@@ -716,7 +713,7 @@ test "parsing properties from a stylesheet" {
     defer urls.deinit(allocator);
 
     var buffer: [recommended_buffer_size]u8 = undefined;
-    const block = try parseDeclarationsFromAst(&env, ast, source, &buffer, last_declaration, urls.toManaged(allocator));
+    const block = try parseDeclarationsFromAst(&env, ast, source, &buffer, last_declaration, urls.toManaged(allocator, &env));
     urls.commit(&env);
 
     try ns.expectEqual(.box_style, &env.decls, block, .{

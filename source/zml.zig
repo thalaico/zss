@@ -422,7 +422,7 @@ fn analyzeInlineStyleBlock(
     defer urls.deinit(allocator);
 
     var buffer: [zss.property.recommended_buffer_size]u8 = undefined;
-    const block = try zss.property.parseDeclarationsFromAst(&document.env, ast, source_code, &buffer, last_declaration_index, urls.toManaged(allocator));
+    const block = try zss.property.parseDeclarationsFromAst(&document.env, ast, source_code, &buffer, last_declaration_index, urls.toManaged(allocator, &document.env));
     if (document.env.decls.hasValues(block, .important)) try document.cascade_source.style_attrs_important.putNoClobber(document.env.allocator, zss_node_id, block);
     if (document.env.decls.hasValues(block, .normal)) try document.cascade_source.style_attrs_normal.putNoClobber(document.env.allocator, zss_node_id, block);
 

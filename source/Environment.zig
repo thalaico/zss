@@ -64,6 +64,11 @@ urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
 /// The text of a declaration's `url()`, as written (the host records and resolves it):
 /// what a computed value is serialized from.
 url_texts: std.AutoHashMapUnmanaged(UrlId, []const u8) = .empty,
+/// Images by the text of the URL they were loaded for: every url() with that text
+/// shows the image, whenever it was declared (`imageForUrl`).
+url_text_images: std.StringHashMapUnmanaged(zss.Images.Handle) = .empty,
+/// Every gradient a declaration named, once each (by its canonical text).
+gradients: std.StringHashMapUnmanaged(*const zss.values.types.Gradient) = .empty,
 
 /// Viewport dimensions in CSS pixels, used for @media query evaluation.
 /// Set to 0 to disable media query filtering (all @media blocks included).
@@ -222,6 +227,20 @@ pub fn deinit(env: *Environment) void {
     }
 
     env.urls_to_images.deinit(env.allocator);
+    {
+        var it = env.url_text_images.keyIterator();
+        while (it.next()) |key| env.allocator.free(key.*);
+        env.url_text_images.deinit(env.allocator);
+    }
+    {
+        var it = env.gradients.iterator();
+        while (it.next()) |entry| {
+            env.allocator.free(entry.value_ptr.*.stops);
+            env.allocator.destroy(entry.value_ptr.*);
+            env.allocator.free(entry.key_ptr.*);
+        }
+        env.gradients.deinit(env.allocator);
+    }
     {
         var it = env.url_texts.valueIterator();
         while (it.next()) |text| env.allocator.free(text.*);
@@ -592,6 +611,48 @@ pub fn setUrlText(env: *Environment, url: UrlId, text: []const u8) !void {
 
 pub fn urlText(env: *const Environment, url: UrlId) ?[]const u8 {
     return env.url_texts.get(url);
+}
+
+/// The environment's copy of `gradient`: equal gradients are one object, which lives
+/// as long as the environment (declared values point at it).
+pub fn internGradient(env: *Environment, gradient: zss.values.types.Gradient) !*const zss.values.types.Gradient {
+    var key: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer key.deinit(env.allocator);
+    const w = key.writer(env.allocator);
+    try w.print("{} {any}", .{ gradient.repeating, gradient.direction });
+    for (gradient.stops) |stop| try w.print("|{any} {any}", .{ stop.color, stop.position });
+    const entry = try env.gradients.getOrPut(env.allocator, key.items);
+    if (entry.found_existing) {
+        key.deinit(env.allocator);
+        return entry.value_ptr.*;
+    }
+    errdefer env.gradients.removeByPtr(entry.key_ptr);
+    const owned_key = try key.toOwnedSlice(env.allocator);
+    errdefer env.allocator.free(owned_key);
+    const stops = try env.allocator.dupe(zss.values.types.Gradient.Stop, gradient.stops);
+    errdefer env.allocator.free(stops);
+    const copy = try env.allocator.create(zss.values.types.Gradient);
+    copy.* = .{ .repeating = gradient.repeating, .direction = gradient.direction, .stops = stops };
+    entry.key_ptr.* = owned_key;
+    entry.value_ptr.* = copy;
+    return copy;
+}
+
+/// The image for every url() whose text is `text`.
+pub fn linkUrlTextToImage(env: *Environment, text: []const u8, image: zss.Images.Handle) !void {
+    const entry = try env.url_text_images.getOrPut(env.allocator, text);
+    if (!entry.found_existing) {
+        errdefer env.url_text_images.removeByPtr(entry.key_ptr);
+        entry.key_ptr.* = try env.allocator.dupe(u8, text);
+    }
+    entry.value_ptr.* = image;
+}
+
+/// The image of a URL value: linked to the value itself, or to its text.
+pub fn imageForUrl(env: *const Environment, url: UrlId) ?zss.Images.Handle {
+    if (env.urls_to_images.get(url)) |image| return image;
+    const text = env.url_texts.get(url) orelse return null;
+    return env.url_text_images.get(text);
 }
 
 pub fn linkUrlToImage(env: *Environment, url: UrlId, image: zss.Images.Handle) !void {
