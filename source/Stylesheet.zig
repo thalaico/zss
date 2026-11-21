@@ -100,6 +100,67 @@ pub fn collectFontFaceRules(
     return collector.rules.items;
 }
 
+/// One `@keyframes` rule (CSS Animations 1 §3): its name and keyframes as written.
+pub const KeyframesRule = struct {
+    name: []const u8,
+    keyframes: []const Keyframe,
+
+    pub const Keyframe = struct {
+        /// The keyframe selector's offsets, 0 (`from`) to 1 (`to`).
+        offsets: []const f32,
+        declarations: []const Declaration,
+    };
+
+    pub const Declaration = struct {
+        /// ASCII-lowercased, except a custom property's.
+        name: []const u8,
+        /// The value's source text, without surrounding whitespace.
+        value: []const u8,
+    };
+};
+
+/// The `@keyframes` rules of the style sheet in `ast` that apply — at the top
+/// level and inside `@media` / `@supports` rules whose condition holds for
+/// `env` — in order (of two rules with one name the later one is used, §3).
+/// Everything returned is allocated with `arena`. Declarations are not
+/// validated here: whoever applies a keyframe's values parses them as
+/// declarations for the animated element. A keyframe with an invalid selector
+/// is left out, as is a declaration with `!important` (§3.1).
+pub fn collectKeyframesRules(
+    allocator: Allocator,
+    arena: Allocator,
+    ast: Ast,
+    rule_list_index: Ast.Index,
+    source_code: SourceCode,
+    env: *Environment,
+) ![]const KeyframesRule {
+    var stylesheet = Stylesheet{ .namespaces = .{}, .decl_urls = .init(env), .cascade_source = .{} };
+    defer stylesheet.deinit(allocator);
+    var font_faces: FontFaceCollector = .{ .arena = arena };
+    var collector: KeyframesCollector = .{ .arena = arena };
+    var ctx = RuleProcessor{
+        .allocator = allocator,
+        .ast = ast,
+        .source_code = source_code,
+        .env = env,
+        .stylesheet = &stylesheet,
+        .selector_parser = selectors.Parser.init(env, allocator, source_code, ast, &stylesheet.namespaces),
+        .unsorted_selectors = .{},
+        // Collecting: qualified rules and @namespace are skipped.
+        .font_faces = &font_faces,
+        .keyframes = &collector,
+    };
+    defer ctx.selector_parser.deinit();
+    defer ctx.unsorted_selectors.deinit(allocator);
+    try ctx.processRuleList(rule_list_index);
+    return collector.rules.items;
+}
+
+const KeyframesCollector = struct {
+    arena: Allocator,
+    rules: std.ArrayListUnmanaged(KeyframesRule) = .empty,
+};
+
 const FontFaceCollector = struct {
     arena: Allocator,
     rules: std.ArrayListUnmanaged(FontFaceRule) = .empty,
@@ -199,6 +260,8 @@ const RuleProcessor = struct {
     /// Set by `collectFontFaceRules`: the pass only gathers `@font-face`
     /// rules; style rules and `@namespace` are left to `create`.
     font_faces: ?*FontFaceCollector = null,
+    /// Set (with `font_faces`, which makes the pass skip style rules) to collect `@keyframes` rules.
+    keyframes: ?*KeyframesCollector = null,
 
     /// Process all rules in a rule_list AST node.
     fn processRuleList(ctx: *RuleProcessor, rule_list_index: Ast.Index) anyerror!void {
@@ -299,9 +362,154 @@ const RuleProcessor = struct {
                 try ctx.handleSupportsRule(at_rule_index);
             },
             .@"font-face" => {
+                if (ctx.keyframes != null) return;
                 if (ctx.font_faces) |collector| try ctx.collectFontFace(collector, at_rule_index);
             },
+            .keyframes, .@"-webkit-keyframes" => {
+                if (ctx.keyframes) |collector| try ctx.collectKeyframes(collector, at_rule_index);
+            },
         }
+    }
+
+    /// `@keyframes <keyframes-name> { <keyframe-block>* }` with <keyframe-block> =
+    /// <keyframe-selector># { <declaration-list> } (CSS Animations 1 §3). The block
+    /// was parsed as a list of component values: a keyframe is the components up
+    /// to a `{}` block (its selector) and that block.
+    fn collectKeyframes(ctx: *RuleProcessor, collector: *KeyframesCollector, at_rule_index: Ast.Index) !void {
+        const arena = collector.arena;
+        var children = at_rule_index.children(ctx.ast);
+        // The prelude: one <custom-ident> (not `none`, not a CSS-wide keyword) or <string>.
+        var name: ?[]const u8 = null;
+        const block = while (children.nextSkipSpaces(ctx.ast)) |child| {
+            switch (child.tag(ctx.ast)) {
+                .simple_block_curly => break child,
+                .token_ident => {
+                    if (name != null) return error.InvalidAtRule;
+                    const location = child.location(ctx.ast);
+                    if (ctx.source_code.mapIdentifierValue(location, void, &.{
+                        .{ "none", {} },   .{ "initial", {} }, .{ "inherit", {} },      .{ "unset", {} },
+                        .{ "revert", {} }, .{ "default", {} }, .{ "revert-layer", {} },
+                    }) != null) return error.InvalidAtRule;
+                    name = try ctx.source_code.copyIdentifier(location, .{ .allocator = arena });
+                },
+                .token_string => {
+                    if (name != null) return error.InvalidAtRule;
+                    name = try ctx.source_code.copyString(child.location(ctx.ast), .{ .allocator = arena });
+                },
+                else => return error.InvalidAtRule,
+            }
+        } else return error.InvalidAtRule;
+        const rule_name = name orelse return error.InvalidAtRule;
+
+        var keyframes: std.ArrayListUnmanaged(KeyframesRule.Keyframe) = .empty;
+        var contents = block.children(ctx.ast);
+        var offsets: std.ArrayListUnmanaged(f32) = .empty;
+        var selector_valid = true;
+        var expect_offset = true;
+        while (contents.nextSkipSpaces(ctx.ast)) |component| {
+            switch (component.tag(ctx.ast)) {
+                .simple_block_curly => {
+                    // A selector may not be empty or end with a comma.
+                    if (selector_valid and offsets.items.len > 0 and !expect_offset) {
+                        try keyframes.append(arena, .{
+                            .offsets = try arena.dupe(f32, offsets.items),
+                            .declarations = try ctx.keyframeDeclarations(arena, component, blockEnd(ctx, component)),
+                        });
+                    }
+                    offsets.clearRetainingCapacity();
+                    selector_valid = true;
+                    expect_offset = true;
+                },
+                .token_comma => {
+                    if (expect_offset) selector_valid = false;
+                    expect_offset = true;
+                },
+                .token_ident => {
+                    const offset = ctx.source_code.mapIdentifierValue(component.location(ctx.ast), f32, &.{ .{ "from", 0.0 }, .{ "to", 1.0 } });
+                    if (!expect_offset or offset == null) selector_valid = false else try offsets.append(arena, offset.?);
+                    expect_offset = false;
+                },
+                .token_percentage => {
+                    const percentage = component.extra(ctx.ast).number;
+                    // The token's number is the fraction (50% = 0.5).
+                    if (!expect_offset or percentage == null or percentage.? < 0 or percentage.? > 1) selector_valid = false else try offsets.append(arena, percentage.?);
+                    expect_offset = false;
+                },
+                .token_semicolon => {
+                    // Not part of a keyframe block: what came before it is dropped.
+                    offsets.clearRetainingCapacity();
+                    selector_valid = true;
+                    expect_offset = true;
+                },
+                else => selector_valid = false,
+            }
+        }
+        try collector.rules.append(arena, .{ .name = rule_name, .keyframes = keyframes.items });
+    }
+
+    /// The offset in the source of the closing brace of the `{}` block `block`
+    /// (the end of the text for an unclosed one).
+    fn blockEnd(ctx: *RuleProcessor, block: Ast.Index) usize {
+        const text = ctx.source_code.text;
+        var tokenizer = zss.syntax.Tokenizer.init(ctx.source_code);
+        tokenizer.setLocation(block.location(ctx.ast));
+        var depth: usize = 0;
+        while (true) {
+            const token, const location = (tokenizer.next() catch return text.len) orelse return text.len;
+            switch (token) {
+                .token_left_curly, .token_left_paren, .token_left_square, .token_function => depth += 1,
+                .token_right_curly, .token_right_paren, .token_right_square => {
+                    depth -|= 1;
+                    if (depth == 0) return @intFromEnum(location);
+                },
+                else => {},
+            }
+        }
+    }
+
+    /// The declarations of a keyframe's `{}` block: `name: value` up to each
+    /// top-level `;` (CSS Syntax 3 §5.4.5), the value as source text.
+    fn keyframeDeclarations(ctx: *RuleProcessor, arena: Allocator, block: Ast.Index, block_end: usize) ![]const KeyframesRule.Declaration {
+        const text = ctx.source_code.text;
+        var declarations: std.ArrayListUnmanaged(KeyframesRule.Declaration) = .empty;
+        var contents = block.children(ctx.ast);
+        while (true) {
+            const name_index = contents.nextSkipSpaces(ctx.ast) orelse break;
+            if (name_index.tag(ctx.ast) == .token_semicolon) continue;
+            var colon: ?Ast.Index = null;
+            var end: usize = block_end;
+            var first = true;
+            var more = false;
+            while (contents.nextKeepSpaces(ctx.ast)) |component| {
+                switch (component.tag(ctx.ast)) {
+                    .token_semicolon => {
+                        end = @intFromEnum(component.location(ctx.ast));
+                        more = true;
+                        break;
+                    },
+                    .token_whitespace, .token_comments => {},
+                    else => |tag| {
+                        if (first and tag == .token_colon) colon = component;
+                        first = false;
+                    },
+                }
+            }
+            if (name_index.tag(ctx.ast) == .token_ident) {
+                if (colon) |colon_index| {
+                    const name = try ctx.source_code.copyIdentifier(name_index.location(ctx.ast), .{ .allocator = arena });
+                    if (!std.mem.startsWith(u8, name, "--")) for (name) |*ch| {
+                        ch.* = std.ascii.toLower(ch.*);
+                    };
+                    const value_start = @intFromEnum(colon_index.location(ctx.ast)) + 1;
+                    const value = std.mem.trim(u8, text[@min(value_start, end)..end], " \t\r\n\x0c");
+                    // `!important` makes a keyframe declaration invalid (§3.1).
+                    const important = std.mem.lastIndexOfScalar(u8, value, '!') != null and std.ascii.endsWithIgnoreCase(value, "important");
+                    if (value.len > 0 and !important) try declarations.append(arena, .{ .name = name, .value = try arena.dupe(u8, value) });
+                }
+            }
+            if (!more) break;
+        }
+        return declarations.items;
     }
 
     /// `@font-face { <declaration-list> }`: record each `name: value`

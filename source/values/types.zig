@@ -566,6 +566,13 @@ pub const FontStyle = enum {
 /// (`Environment.internFontFamilyList`). `.initial` is the UA's standard font.
 pub const FontFamilyList = enum(u32) { initial = 0, _ };
 
+/// The computed value of one `animation-*` longhand (CSS Animations 1 §4): a
+/// comma-separated list, held as the id of its serialization interned in the
+/// Environment (`Environment.internAnimationValue`); `.initial` is the
+/// property's initial value. The lists of the eight longhands are coordinated
+/// by whoever runs the animations (the host), per §4.2.
+pub const AnimationValue = enum(u32) { initial = 0, _ };
+
 /// The family used for the element's text: the first available family of
 /// its font-family list.
 pub const FontFamily = union(enum) {

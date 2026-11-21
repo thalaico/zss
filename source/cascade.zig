@@ -21,9 +21,14 @@ pub const List = struct {
     user: []const *const Node = &.{},
     author: []const *const Node = &.{},
     user_agent: []const *const Node = &.{},
+    /// The animation origin (CSS Cascade 4 §6.1): the declarations animations
+    /// apply to their elements, above the normal author declarations and below
+    /// every important one. A host puts sources here whose normal style
+    /// attribute blocks hold each animated element's current values.
+    animation: []const *const Node = &.{},
 };
 
-pub const Origin = enum { user, author, user_agent };
+pub const Origin = enum { user, author, user_agent, animation };
 
 pub const Node = union(enum) {
     leaf: *const Source,
@@ -1707,11 +1712,13 @@ pub fn run(list: *const List, env: *Environment, temp_allocator: Allocator) !voi
     // 1. UA important
     // 2. User important
     // 3. Author important  ─┐ merged: one DOM walk per source
-    // 4. Author normal     ─┘
-    // 5. User normal
-    // 6. UA normal
+    // 4. Animations         │ (collected before the author sources: the stable
+    // 5. Author normal     ─┘  sort in `applyInCascadeOrder` puts every important
+    // 6. User normal           block ahead, and the animation blocks stay ahead
+    // 7. UA normal             of the normal author ones)
     try traverseList(&ctx, list, env, .user_agent, .important);
     try traverseList(&ctx, list, env, .user, .important);
+    try traverseList(&ctx, list, env, .animation, .normal);
     try traverseListMerged(&ctx, list, env, .author);
     try traverseList(&ctx, list, env, .user, .normal);
     try traverseList(&ctx, list, env, .user_agent, .normal);
@@ -1778,6 +1785,27 @@ pub const Change = struct {
     }
 };
 
+/// The computed `animation-*` values of `node` (CSS Animations 1 §4) from its
+/// cascaded values: `inherit` takes the parent's computed value; the group is
+/// not inherited otherwise.
+pub fn computedAnimation(env: *const Environment, node: Environment.NodeId) zss.values.groups.Animation {
+    var result = zss.values.groups.Animation.initial_values;
+    const storage = env.cascade_db.getStorage(node) orelse return result;
+    const cascaded = storage.getPtr(.animation) orelse return result;
+    var parent: ?zss.values.groups.Animation = null;
+    inline for (comptime std.meta.fieldNames(zss.values.groups.Animation)) |field| {
+        switch (@field(cascaded, field)) {
+            .declared => |value| @field(result, field) = value,
+            .inherit => {
+                if (parent == null) parent = if (node.parent(env)) |p| computedAnimation(env, p) else zss.values.groups.Animation.initial_values;
+                @field(result, field) = @field(parent.?, field);
+            },
+            .undeclared, .initial, .unset => {},
+        }
+    }
+    return result;
+}
+
 /// What a `Change` changed, compared once its new values are complete
 /// (after `custom_properties.resolveSubtrees`).
 pub const ChangeKind = union(enum) {
@@ -1799,7 +1827,9 @@ pub fn classifyChange(env: *const Environment, change: *const Change) ChangeKind
         if (!groupEql(tag, previous.group_map, storage.group_map)) switch (tag) {
             .color => color = true,
             .border_colors => border_colors = true,
-            .background_color, .background_clip, .background => {},
+            // `animation-*` changes neither layout nor paint by itself: the host's
+            // animations read the new values and change what they animate.
+            .background_color, .background_clip, .background, .animation => {},
             else => return .layout,
         };
     }
@@ -1837,6 +1867,7 @@ fn groupEql(comptime tag: zss.values.groups.Tag, a: Database.Storage.Map, b: Dat
 const restyle_phases = [_]struct { origin: Origin, importances: []const Importance }{
     .{ .origin = .user_agent, .importances = &.{.important} },
     .{ .origin = .user, .importances = &.{.important} },
+    .{ .origin = .animation, .importances = &.{.normal} },
     .{ .origin = .author, .importances = &.{ .important, .normal } },
     .{ .origin = .user, .importances = &.{.normal} },
     .{ .origin = .user_agent, .importances = &.{.normal} },
@@ -1862,6 +1893,7 @@ pub const RestyleIndexes = struct {
             sources.clearRetainingCapacity();
             const roots = switch (phase.origin) {
                 .user => list.user,
+                .animation => list.animation,
                 .author => list.author,
                 .user_agent => list.user_agent,
             };
@@ -1981,7 +2013,7 @@ fn collectSources(node: *const Node, out: *std.ArrayListUnmanaged(*const Source)
 }
 
 /// Apply one element's declaration blocks, collected origin by origin (UA
-/// important, user important, author, user normal, UA normal) and within an
+/// important, user important, animations, author, user normal, UA normal) and within an
 /// origin style attributes, then rules in specificity order, then
 /// presentational hints. Applying is first-wins, so the blocks go in
 /// cascade order (CSS Cascade 4 §6.1): important ones before normal ones —
@@ -2006,6 +2038,7 @@ fn applyInCascadeOrder(env: *Environment, storage: *Database.Storage, items: []R
 fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin, importance: Importance) !void {
     const node_list = switch (origin) {
         .user => list.user,
+        .animation => list.animation,
         .author => list.author,
         .user_agent => list.user_agent,
     };
@@ -2031,6 +2064,7 @@ fn traverseList(ctx: *RunContext, list: *const List, env: *const Environment, or
 fn traverseListMerged(ctx: *RunContext, list: *const List, env: *const Environment, origin: Origin) !void {
     const node_list = switch (origin) {
         .user => list.user,
+        .animation => list.animation,
         .author => list.author,
         .user_agent => list.user_agent,
     };

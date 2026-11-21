@@ -77,6 +77,9 @@ pub const Token = union(enum) {
         media,
         supports,
         @"font-face",
+        keyframes,
+        /// The legacy name of `@keyframes` (Compatibility Standard §3.2).
+        @"-webkit-keyframes",
     };
 
     pub fn cast(token: Token, comptime Derived: type) Derived {

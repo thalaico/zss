@@ -1319,3 +1319,365 @@ pub fn content(ctx: *Context, declaration_index: Ast.Index, env: *@import("../zs
     }
     return null;
 }
+// ---------------------------------------------------------------------------
+// CSS Animations 1 §4: the animation-* properties. Each longhand is a
+// comma-separated list; its computed value is kept as the canonical
+// serialization of that list (`types.AnimationValue`), which is also what
+// getComputedStyle returns. Not supported, so such declarations are invalid:
+// math functions in times and counts, the `linear()` easing function
+// (CSS Easing 2), animation-timeline / animation-composition / animation-range.
+
+const AnimationText = std.ArrayListUnmanaged(u8);
+const AnimationPart = enum { name, duration, timing_function, delay, iteration_count, direction, fill_mode, play_state };
+
+fn animationNumber(ctx: *Context) ?f32 {
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_integer => if (item.index.extra(ctx.ast).integer) |i| return @floatFromInt(i),
+        .token_number => if (item.index.extra(ctx.ast).number) |n| return n,
+        else => {},
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
+/// <time>, in seconds.
+fn animationTime(ctx: *Context) ?f32 {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .token_dimension) {
+        var children = item.index.children(ctx.ast);
+        if (children.nextSkipSpaces(ctx.ast)) |unit_index| {
+            if (item.index.extra(ctx.ast).number) |number| {
+                const factor: ?f32 = ctx.source_code.mapIdentifierValue(unit_index.location(ctx.ast), f32, &.{
+                    .{ "s", 1.0 },
+                    .{ "ms", 1000.0 },
+                });
+                if (factor) |f| return number / f;
+            }
+        }
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
+fn animationPutNumber(env: *Environment, out: *AnimationText, value: f32) !void {
+    var buffer: [64]u8 = undefined;
+    // Shortest text that reads back as the same f32; f64 formatting would show
+    // the f32's rounding (0.3 -> 0.30000001192092896).
+    const text = std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable;
+    try out.appendSlice(env.allocator, text);
+}
+
+/// <easing-function> (CSS Easing 1): the keywords, cubic-bezier(), steps().
+fn animationEasing(ctx: *Context, env: *Environment, out: *AnimationText) !?void {
+    const Keyword = enum { linear, ease, @"ease-in", @"ease-out", @"ease-in-out", @"step-start", @"step-end" };
+    if (values.parse.keyword(ctx, Keyword, &.{
+        .{ "linear", .linear },
+        .{ "ease", .ease },
+        .{ "ease-in", .@"ease-in" },
+        .{ "ease-out", .@"ease-out" },
+        .{ "ease-in-out", .@"ease-in-out" },
+        .{ "step-start", .@"step-start" },
+        .{ "step-end", .@"step-end" },
+    })) |kw| {
+        try out.appendSlice(env.allocator, switch (kw) {
+            .@"step-start" => "steps(1, start)",
+            .@"step-end" => "steps(1)",
+            else => @tagName(kw),
+        });
+        return;
+    }
+    const item = ctx.next() orelse return null;
+    if (item.tag != .function) {
+        ctx.resetPoint(item.index);
+        return null;
+    }
+    const Function = enum { @"cubic-bezier", steps };
+    const function = ctx.source_code.mapIdentifierValue(item.index.location(ctx.ast), Function, &.{
+        .{ "cubic-bezier", .@"cubic-bezier" },
+        .{ "steps", .steps },
+    }) orelse {
+        ctx.resetPoint(item.index);
+        return null;
+    };
+    const state = ctx.enterSequence(item.index);
+    var ok = false;
+    defer {
+        ctx.resetState(state);
+        if (!ok) ctx.resetPoint(item.index);
+    }
+    switch (function) {
+        .@"cubic-bezier" => {
+            var numbers: [4]f32 = undefined;
+            for (&numbers, 0..) |*number, i| {
+                if (i > 0) {
+                    const comma = ctx.next() orelse return null;
+                    if (comma.tag != .token_comma) return null;
+                }
+                number.* = animationNumber(ctx) orelse return null;
+            }
+            if (!ctx.empty()) return null;
+            // The x coordinates are in [0, 1].
+            if (numbers[0] < 0 or numbers[0] > 1 or numbers[2] < 0 or numbers[2] > 1) return null;
+            try out.appendSlice(env.allocator, "cubic-bezier(");
+            for (numbers, 0..) |number, i| {
+                if (i > 0) try out.appendSlice(env.allocator, ", ");
+                try animationPutNumber(env, out, number);
+            }
+            try out.append(env.allocator, ')');
+        },
+        .steps => {
+            const count = values.parse.integer(ctx) orelse return null;
+            const Position = enum { @"jump-start", @"jump-end", @"jump-none", @"jump-both", start, end };
+            var step_position: Position = .end;
+            if (ctx.next()) |comma| {
+                if (comma.tag != .token_comma) return null;
+                step_position = values.parse.keyword(ctx, Position, &.{
+                    .{ "jump-start", .@"jump-start" },
+                    .{ "jump-end", .@"jump-end" },
+                    .{ "jump-none", .@"jump-none" },
+                    .{ "jump-both", .@"jump-both" },
+                    .{ "start", .start },
+                    .{ "end", .end },
+                }) orelse return null;
+            }
+            if (!ctx.empty()) return null;
+            if (count < 1 or (step_position == .@"jump-none" and count < 2)) return null;
+            var buffer: [32]u8 = undefined;
+            try out.appendSlice(env.allocator, std.fmt.bufPrint(&buffer, "steps({d}", .{count}) catch unreachable);
+            switch (step_position) {
+                .end, .@"jump-end" => {},
+                .@"jump-start" => try out.appendSlice(env.allocator, ", jump-start"),
+                else => {
+                    try out.appendSlice(env.allocator, ", ");
+                    try out.appendSlice(env.allocator, @tagName(step_position));
+                },
+            }
+            try out.append(env.allocator, ')');
+        },
+    }
+    ok = true;
+}
+
+/// [ none | <keyframes-name> ]: `none`, a <custom-ident> (not a CSS-wide
+/// keyword, not `default`) or a <string>.
+fn animationNameValue(ctx: *Context, env: *Environment, out: *AnimationText) !?void {
+    const item = ctx.next() orelse return null;
+    switch (item.tag) {
+        .token_ident => {
+            const location = item.index.location(ctx.ast);
+            const Reserved = enum { none, reserved };
+            if (ctx.source_code.mapIdentifierValue(location, Reserved, &.{
+                .{ "none", .none },
+                .{ "initial", .reserved },
+                .{ "inherit", .reserved },
+                .{ "unset", .reserved },
+                .{ "revert", .reserved },
+                .{ "revert-layer", .reserved },
+                .{ "default", .reserved },
+            })) |reserved| switch (reserved) {
+                .none => {
+                    try out.appendSlice(env.allocator, "none");
+                    return;
+                },
+                .reserved => {
+                    ctx.resetPoint(item.index);
+                    return null;
+                },
+            };
+            const name = try ctx.source_code.copyIdentifier(location, .{ .allocator = env.allocator });
+            defer env.allocator.free(name);
+            try out.appendSlice(env.allocator, name);
+        },
+        .token_string => {
+            const name = try ctx.source_code.copyString(item.index.location(ctx.ast), .{ .allocator = env.allocator });
+            defer env.allocator.free(name);
+            // A string names the keyframes as an identifier would; only names an
+            // identifier cannot spell stay quoted.
+            const plain = name.len > 0 and !std.ascii.eqlIgnoreCase(name, "none") and for (name) |ch| {
+                if (!(std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_' or ch >= 0x80)) break false;
+            } else !std.ascii.isDigit(name[0]);
+            if (plain) {
+                try out.appendSlice(env.allocator, name);
+            } else {
+                try out.append(env.allocator, '"');
+                for (name) |ch| {
+                    if (ch == '"' or ch == '\\') try out.append(env.allocator, '\\');
+                    try out.append(env.allocator, ch);
+                }
+                try out.append(env.allocator, '"');
+            }
+        },
+        else => {
+            ctx.resetPoint(item.index);
+            return null;
+        },
+    }
+}
+
+fn animationKeyword(ctx: *Context, env: *Environment, out: *AnimationText, comptime names: []const []const u8) !?void {
+    const item = ctx.next() orelse return null;
+    if (item.tag == .token_ident) {
+        inline for (names) |name| {
+            if (ctx.source_code.mapIdentifierValue(item.index.location(ctx.ast), void, &.{.{ name, {} }}) != null) {
+                try out.appendSlice(env.allocator, name);
+                return;
+            }
+        }
+    }
+    ctx.resetPoint(item.index);
+    return null;
+}
+
+const animation_directions: []const []const u8 = &.{ "normal", "reverse", "alternate-reverse", "alternate" };
+const animation_fill_modes: []const []const u8 = &.{ "none", "forwards", "backwards", "both" };
+const animation_play_states: []const []const u8 = &.{ "running", "paused" };
+
+/// One item of the list of the longhand `part`, serialized onto `out`.
+fn animationComponent(ctx: *Context, env: *Environment, out: *AnimationText, comptime part: AnimationPart) !?void {
+    switch (part) {
+        .name => return animationNameValue(ctx, env, out),
+        .duration => {
+            const time = animationTime(ctx) orelse return null;
+            if (time < 0) return null;
+            try animationPutNumber(env, out, time);
+            try out.append(env.allocator, 's');
+        },
+        .delay => {
+            const time = animationTime(ctx) orelse return null;
+            try animationPutNumber(env, out, time);
+            try out.append(env.allocator, 's');
+        },
+        .timing_function => return animationEasing(ctx, env, out),
+        .iteration_count => {
+            if ((try animationKeyword(ctx, env, out, &.{"infinite"})) != null) return;
+            const save = ctx.savePoint();
+            const count = animationNumber(ctx) orelse return null;
+            if (count < 0) {
+                ctx.resetPoint(save);
+                return null;
+            }
+            try animationPutNumber(env, out, count);
+        },
+        .direction => return animationKeyword(ctx, env, out, animation_directions),
+        .fill_mode => return animationKeyword(ctx, env, out, animation_fill_modes),
+        .play_state => return animationKeyword(ctx, env, out, animation_play_states),
+    }
+}
+
+fn animationLonghand(ctx: *Context, declaration_index: Ast.Index, env: *Environment, comptime part: AnimationPart) !?values.types.AnimationValue {
+    ctx.initDeclList(declaration_index) orelse return null;
+    var out: AnimationText = .empty;
+    defer out.deinit(env.allocator);
+    var count: usize = 0;
+    while (ctx.nextListItem()) |_| {
+        if (count > 0) try out.appendSlice(env.allocator, ", ");
+        (try animationComponent(ctx, env, &out, part)) orelse return null;
+        ctx.endListItem() orelse return null;
+        count += 1;
+    }
+    if (count == 0) return null;
+    return try env.internAnimationValue(out.items);
+}
+
+pub fn @"animation-name"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-name") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .name)) orelse return null;
+    return .{ .animation = .{ .name = .{ .declared = value } } };
+}
+
+pub fn @"animation-duration"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-duration") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .duration)) orelse return null;
+    return .{ .animation = .{ .duration = .{ .declared = value } } };
+}
+
+pub fn @"animation-timing-function"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-timing-function") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .timing_function)) orelse return null;
+    return .{ .animation = .{ .timing_function = .{ .declared = value } } };
+}
+
+pub fn @"animation-delay"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-delay") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .delay)) orelse return null;
+    return .{ .animation = .{ .delay = .{ .declared = value } } };
+}
+
+pub fn @"animation-iteration-count"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-iteration-count") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .iteration_count)) orelse return null;
+    return .{ .animation = .{ .iteration_count = .{ .declared = value } } };
+}
+
+pub fn @"animation-direction"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-direction") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .direction)) orelse return null;
+    return .{ .animation = .{ .direction = .{ .declared = value } } };
+}
+
+pub fn @"animation-fill-mode"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-fill-mode") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .fill_mode)) orelse return null;
+    return .{ .animation = .{ .fill_mode = .{ .declared = value } } };
+}
+
+pub fn @"animation-play-state"(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.@"animation-play-state") {
+    const value = (try animationLonghand(ctx, declaration_index, env, .play_state)) orelse return null;
+    return .{ .animation = .{ .play_state = .{ .declared = value } } };
+}
+
+/// The `animation` shorthand (CSS Animations 1 §4.9): <single-animation>#, with
+/// <single-animation> = <time> || <easing-function> || <time> ||
+///   <single-animation-iteration-count> || <single-animation-direction> ||
+///   <single-animation-fill-mode> || <single-animation-play-state> ||
+///   [ none | <keyframes-name> ]
+/// The first <time> is the duration, the second the delay; a keyword that is
+/// valid for another longhand goes to that longhand, not to the name. Every
+/// longhand is set: those not given take their initial values.
+pub fn animation(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?ReturnType(.animation) {
+    ctx.initDeclList(declaration_index) orelse return null;
+    const parts = comptime std.enums.values(AnimationPart);
+    var lists: [parts.len]AnimationText = @splat(.empty);
+    defer for (&lists) |*list| list.deinit(env.allocator);
+    const initial_texts = values.groups.Animation.initial_texts;
+
+    var count: usize = 0;
+    while (ctx.nextListItem()) |_| {
+        var item: [parts.len]AnimationText = @splat(.empty);
+        defer for (&item) |*text| text.deinit(env.allocator);
+        var seen: [parts.len]bool = @splat(false);
+        var any = false;
+        // Each round takes one component: the longhands in the order that
+        // settles the ambiguities (times: duration then delay; the name last).
+        const order = [_]AnimationPart{ .duration, .delay, .timing_function, .iteration_count, .direction, .fill_mode, .play_state, .name };
+        round: while (!ctx.empty()) {
+            inline for (order) |part| {
+                const i = @intFromEnum(part);
+                if (!seen[i]) {
+                    if ((try animationComponent(ctx, env, &item[i], part)) != null) {
+                        seen[i] = true;
+                        any = true;
+                        continue :round;
+                    }
+                    item[i].clearRetainingCapacity();
+                }
+            }
+            return null;
+        }
+        if (!any) return null;
+        ctx.endListItem() orelse return null;
+        inline for (parts) |part| {
+            const i = @intFromEnum(part);
+            if (count > 0) try lists[i].appendSlice(env.allocator, ", ");
+            try lists[i].appendSlice(env.allocator, if (seen[i]) item[i].items else @field(initial_texts, @tagName(part)));
+        }
+        count += 1;
+    }
+    if (count == 0) return null;
+    var ids: [parts.len]values.types.AnimationValue = undefined;
+    for (&ids, lists) |*id, list| id.* = try env.internAnimationValue(list.items);
+    return .{ .animation = .{
+        .name = .{ .declared = ids[@intFromEnum(AnimationPart.name)] },
+        .duration = .{ .declared = ids[@intFromEnum(AnimationPart.duration)] },
+        .timing_function = .{ .declared = ids[@intFromEnum(AnimationPart.timing_function)] },
+        .delay = .{ .declared = ids[@intFromEnum(AnimationPart.delay)] },
+        .iteration_count = .{ .declared = ids[@intFromEnum(AnimationPart.iteration_count)] },
+        .direction = .{ .declared = ids[@intFromEnum(AnimationPart.direction)] },
+        .fill_mode = .{ .declared = ids[@intFromEnum(AnimationPart.fill_mode)] },
+        .play_state = .{ .declared = ids[@intFromEnum(AnimationPart.play_state)] },
+    } };
+}

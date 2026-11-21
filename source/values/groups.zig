@@ -32,6 +32,7 @@ pub const Tag = enum {
     font,
     grid_template,
     generated_content,
+    animation,
 
     fn Value(comptime tag: Tag) type {
         return switch (tag) {
@@ -53,6 +54,7 @@ pub const Tag = enum {
             .font => Font,
             .grid_template => GridTemplate,
             .generated_content => GeneratedContent,
+            .animation => Animation,
         };
     }
 
@@ -76,6 +78,7 @@ pub const Tag = enum {
             .background,
             .grid_template,
             .generated_content,
+            .animation,
             => .not_inherited,
 
             .color,
@@ -104,6 +107,7 @@ pub const Tag = enum {
             .font, // TODO: should probably be multi
             .grid_template,
             .generated_content,
+            .animation,
             => .single,
 
             .background_clip,
@@ -419,6 +423,48 @@ pub const VerticalEdges = struct {
         .border_bottom = .medium,
         .margin_top = .{ .px = 0 },
         .margin_bottom = .{ .px = 0 },
+    };
+};
+
+/// name            -> animation-name
+/// duration        -> animation-duration
+/// timing_function -> animation-timing-function
+/// delay           -> animation-delay
+/// iteration_count -> animation-iteration-count
+/// direction       -> animation-direction
+/// fill_mode       -> animation-fill-mode
+/// play_state      -> animation-play-state
+pub const Animation = struct {
+    name: types.AnimationValue,
+    duration: types.AnimationValue,
+    timing_function: types.AnimationValue,
+    delay: types.AnimationValue,
+    iteration_count: types.AnimationValue,
+    direction: types.AnimationValue,
+    fill_mode: types.AnimationValue,
+    play_state: types.AnimationValue,
+
+    pub const initial_values = Animation{
+        .name = .initial,
+        .duration = .initial,
+        .timing_function = .initial,
+        .delay = .initial,
+        .iteration_count = .initial,
+        .direction = .initial,
+        .fill_mode = .initial,
+        .play_state = .initial,
+    };
+
+    /// The serialization of each field's initial value.
+    pub const initial_texts = .{
+        .name = "none",
+        .duration = "0s",
+        .timing_function = "ease",
+        .delay = "0s",
+        .iteration_count = "1",
+        .direction = "normal",
+        .fill_mode = "none",
+        .play_state = "running",
     };
 };
 

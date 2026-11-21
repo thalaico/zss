@@ -83,6 +83,9 @@ custom_fonts_referenced: u32 = 0,
 /// The distinct specified font-family lists, serialized (CSSOM), indexed by
 /// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
 font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,
+/// The serializations of the `animation-*` values in use; an `AnimationValue` is an index + 1.
+animation_values: std.ArrayListUnmanaged([]const u8) = .empty,
+animation_value_ids: std.StringHashMapUnmanaged(u32) = .empty,
 font_family_list_ids: std.StringHashMapUnmanaged(u32) = .empty,
 /// The math-function values (calc(), min(), ...) that did not fold to a
 /// plain length or percentage at parse time.
@@ -218,6 +221,9 @@ pub fn deinit(env: *Environment) void {
     env.urls_to_images.deinit(env.allocator);
     for (env.font_family_lists.items) |text| env.allocator.free(text);
     env.font_family_lists.deinit(env.allocator);
+    for (env.animation_values.items) |text| env.allocator.free(text);
+    env.animation_values.deinit(env.allocator);
+    env.animation_value_ids.deinit(env.allocator);
     env.font_family_list_ids.deinit(env.allocator);
     env.calc.deinit(env.allocator);
     {
@@ -242,6 +248,26 @@ pub fn internFontFamilyList(env: *Environment, text: []const u8) !zss.values.typ
         gop.value_ptr.* = @intCast(env.font_family_lists.items.len);
     }
     return @enumFromInt(gop.value_ptr.*);
+}
+
+/// Intern the serialization of an `animation-*` longhand's value.
+pub fn internAnimationValue(env: *Environment, text: []const u8) !zss.values.types.AnimationValue {
+    const gop = try env.animation_value_ids.getOrPut(env.allocator, text);
+    if (!gop.found_existing) {
+        errdefer _ = env.animation_value_ids.remove(text);
+        const owned = try env.allocator.dupe(u8, text);
+        errdefer env.allocator.free(owned);
+        try env.animation_values.append(env.allocator, owned);
+        gop.key_ptr.* = owned;
+        gop.value_ptr.* = @intCast(env.animation_values.items.len);
+    }
+    return @enumFromInt(gop.value_ptr.*);
+}
+
+/// The serialization of an `animation-*` value, or null for the initial value.
+pub fn animationValueText(env: *const Environment, value: zss.values.types.AnimationValue) ?[]const u8 {
+    if (value == .initial) return null;
+    return env.animation_values.items[@intFromEnum(value) - 1];
 }
 
 /// The serialized font-family list, or null for the initial value.
