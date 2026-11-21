@@ -470,6 +470,13 @@ pub fn getSpecifiedValueForNode(
     return sc.getSpecifiedValueForElement(stage, group, node, cascaded_values);
 }
 
+/// The computed `font` group of a specific node (its font size and an em /
+/// rem `line-height` computed to lengths).
+pub fn computedFontForNode(sc: *const StyleComputer, comptime stage: Stage, node: NodeId) ComputedValues(.font) {
+    const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};
+    return computeFont(stage, sc.getSpecifiedValueForElement(stage, .font, node, cascaded_values), sc, node);
+}
+
 /// Like resolvedFontSizePx but for a specific node instead of sc.current.node.
 pub fn resolvedFontSizePxForNode(sc: *const StyleComputer, comptime stage: Stage, node: NodeId) f32 {
     const cascaded_values: *const CascadeStorage = sc.env.cascade_db.getStorage(node) orelse &.{};

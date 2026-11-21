@@ -94,9 +94,20 @@ pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: C
     // CSS inheritance means the containing block already has correct inherited
     // font/color. Setting at creation time (not bottom-up in popFlowBlock)
     // avoids parent overwriting child IFC fonts.
-    if (box_gen.stacks.block_info.top) |block_info| {
+    // The block container of the IFC: the block on top of the stack, or, in
+    // a shrink-to-fit pass, the block being measured there (its nested
+    // blocks push no block_info).
+    const container_node: ?NodeId = blk: {
+        if (size_mode == .stf) {
+            const ctx = &box_gen.stf_context;
+            if (ctx.object.top) |top| if (ctx.main_object.top) |main| if (top.object_index != main.index)
+                break :blk ctx.tree.items(.node)[top.object_index];
+        }
+        break :blk if (box_gen.stacks.block_info.top) |block_info| block_info.node else null;
+    };
+    if (container_node) |node| {
         const layout = box_gen.getLayout();
-        const parent_index: u32 = @intCast(block_info.node.value);
+        const parent_index: u32 = @intCast(node.value);
         if (parent_index < layout.computer.box_gen_stage.nodes.len) {
             const bgc = layout.computer.box_gen_stage.nodes[parent_index];
             if (bgc.font) |font_specified| {
@@ -1654,7 +1665,7 @@ fn inlineBlockSolveSizes(
         }
     }
     // An atomic inline replaced element (CSS 2.1 §10.3.2, §10.6.2).
-    replaced.applyNaturalSize(env, computer.current.node, &used, used.isAuto(.inline_size));
+    replaced.applyNaturalSize(env, computer.current.node, &used, used.isAuto(.inline_size), flow.stretchWidth(used, containing_block_size.width));
 
     computer.setComputedValue(.box_gen, .content_width, computed.content_width);
     computer.setComputedValue(.box_gen, .horizontal_edges, computed.horizontal_edges);
@@ -1996,7 +2007,9 @@ const IFCLineSplitState = struct {
     /// box of every inline box on the line (open at its start or started on
     /// it), and the margin box of every inline-block on it; then the
     /// inline-blocks aligned to the line box itself.
-    fn finishLineBox(self: *IFCLineSplitState, lc: LineContext, phantom: bool) !void {
+    /// `right` is the line box's end edge (the containing block's, or a
+    /// right float's).
+    fn finishLineBox(self: *IFCLineSplitState, lc: LineContext, phantom: bool, right: Unit) !void {
         // CSS Text 3 §4.1.2: spaces at the end of the line hang (they take
         // no width), past the inline box edges after them.
         {
@@ -2065,6 +2078,17 @@ const IFCLineSplitState = struct {
         self.line_box.baseline += above;
         self.longest_line_box_length = @max(self.longest_line_box_length, self.cursor);
 
+        // CSS Text 3 §7.1 (horizontal-tb, ltr): `cursor` is the end of the
+        // line's content, its hanging spaces left out (§4.1.2).
+        const remaining = right - self.cursor;
+        const shift: Unit = if (phantom or remaining <= 0) 0 else switch (lc.ifc.text_align) {
+            .center, .@"-webkit-center" => @divFloor(remaining, 2),
+            .right, .end, .@"-webkit-right" => remaining,
+            // left / start; justify is not implemented (start-aligned).
+            else => 0,
+        };
+        self.line_box.align_shift = shift;
+
         for (blocks) |info| {
             if (info.at >= self.line_box.elements[1]) continue;
             const top = switch (info.line_relative) {
@@ -2077,8 +2101,8 @@ const IFCLineSplitState = struct {
             // end of its content: those spaces hang (CSS Text 3 §4.1.2).
             const x = switch (info.line_relative) {
                 .static_next_line => self.line_box.x_offset,
-                .static_in_line => @min(info.cursor, self.cursor),
-                else => info.cursor,
+                .static_in_line => @min(info.cursor, self.cursor) + shift,
+                else => info.cursor + shift,
             };
             info.offset.* = .{ .x = x, .y = top };
         }
@@ -2181,7 +2205,7 @@ const LineStepper = struct {
     min_w: Unit,
 
     fn next(self: LineStepper, s: *IFCLineSplitState, lc: LineContext, skipped: usize, line_top: *Unit, right: *Unit) !void {
-        try s.finishLineBox(lc, false);
+        try s.finishLineBox(lc, false, right.*);
         try lc.layout.box_tree.appendLineBox(lc.ifc, s.line_box);
         s.newLineBox(skipped);
         line_top.* += self.nominal_line_h;
@@ -2473,12 +2497,12 @@ pub fn splitIntoLineBoxes(
     if (s.line_box.elements[1] > s.line_box.elements[0]) {
         if (!lineHasContent(ifc, s.line_box)) {
             const top = s.line_box.baseline;
-            try s.finishLineBox(lc, true);
+            try s.finishLineBox(lc, true, effective_right_mut);
             s.line_box.phantom = true;
             try layout.box_tree.appendLineBox(ifc, s.line_box);
             return .{ .height = top, .longest_line_box_length = s.longest_line_box_length };
         }
-        try s.finishLineBox(lc, false);
+        try s.finishLineBox(lc, false, effective_right_mut);
         try layout.box_tree.appendLineBox(ifc, s.line_box);
     }
 
@@ -2494,8 +2518,8 @@ pub fn splitIntoLineBoxes(
 /// The baseline of inline-block `index`, as a distance from its border-box
 /// top, or null when it has none (it then aligns by its bottom margin
 /// edge). CSS 2.1 §10.8.1: the baseline of its last line box in normal
-/// flow, unless it has no in-flow line boxes or its overflow is not
-/// visible. A flex or grid container's baseline comes from its first item
+/// flow, unless it has no in-flow line boxes or it is a scroll container
+/// (CSS Overflow 3 §3.1 / CSS Inline 3 §4.2: `overflow: clip` keeps it). A flex or grid container's baseline comes from its first item
 /// (CSS Flexbox 1 §8.5, CSS Grid 1 §9.3; its last baseline from its last
 /// item), synthesized from the item's bottom border edge when the item has
 /// none.
@@ -2505,7 +2529,7 @@ fn inlineBlockBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Si
     }
     return switch (subtree.items(.inner_block)[index]) {
         .flex, .grid => boxBaseline(layout, subtree, index, .first),
-        .flow => if (subtree.items(.overflow)[index] != .visible) null else boxBaseline(layout, subtree, index, .last),
+        .flow => if (subtree.items(.overflow)[index].scrollContainer()) null else boxBaseline(layout, subtree, index, .last),
     };
 }
 

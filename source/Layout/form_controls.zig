@@ -101,6 +101,16 @@ pub fn baseline(layout: *Layout, node: NodeId, box_offsets: zss.BoxTree.BoxOffse
             if (std.ascii.eqlIgnoreCase(t, "checkbox") or std.ascii.eqlIgnoreCase(t, "radio")) return box_offsets.border_size.h;
         }
     }
+    // An input button with an empty label has the line `lineIfEmpty` gives
+    // it, and aligns by that line's baseline as by its label's.
+    if (isInputButton(env, node) and !hasLabel(env, node)) {
+        const font = controlFont(layout, node) orelse return null;
+        const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
+        const line_h: zss.math.Unit = @intFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
+        const content: zss.math.Unit = @intFromFloat(font.line_height_px * upp);
+        const ascent: zss.math.Unit = @intFromFloat(font.ascent_px * upp);
+        return box_offsets.content_pos.y + @divFloor(line_h - content, 2) + ascent;
+    }
     const kind = kindOf(env, node) orelse return null;
     if (kind == .textarea) return null;
     const font = controlFont(layout, node) orelse return null;
@@ -108,6 +118,68 @@ pub fn baseline(layout: *Layout, node: NodeId, box_offsets: zss.BoxTree.BoxOffse
     const line_h: zss.math.Unit = @intFromFloat(font.line_height_px * upp);
     const ascent: zss.math.Unit = @intFromFloat(font.ascent_px * upp);
     return box_offsets.content_pos.y + @divFloor(box_offsets.content_size.h - line_h, 2) + ascent;
+}
+
+/// The used `line-height` of `node` in px (CSS 2.1 §10.8.1; `normal` is the
+/// font's normal line height).
+fn usedLineHeightPx(layout: *Layout, node: NodeId, font: ControlFont) f32 {
+    return switch (layout.computer.computedFontForNode(.box_gen, node).line_height) {
+        .normal => font.line_height_px,
+        .number => |n| n * font.size_px,
+        .length => |px| px,
+        // Computed to lengths (StyleComputer.computeFont).
+        .em, .rem => unreachable,
+    };
+}
+
+/// The height of the line of a single-line text control: Blink lays the inner
+/// editor out at the control's `line-height`, never below the font's normal
+/// line height
+/// (measured: `line-height: 1.5` at 16px makes a 24px line, `40px` a 40px one,
+/// `5px` leaves Arial 13.33px at its 15px).
+fn textLineHeightPx(layout: *Layout, node: NodeId, font: ControlFont) f32 {
+    return @max(usedLineHeightPx(layout, node, font), font.line_height_px);
+}
+
+/// The content height of a block whose content is `auto_height` tall. HTML
+/// Rendering ("The input element as a button") leaves the rendering of an
+/// `<input>` button (submit, reset, button) to the UA; Chromium gives it a
+/// line even when its label is empty (an `<input type=button>` without a
+/// value is as tall as one with a label; a `<button>` with no content has no
+/// line).
+pub fn lineIfEmpty(layout: *Layout, node: NodeId, auto_height: zss.math.Unit) zss.math.Unit {
+    if (auto_height != 0) return auto_height;
+    if (!isInputButton(layout.inputs.env, node)) return auto_height;
+    const font = controlFont(layout, node) orelse return auto_height;
+    const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
+    return @intFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
+}
+
+/// Whether an input button has a label to show: its value attribute when it
+/// has one, else the default label of submit and reset (`button` has none).
+fn hasLabel(env: *const Environment, node: NodeId) bool {
+    if (env.nodeAttributeValueByName(node, "value")) |value| {
+        const interner = switch (env.case_options.attribute_values) {
+            .insensitive => &env.attribute_values_insensitive,
+            .sensitive => &env.attribute_values_sensitive,
+        };
+        var it = interner.iterator(@intFromEnum(value));
+        while (it.next()) |segment| if (segment.len > 0) return true;
+        return false;
+    }
+    var type_buf: [32]u8 = undefined;
+    const t = attributeString(env, node, "type", &type_buf) orelse return false;
+    return !std.ascii.eqlIgnoreCase(t, "button");
+}
+
+/// An `<input>` whose type is submit, reset or button: a push button whose
+/// label is its value (or the type's default label).
+pub fn isInputButton(env: *const Environment, node: NodeId) bool {
+    if (!env.nodeTagEql(node, "input")) return false;
+    var buf: [32]u8 = undefined;
+    const t = attributeString(env, node, "type", &buf) orelse return false;
+    for ([_][]const u8{ "submit", "reset", "button" }) |b| if (std.ascii.eqlIgnoreCase(t, b)) return true;
+    return false;
 }
 
 pub fn applyIntrinsicSizes(layout: *Layout, node: NodeId, sizes: *BlockUsedSizes) void {
@@ -129,13 +201,15 @@ pub fn applyIntrinsicSizes(layout: *Layout, node: NodeId, sizes: *BlockUsedSizes
         .text_input => {
             const size = attributeInteger(env, node, "size", default_input_size);
             width_px = @ceil(chars.avg * @as(f32, @floatFromInt(size))) + (chars.max - chars.avg);
-            height_px = line_height_px;
+            height_px = textLineHeightPx(layout, node, font);
         },
         .textarea => {
             const cols = attributeInteger(env, node, "cols", default_textarea_cols);
             const rows = attributeInteger(env, node, "rows", default_textarea_rows);
             width_px = @ceil(chars.avg * @as(f32, @floatFromInt(cols))) + textarea_scrollbar_reserve_px;
-            height_px = line_height_px * @as(f32, @floatFromInt(rows));
+            // Each row is a line of the used line-height, with no minimum
+            // (measured: `line-height: 5px` makes two rows 10px).
+            height_px = usedLineHeightPx(layout, node, font) * @as(f32, @floatFromInt(rows));
         },
         .select => {
             fonts.setFontSizeVariant(handle, font_props.font_weight, font_props.font_style, font_size_px);

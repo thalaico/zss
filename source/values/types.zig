@@ -126,6 +126,17 @@ pub const Overflow = enum {
     hidden,
     scroll,
     auto,
+    /// CSS Overflow 3 §3.1: clipped like `hidden`, but the box is not a
+    /// scroll container and does not establish a formatting context.
+    clip,
+
+    /// hidden, scroll and auto make the box a scroll container.
+    pub fn scrollContainer(o: Overflow) bool {
+        return switch (o) {
+            .hidden, .scroll, .auto => true,
+            .visible, .clip => false,
+        };
+    }
 };
 
 pub const FlexDirection = enum {

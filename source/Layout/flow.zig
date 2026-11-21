@@ -129,7 +129,9 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                 if (info.float_side != .none) {
                     info.is_bfc = true;
                 }
-                if (box_style_specified.overflow != .visible) {
+                // CSS Overflow 3 §3.1: a scroll container establishes a
+                // block formatting context (`clip` does not).
+                if (box_style_specified.overflow.scrollContainer()) {
                     info.is_bfc = true;
                 }
             }
@@ -348,6 +350,14 @@ pub fn percentWidth(env: *const zss.Environment, specified: BlockComputedSizes) 
     };
 }
 
+/// The width the constraint equation of CSS 2.1 §10.3.3 gives an element of
+/// `sizes` in a containing block `cbw` wide, its auto margins taken as 0.
+pub fn stretchWidth(sizes: BlockUsedSizes, cbw: Unit) Unit {
+    return @max(0, cbw - (sizes.border_inline_start + sizes.border_inline_end +
+        sizes.padding_inline_start + sizes.padding_inline_end +
+        (sizes.get(.margin_inline_start) orelse 0) + (sizes.get(.margin_inline_end) orelse 0)));
+}
+
 /// The percentage base of a containing block width: none while shrinking to fit.
 fn cbwBase(containing_block_width: ContainingBlockWidth) ?Unit {
     return switch (containing_block_width) {
@@ -407,7 +417,10 @@ pub fn solveAllSizes(
     }
     // A replaced element's auto sizes come from its natural size (CSS 2.1
     // §10.3.2, §10.6.2), before auto margins are resolved (§10.3.4).
-    replaced.applyNaturalSize(computer.env, computer.current.node, &sizes, sizes.isAuto(.inline_size));
+    replaced.applyNaturalSize(computer.env, computer.current.node, &sizes, sizes.isAuto(.inline_size), switch (containing_block_width) {
+        .normal => |cbw| stretchWidth(sizes, cbw),
+        .stf => null,
+    });
     switch (containing_block_width) {
         .normal => {
             // Save auto flags before adjustWidthAndMargins clears them

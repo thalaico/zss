@@ -910,6 +910,7 @@ pub fn overflow(ctx: *Context) ?types.Overflow {
         .{ "hidden", .hidden },
         .{ "scroll", .scroll },
         .{ "auto", .auto },
+        .{ "clip", .clip },
     });
 }
 

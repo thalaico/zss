@@ -201,7 +201,7 @@ const Pass = struct {
     fn isBfcRoot(pass: *const Pass, index: Subtree.Size) bool {
         const subtree = pass.subtree;
         return subtree.items(.is_bfc)[index] or subtree.items(.inner_block)[index] != .flow or
-            subtree.items(.overflow)[index] != .visible or table.isTable(pass.layout, pass.subtree_id, index);
+            subtree.items(.overflow)[index].scrollContainer() or table.isTable(pass.layout, pass.subtree_id, index);
     }
 
     fn inlineContent(pass: *Pass, index: Subtree.Size, ifc_id: BoxTree.InlineFormattingContext.Id, x0: Unit, width: Unit) !void {

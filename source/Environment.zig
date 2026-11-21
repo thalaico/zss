@@ -884,6 +884,7 @@ pub fn isPseudoElement(env: *const Environment, node: NodeId) bool {
 /// The first child of `node` in the box tree's view of the document: its
 /// ::before, then its children, then its ::after (CSS Pseudo 4 §2.6).
 pub fn boxFirstChild(env: *const Environment, node: NodeId) ?NodeId {
+    if (env.getNodeProperty(.replaced, node) != .no) return null;
     if (env.pseudoLink(node)) |link| return link.child;
     if (env.pseudo_nodes.get(.{ .node = node, .pseudo = .before })) |before| return before;
     return node.firstChild(env) orelse env.pseudo_nodes.get(.{ .node = node, .pseudo = .after });
@@ -1072,12 +1073,29 @@ pub const NodeProperty = struct {
     /// the row group), parsed by the host with the HTML rules.
     colspan: u16 = 1,
     rowspan: u16 = 1,
-    aspect_ratio_w: u16 = 0,
-    aspect_ratio_h: u16 = 0,
-    /// The natural size of a replaced element (a loaded image) in CSS px,
-    /// set by the host; 0 = none (Layout/replaced.zig).
-    natural_width: f32 = 0,
-    natural_height: f32 = 0,
+    /// Whether the element is a replaced element (CSS 2.1 §3.1), set by the host.
+    replaced: Replaced = .no,
+    /// The natural dimensions and ratio of a replaced element (CSS Images 3
+    /// §4.1) in CSS px, set by the host; null = none (Layout/replaced.zig).
+    natural_width: ?f32 = null,
+    natural_height: ?f32 = null,
+    /// width / height.
+    natural_ratio: ?f32 = null,
+};
+
+/// A replaced element's content is outside the CSS formatting model: its
+/// children and its ::before / ::after generate no boxes (`boxFirstChild`),
+/// `display: inline` makes it an atomic inline-level box (CSS 2.1 §9.2.2),
+/// and its auto sizes come from its natural ones (Layout/replaced.zig).
+pub const Replaced = enum(u2) {
+    no,
+    /// An object sized by CSS 2.1 §10.3.2 / §10.6.2 in full: an `<svg>` root,
+    /// a `<canvas>`, an image whose natural size is known.
+    object,
+    /// An image whose natural size the host does not know (not loaded,
+    /// broken): sized like an empty box. Its alternative text and a broken
+    /// image's rendering (HTML §15.4.1) are not implemented.
+    unsized_image,
 };
 
 const NodeProperties = struct {

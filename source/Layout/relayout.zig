@@ -123,8 +123,10 @@ pub fn relayoutChild(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree
         .block => relayoutBlock(layout, subtree, subtree_id, index, cb_width),
         .ifc_container => |ifc_id| relayoutIfc(layout, subtree, index, ifc_id, cb_width),
         .subtree_proxy => |child_id| {
+            // The root of the child subtree is a block or, for the lines of
+            // a shrink-to-fit block, an inline formatting context.
             const child_subtree = layout.box_tree.ptr.getSubtree(child_id).view();
-            relayoutBlock(layout, child_subtree, child_id, 0, cb_width);
+            relayoutChild(layout, child_subtree, child_id, 0, cb_width);
             syncProxy(subtree, index, child_subtree);
         },
     }

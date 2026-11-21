@@ -17,6 +17,7 @@ const Layout = @import("../Layout.zig");
 const IsRoot = Layout.IsRoot;
 
 const flow = @import("flow.zig");
+const form_controls = @import("form_controls.zig");
 const grid = @import("grid.zig");
 const intrinsic = @import("intrinsic.zig");
 const bfc = @import("bfc.zig");
@@ -27,6 +28,7 @@ const stf = @import("shrink_to_fit.zig");
 const positioned = @import("positioned.zig");
 const table = @import("table.zig");
 const reuse = @import("reuse.zig");
+const relayout = @import("relayout.zig");
 pub const Absolute = @import("AbsoluteContainingBlocks.zig");
 pub const StackingContextTreeBuilder = @import("StackingContextTreeBuilder.zig");
 
@@ -195,8 +197,13 @@ fn analyzeNode(layout: *Layout, comptime is_root: IsRoot, parent_blockifies: boo
                 .normal, .none => specified_box_style.display = .none,
                 else => {},
             };
-            const computed_box_style, const used_box_style = solve.boxStyle(specified_box_style, is_root, parent_blockifies);
+            const computed_box_style, var used_box_style = solve.boxStyle(specified_box_style, is_root, parent_blockifies);
             layout.computer.setComputedValue(.box_gen, .box_style, computed_box_style);
+            // CSS 2.1 §9.2.2: an inline-level replaced element is an atomic
+            // inline-level box, laid out as an inline-block with no content.
+            if (used_box_style.outer == .@"inline" and used_box_style.outer.@"inline" == .@"inline" and
+                layout.inputs.env.getNodeProperty(.replaced, node) != .no)
+                used_box_style.outer = .{ .@"inline" = .{ .block = .flow } };
             return .{ node, used_box_style };
         },
     }
@@ -894,21 +901,7 @@ pub fn popFlowBlock(
         .normal => block_info.sizes.get(.inline_size).?,
         .stf => |aw| flow.solveUsedWidth(aw, block_info.sizes.min_inline_size, block_info.sizes.max_inline_size),
     };
-    const height = blk: {
-        const base = flow.solveUsedHeight(block_info.sizes, auto_height);
-        if (block_info.sizes.get(.block_size) == null and auto_height == 0 and width > 0) {
-            const ar_w = layout.inputs.env.getNodeProperty(.aspect_ratio_w, block_info.node);
-            const ar_h = layout.inputs.env.getNodeProperty(.aspect_ratio_h, block_info.node);
-            if (ar_w > 0 and ar_h > 0) {
-                break :blk solve.clampSize(
-                    @divFloor(width * @as(math.Unit, ar_h), @as(math.Unit, ar_w)),
-                    block_info.sizes.min_block_size,
-                    block_info.sizes.max_block_size,
-                );
-            }
-        }
-        break :blk base;
-    };
+    const height = flow.solveUsedHeight(block_info.sizes, form_controls.lineIfEmpty(layout, block_info.node, auto_height));
     const inner_block: BoxTree.BoxStyle.InnerBlock =
         if (block_info.is_flex_container) .flex else if (block_info.is_grid_container) .grid else .flow;
     setDataBlock(subtree, block.index, block_info.sizes, block.skip, width, height, block_info.stacking_context_id, block_info.node, block_info.out_of_flow, inner_block);
@@ -931,11 +924,30 @@ pub fn popFlowBlock(
     subtree.items(.align_self)[block.index] = block_info.align_self;
     subtree.items(.list_style_type)[block.index] = .none;
 
+    // A shrink-to-fit inline-block's content was laid out against the
+    // available width, before its own width was known (CSS 2.1 §10.3.9):
+    // lay it out again in its content box, so block children fill it
+    // (§10.3.3) and lines align in it (§16.2), as a float's is (bfc.zig).
+    switch (auto_width) {
+        .normal => {},
+        .stf => relayoutAtUsedWidth(layout, subtree, box_gen.currentSubtree(), block.index, width, block_info.sizes, block_info.node),
+    }
     const cb = box_gen.stacks.containing_block_size.top orelse ContainingBlockSize{ .width = 0, .height = null };
     writeBlockCosmetic(layout, subtree, block.index, block_info.node, cb.width, cb.height, block_info.position) catch {};
     if (block_info.table_role == .table) table.afterTableCosmetic(box_gen, subtree, box_gen.currentSubtree(), block.index);
 
     if (block_info.float_side != .none) box_gen.markFloat();
+}
+
+/// Lay out the content of shrink-to-fit block `index` again in its content
+/// box of width `width`, then give an `auto` height its used value from the
+/// new content height (the one-line minimum of a form control, min/max-height:
+/// CSS 2.1 §10.7) as the first pass did.
+fn relayoutAtUsedWidth(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size, width: math.Unit, sizes: BlockUsedSizes, node: NodeId) void {
+    relayout.relayoutContent(layout, subtree, subtree_id, index, width);
+    if (sizes.get(.block_size) != null) return;
+    const content_h = subtree.items(.box_offsets)[index].content_size.h;
+    relayout.setContentHeight(subtree, index, flow.solveUsedHeight(sizes, form_controls.lineIfEmpty(layout, node, content_h)));
 }
 
 pub fn pushStfFlowBlock(
@@ -982,24 +994,14 @@ pub fn popStfFlowBlock2(
     const parent_edge = sizes.border_block_start + sizes.padding_block_start;
     const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, box_tree.ptr).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
-    const height = blk: {
-        const base = flow.solveUsedHeight(sizes, auto_height);
-        if (sizes.get(.block_size) == null and auto_height == 0 and width > 0) {
-            const env = box_gen.getLayout().inputs.env;
-            const ar_w = env.getNodeProperty(.aspect_ratio_w, node);
-            const ar_h = env.getNodeProperty(.aspect_ratio_h, node);
-            if (ar_w > 0 and ar_h > 0) {
-                break :blk solve.clampSize(
-                    @divFloor(width * @as(math.Unit, ar_h), @as(math.Unit, ar_w)),
-                    sizes.min_block_size,
-                    sizes.max_block_size,
-                );
-            }
-        }
-        break :blk base;
-    };
+    const height = flow.solveUsedHeight(sizes, form_controls.lineIfEmpty(box_gen.getLayout(), node, auto_height));
     // STF flow block: always flow (this is the split-text-flow subtree path).
     setDataBlock(subtree, block.index, sizes, block.skip, width, height, stacking_context_id, node, false, .flow);
+    // Its lines were split against the available width while its own width
+    // was being measured: lay its content out in its content box, so that a
+    // block's content is always laid out at the block's width (relayout.zig
+    // relies on it).
+    relayoutAtUsedWidth(box_gen.getLayout(), subtree, subtree_id, block.index, width, sizes, node);
 
     const ref: BlockRef = .{ .subtree = subtree_id, .index = block.index };
     if (stacking_context_id) |id| box_gen.sct_builder.setBlock(id, box_tree.ptr, ref);

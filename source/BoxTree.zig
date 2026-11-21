@@ -611,6 +611,12 @@ pub const InlineFormattingContext = struct {
         /// Used to push the line past a left float exclusion (CSS 2.1 §9.5).
         /// Default 0 — line starts at the IFC's content origin x.
         x_offset: math.Unit = 0,
+        /// CSS Text 3 §7.1: the shift `text-align` gives this line's
+        /// contents (after `x_offset`): none, half or all of the space left
+        /// between the end of its content and the line box's end edge; none
+        /// when the content does not fit (it is start-aligned). Set by line
+        /// splitting; inline-block offsets already include it.
+        align_shift: math.Unit = 0,
         /// CSS Text 3 §4.1.2: text glyphs before `lead_end` (collapsible
         /// spaces at the line's start) are removed and those from
         /// `trail_start` on (spaces at its end) hang: both take no width.
