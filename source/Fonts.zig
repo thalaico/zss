@@ -70,8 +70,13 @@ pub fn doneFreeType(lib: FT_Library) void {
 /// Load a font face from a file path using the vendored FreeType.
 /// Returns null if the file cannot be opened or parsed.
 pub fn loadFace(lib: FT_Library, path: [*:0]const u8) ?FT_Face {
+    return loadFaceAt(lib, path, 0);
+}
+
+/// The face at `index` of a font file (a collection holds several).
+pub fn loadFaceAt(lib: FT_Library, path: [*:0]const u8, index: c_long) ?FT_Face {
     var face: hb.FT_Face = undefined;
-    if (hb.FT_New_Face(lib, path, 0, &face) != 0) return null;
+    if (hb.FT_New_Face(lib, path, index, &face) != 0) return null;
     return face;
 }
 

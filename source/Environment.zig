@@ -81,9 +81,15 @@ viewport_configured: bool = false,
 /// The media type and user preferences media queries are evaluated for, next
 /// to the viewport (`mediaDevice`).
 media_settings: MediaSettings = .{},
-/// Lowercase names of custom @font-face registered fonts (lifetime owned by caller).
-/// Used by the CSS font-family parser to recognize custom font names.
+/// Names of the registered custom fonts, matched ASCII case-insensitively
+/// (lifetime owned by caller): the @font-face families and the system
+/// families `system_fonts` registered. `.custom = i` is `custom_font_names[i]`.
 custom_font_names: []const []const u8 = &.{},
+/// The host's installed fonts. A <family-name> no @font-face rule defines is
+/// available when the system has a font for it (CSS Fonts 4 §5.1); the host
+/// decides that and registers the family as a custom font (appending it to
+/// `custom_font_names`), returning its index. Null: no system fonts.
+system_fonts: ?SystemFonts = null,
 /// Bit i: some parsed `font-family` value resolved to `custom_font_names[i]`
 /// (its first available family) — the custom fonts style rules refer to
 /// (CSS Fonts 4 §4.9: only those may be downloaded).
@@ -124,6 +130,14 @@ pub const DomQuirksMode = enum {
     no_quirks,
     quirks,
     limited_quirks,
+};
+
+pub const SystemFonts = struct {
+    ctx: *anyopaque,
+    /// The custom font index of the installed family `name` (as written,
+    /// unquoted), registering it on first use; null when no installed font
+    /// is that family or no index is left.
+    find: *const fn (ctx: *anyopaque, env: *Environment, name: []const u8) ?u8,
 };
 
 pub fn init(

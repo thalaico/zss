@@ -76,8 +76,6 @@ pub const Context = struct {
     viewport_height_px: f32 = 600.0,
     /// Computed font-size in px for em resolution. Defaults to initial (16px).
     font_size_px: f32 = 16.0,
-    /// Lowercase names of @font-face registered custom fonts. Set from env.custom_font_names.
-    custom_font_names: []const []const u8 = &.{},
     /// Where math functions that do not fold are stored; without it they are
     /// not accepted.
     env: ?*Environment = null,
@@ -1130,8 +1128,8 @@ pub const FontFamilyValue = struct {
 /// serialization: generic families lowercased, family names unquoted if
 /// they are an identifier (and not a generic keyword), else quoted.
 /// `family` is the first available family of the list — a generic family
-/// zss renders, a registered custom font (`custom_font_names`), or a known
-/// named font mapped to its generic family — or the UA standard font
+/// zss renders, a registered custom font (`custom_font_names`), or an
+/// installed font (`Environment.system_fonts`) — or the UA standard font
 /// (`serif`, Chrome's Times New Roman) when none is. Generic families zss
 /// does not render (cursive, fantasy, emoji, math, fangsong, ui-*) are
 /// skipped like unavailable names.
@@ -1202,10 +1200,8 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
 
         if (resolved == null) resolved = if (generic) |g|
             renderedGenericFamily(g)
-        else if (lower) |l|
-            availableNamedFamily(l, ctx.custom_font_names)
         else
-            null;
+            availableNamedFamily(env, name.items);
 
         const separator = ctx.next() orelse break;
         if (separator.tag != .token_comma) return null;
@@ -1244,24 +1240,16 @@ fn renderedGenericFamily(generic: []const u8) ?types.FontFamily {
     return null;
 }
 
-/// A named family that is available: a registered custom font (fontconfig
-/// resolved names and @font-face families), else a known named font mapped
-/// to its generic family.
-fn availableNamedFamily(lower: []const u8, custom_font_names: []const []const u8) ?types.FontFamily {
-    for (custom_font_names, 0..) |custom, idx| {
-        if (std.ascii.eqlIgnoreCase(custom, lower)) return .{ .custom = @intCast(idx) };
+/// A <family-name> that is available (CSS Fonts 4 §5.1): a registered
+/// custom font (an @font-face family, or a system family registered before),
+/// else an installed font the host finds (`Environment.system_fonts`).
+fn availableNamedFamily(env: *Environment, name: []const u8) ?types.FontFamily {
+    for (env.custom_font_names, 0..) |custom, idx| {
+        if (std.ascii.eqlIgnoreCase(custom, name)) return .{ .custom = @intCast(idx) };
     }
-    const named = [_]struct { []const u8, types.FontFamily }{
-        .{ "verdana", .sans_serif },          .{ "arial", .sans_serif },       .{ "helvetica", .sans_serif },
-        .{ "tahoma", .sans_serif },           .{ "calibri", .sans_serif },     .{ "roboto", .sans_serif },
-        .{ "lato", .sans_serif },             .{ "times", .serif },            .{ "georgia", .serif },
-        .{ "garamond", .serif },              .{ "palatino", .serif },         .{ "cambria", .serif },
-        .{ "linux libertine", .serif },       .{ "liberation serif", .serif }, .{ "nimbus roman", .serif },
-        .{ "courier", .monospace },           .{ "consolas", .monospace },     .{ "monaco", .monospace },
-        .{ "menlo", .monospace },
-    };
-    for (named) |kv| if (std.mem.eql(u8, lower, kv[0])) return kv[1];
-    return null;
+    const system = env.system_fonts orelse return null;
+    const idx = system.find(system.ctx, env, name) orelse return null;
+    return .{ .custom = idx };
 }
 
 /// Whether `text` is a CSS identifier as written (CSS Syntax 3 §4.3.10),

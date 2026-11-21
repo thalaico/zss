@@ -399,7 +399,6 @@ pub fn parseDeclarationsFromAst(
     var ctx = ValueContext.init(ast, source_code);
     if (env.viewport_width_px > 0) ctx.viewport_width_px = @floatFromInt(env.viewport_width_px);
     if (env.viewport_height_px > 0) ctx.viewport_height_px = @floatFromInt(env.viewport_height_px);
-    ctx.custom_font_names = env.custom_font_names;
     ctx.env = env;
     var fba = std.heap.FixedBufferAllocator.init(buffer);
     const block = try env.decls.openBlock(env.allocator);
