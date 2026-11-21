@@ -317,6 +317,21 @@ pub const Urls = struct {
         }
     };
 
+    /// Keep the text of every URL in `urls`, found in `source_code`, in the environment
+    /// (`Environment.urlText`): a computed value holding one is serialized from it. Call
+    /// before `commit`.
+    pub fn recordTexts(urls: *const Urls, env: *Environment, source_code: SourceCode) void {
+        var it = urls.iterator();
+        while (it.next()) |item| {
+            const text: []const u8 = switch (item.desc.src_loc) {
+                .url_token => |loc| source_code.copyUrl(loc, .{ .allocator = env.allocator }) catch continue,
+                .string_token => |loc| source_code.copyString(loc, .{ .allocator = env.allocator }) catch continue,
+            };
+            defer env.allocator.free(text);
+            env.setUrlText(item.id, text) catch {};
+        }
+    }
+
     /// Returns an iterator over all URLs currently stored within `urls`.
     pub fn iterator(urls: *const Urls) Iterator {
         return .{ .index = 0, .urls = urls };
@@ -1541,7 +1556,14 @@ pub fn linearGradient(ctx: *Context) ?types.LinearGradient {
     };
     // Enter function arguments
     const state = ctx.enterSequence(item.index);
-    defer ctx.resetState(state);
+    const gradient = linearGradientArguments(ctx);
+    ctx.resetState(state);
+    // Not a gradient this can hold: nothing was consumed.
+    if (gradient == null) ctx.resetPoint(item.index);
+    return gradient;
+}
+
+fn linearGradientArguments(ctx: *Context) ?types.LinearGradient {
     // Parse first color stop
     const from_color = parseColorRgba(ctx) orelse return null;
     // Skip comma
@@ -1549,6 +1571,10 @@ pub fn linearGradient(ctx: *Context) ?types.LinearGradient {
     if (comma.tag != .token_comma) return null;
     // Parse second color stop
     const to_color = parseColorRgba(ctx) orelse return null;
+    // Two color stops without positions is all a `LinearGradient` holds: a direction, a
+    // third stop or a stop position makes this a gradient that cannot be drawn as
+    // written, so it is not one (CSS Images 3 §3.1 has no "first two stops" reading).
+    if (!ctx.empty()) return null;
     return .{ .gradient = .{ .from_rgba = from_color, .to_rgba = to_color } };
 }
 

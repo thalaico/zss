@@ -236,7 +236,10 @@ pub const Property = enum {
             .@"border-radius"         => &.{.{.border_radii, &.{.top_left, .top_right, .bottom_right, .bottom_left}}},
             .color                    => &.{.{.color           , &.{.color}         }},
             .@"background-color"      => &.{.{.background_color, &.{.color}         }},
-            .@"background-image"      => &.{.{.background      , &.{.image}         }},
+            .@"background-image"      => &.{
+                .{.background      , &.{.image}},
+                .{.background_color, &.{.gradient}},
+            },
             .@"background-repeat"     => &.{.{.background      , &.{.repeat}        }},
             .@"background-attachment" => &.{.{.background      , &.{.attachment}    }},
             .@"background-position"   => &.{.{.background      , &.{.position}      }},
@@ -382,7 +385,8 @@ pub const Property = enum {
 
 // TODO: Pick a "smarter" number
 // TODO: Consider just creating a buffer ourselves instead of requiring the user to provide one
-pub const recommended_buffer_size = Declarations.max_list_len * 32;
+// The `background` shorthand holds seven lists of up to `max_list_len` values.
+pub const recommended_buffer_size = Declarations.max_list_len * 128;
 
 pub fn parseDeclarationsFromAst(
     env: *Environment,

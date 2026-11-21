@@ -61,6 +61,9 @@ pseudo_links: std.AutoHashMapUnmanaged(usize, PseudoLink) = .empty,
 free_pseudo_values: std.ArrayListUnmanaged(usize) = .empty,
 next_url_id: ?UrlId.Int,
 urls_to_images: std.AutoArrayHashMapUnmanaged(UrlId, zss.Images.Handle),
+/// The text of a declaration's `url()`, as written (the host records and resolves it):
+/// what a computed value is serialized from.
+url_texts: std.AutoHashMapUnmanaged(UrlId, []const u8) = .empty,
 
 /// Viewport dimensions in CSS pixels, used for @media query evaluation.
 /// Set to 0 to disable media query filtering (all @media blocks included).
@@ -219,6 +222,11 @@ pub fn deinit(env: *Environment) void {
     }
 
     env.urls_to_images.deinit(env.allocator);
+    {
+        var it = env.url_texts.valueIterator();
+        while (it.next()) |text| env.allocator.free(text.*);
+        env.url_texts.deinit(env.allocator);
+    }
     for (env.font_family_lists.items) |text| env.allocator.free(text);
     env.font_family_lists.deinit(env.allocator);
     for (env.animation_values.items) |text| env.allocator.free(text);
@@ -572,6 +580,18 @@ pub fn addUrl(env: *Environment) !UrlId {
     const int = if (env.next_url_id) |*int| int else return error.OutOfUrls;
     defer env.next_url_id = std.math.add(UrlId.Int, int.*, 1) catch null;
     return @enumFromInt(int.*);
+}
+
+pub fn setUrlText(env: *Environment, url: UrlId, text: []const u8) !void {
+    const copy = try env.allocator.dupe(u8, text);
+    errdefer env.allocator.free(copy);
+    const entry = try env.url_texts.getOrPut(env.allocator, url);
+    if (entry.found_existing) env.allocator.free(entry.value_ptr.*);
+    entry.value_ptr.* = copy;
+}
+
+pub fn urlText(env: *const Environment, url: UrlId) ?[]const u8 {
+    return env.url_texts.get(url);
 }
 
 pub fn linkUrlToImage(env: *Environment, url: UrlId, image: zss.Images.Handle) !void {

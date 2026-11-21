@@ -254,7 +254,8 @@ pub fn size(ctx: *Context) ?types.BackgroundSize {
     const save_point = ctx.savePoint();
     // TODO: Range checking?
     if (values.parse.lengthPercentageAuto(ctx, types.BackgroundSize.SizeType)) |width| {
-        const height = values.parse.lengthPercentageAuto(ctx, types.BackgroundSize.SizeType) orelse width;
+        // CSS Backgrounds 3 §3.9: one value is the width, the height is then `auto`.
+        const height = values.parse.lengthPercentageAuto(ctx, types.BackgroundSize.SizeType) orelse .auto;
         return types.BackgroundSize{ .size = .{ .width = width, .height = height } };
     }
 

@@ -16,6 +16,7 @@ const ReturnType = zss.property.Property.ParseFnReturnType;
 const values = zss.values;
 const Environment = zss.Environment;
 const types = values.types;
+const groups = values.groups;
 const Context = values.parse.Context;
 
 fn ParseFnValueType(comptime function: anytype) type {
@@ -798,39 +799,139 @@ pub fn @"background-color"(ctx: *Context, declaration_index: Ast.Index) ?ReturnT
     return .{ .background_color = .{ .color = .{ .declared = value } } };
 }
 
-/// Background shorthand: handles `background: <color>` and `background: linear-gradient(c1, c2)`.
+/// CSS Backgrounds 3 §3.10, the `background` shorthand:
+///   background = [ <bg-layer> , ]* <final-bg-layer>
+///   <bg-layer> = <bg-image> || <bg-position> [ / <bg-size> ]? || <repeat-style> || <attachment> || <box> || <box>
+///   <final-bg-layer> = <'background-color'> || <bg-layer>
+/// Every sub-property a layer leaves out takes its initial value. One <box> sets
+/// background-origin and background-clip, two set origin then clip.
+///
+/// A gradient is not an entry of the image list yet: the painter reads one from
+/// `BackgroundColor.gradient`. So a `linear-gradient()` is accepted as the image of a
+/// declaration with a single layer, and a gradient among several layers (or any other
+/// <gradient>) makes the declaration invalid rather than being drawn as something else.
 pub fn background(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.background) {
-    // Try url(...) as a background-image layer first.
-    // The `background` shorthand can start with a <bg-image> such as url(...).
-    // We capture the URL here so it participates in the zss image pipeline.
-    ctx.initDecl(declaration_index);
-    if (try values.parse.background.image(ctx, urls)) |img| {
-        // Allocate a single-element list for this background-image.
-        fba.reset();
-        const list = try fba.allocator().create([1]types.BackgroundImage);
-        list[0] = img;
-        return .{ .background = .{ .image = .{ .declared = list[0..1] } } };
-    }
-    // Try color.
-    ctx.initDecl(declaration_index);
-    if (values.parse.color(ctx)) |color_value| {
-        if (ctx.empty()) {
-            return .{ .background_color = .{ .color = .{ .declared = color_value } } };
+    ctx.initDeclList(declaration_index) orelse return null;
+    const url_save_point = urls.save();
+    fba.reset();
+    const a = fba.allocator();
+    const initial = groups.Background.initial_values;
+
+    const images = try a.alloc(types.BackgroundImage, max_list_len);
+    const repeats = try a.alloc(types.BackgroundRepeat, max_list_len);
+    const attachments = try a.alloc(types.BackgroundAttachment, max_list_len);
+    const positions = try a.alloc(types.BackgroundPosition, max_list_len);
+    const origins = try a.alloc(types.BackgroundOrigin, max_list_len);
+    const sizes = try a.alloc(types.BackgroundSize, max_list_len);
+    const clips = try a.alloc(types.BackgroundClip, max_list_len);
+    var n: usize = 0;
+    var color_value: ?types.Color = null;
+    var gradient: ?types.LinearGradient = null;
+
+    const valid = layers: {
+        while (ctx.nextListItem()) |_| {
+            // A color belongs to the final layer only; a gradient to the only one.
+            if (n == max_list_len or color_value != null or gradient != null) break :layers false;
+            var layer_image: ?types.BackgroundImage = null;
+            var layer_position: ?types.BackgroundPosition = null;
+            var layer_size: ?types.BackgroundSize = null;
+            var layer_repeat: ?types.BackgroundRepeat = null;
+            var layer_attachment: ?types.BackgroundAttachment = null;
+            var layer_origin: ?types.BackgroundOrigin = null;
+            var layer_clip: ?types.BackgroundClip = null;
+            var boxes: u2 = 0;
+            var components: usize = 0;
+            while (true) : (components += 1) {
+                if (layer_image == null and gradient == null) {
+                    if (try values.parse.background.image(ctx, urls)) |v| {
+                        layer_image = v;
+                        continue;
+                    }
+                    if (values.parse.linearGradient(ctx)) |g| {
+                        gradient = g;
+                        continue;
+                    }
+                }
+                if (layer_position == null) if (values.parse.background.position(ctx)) |v| {
+                    layer_position = v;
+                    if (ctx.next()) |item| {
+                        if (item.tag == .token_delim and item.index.extra(ctx.ast).codepoint == '/') {
+                            layer_size = values.parse.background.size(ctx) orelse break :layers false;
+                        } else {
+                            ctx.resetPoint(item.index);
+                        }
+                    }
+                    continue;
+                };
+                if (layer_repeat == null) if (values.parse.background.repeat(ctx)) |v| {
+                    layer_repeat = v;
+                    continue;
+                };
+                if (layer_attachment == null) if (values.parse.background.attachment(ctx)) |v| {
+                    layer_attachment = v;
+                    continue;
+                };
+                if (boxes < 2) if (values.parse.background.clip(ctx)) |v| {
+                    if (boxes == 0) layer_origin = switch (v) {
+                        .border_box => .border_box,
+                        .padding_box => .padding_box,
+                        .content_box => .content_box,
+                    };
+                    layer_clip = v;
+                    boxes += 1;
+                    continue;
+                };
+                if (color_value == null) if (values.parse.color(ctx)) |v| {
+                    color_value = v;
+                    continue;
+                };
+                break;
+            }
+            if (components == 0) break :layers false;
+            ctx.endListItem() orelse break :layers false;
+            images[n] = layer_image orelse .none;
+            repeats[n] = layer_repeat orelse initial.repeat;
+            attachments[n] = layer_attachment orelse initial.attachment;
+            positions[n] = layer_position orelse initial.position;
+            origins[n] = layer_origin orelse initial.origin;
+            sizes[n] = layer_size orelse initial.size;
+            clips[n] = layer_clip orelse groups.BackgroundClip.initial_values.clip;
+            n += 1;
         }
+        break :layers n > 0 and (gradient == null or n == 1);
+    };
+    if (!valid) {
+        urls.reset(url_save_point);
+        return null;
     }
-    // Try linear-gradient().
-    ctx.initDecl(declaration_index);
-    if (values.parse.linearGradient(ctx)) |grad| {
-        if (ctx.empty()) {
-            return .{ .background_color = .{
-                .gradient = .{ .declared = grad },
-            } };
-        }
-    }
-    return null;
+
+    return .{
+        .background_color = .{
+            .color = if (color_value) |c| .{ .declared = c } else .initial,
+            .gradient = if (gradient) |g| .{ .declared = g } else .initial,
+        },
+        .background = .{
+            .image = .{ .declared = images[0..n] },
+            .repeat = .{ .declared = repeats[0..n] },
+            .attachment = .{ .declared = attachments[0..n] },
+            .position = .{ .declared = positions[0..n] },
+            .origin = .{ .declared = origins[0..n] },
+            .size = .{ .declared = sizes[0..n] },
+        },
+        .background_clip = .{ .clip = .{ .declared = clips[0..n] } },
+    };
 }
 
+/// `background-image: <bg-image>#`. A single `linear-gradient()` is kept in
+/// `BackgroundColor.gradient` (see `background`); a list of images clears it.
 pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fba, urls: zss.values.parse.Urls.Managed) !?ReturnType(.@"background-image") {
+    ctx.initDecl(declaration_index);
+    if (values.parse.linearGradient(ctx)) |g| {
+        if (!ctx.empty()) return null;
+        const none = try fba.allocator().create([1]types.BackgroundImage);
+        none[0] = .none;
+        return .{ .background = .{ .image = .{ .declared = none[0..1] } }, .background_color = .{ .gradient = .{ .declared = g } } };
+    }
     ctx.initDeclList(declaration_index) orelse return null;
     const url_save_point = urls.save();
 
@@ -844,7 +945,7 @@ pub fn @"background-image"(ctx: *Context, declaration_index: Ast.Index, fba: *Fb
         list[list_len] = value;
         list_len += 1;
     } else {
-        return .{ .background = .{ .image = .{ .declared = list[0..list_len] } } };
+        return .{ .background = .{ .image = .{ .declared = list[0..list_len] } }, .background_color = .{ .gradient = .initial } };
     }
 
     urls.reset(url_save_point);
