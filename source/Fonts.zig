@@ -1,5 +1,6 @@
 const Fonts = @This();
 
+const std = @import("std");
 const hb = @import("harfbuzz").c;
 const types = @import("values/types.zig");
 
@@ -85,13 +86,35 @@ pub fn doneFace(face: FT_Face) void {
     _ = hb.FT_Done_Face(face);
 }
 
-/// Create a HarfBuzz font from a vendored FT_Face.
-/// hb_ft_font_create_referenced sets up FT-backed font functions internally.
-/// We set NO_HINTING load flags for fractional advance accuracy.
+/// HarfBuzz positions per CSS px: 16.16 fixed point, as Blink scales its fonts
+/// (`HarfBuzzFace::GetScaledFont`: `SkiaScalarToHarfBuzzPosition(size)`). FreeType's
+/// 26.6 (the scale hb-ft takes from the face) rounds every advance to 1/64 px: up to
+/// half a layout unit per glyph (DejaVu Sans "iiiiiiiiii" came out 5/64 px wide of
+/// Chromium).
+pub const hb_units_per_px = 65536;
+
+/// Create a HarfBuzz font from a vendored FT_Face: HarfBuzz's own OpenType font
+/// functions (unhinted advances from `hmtx`, GPOS kerning, outline extents) — the
+/// advances Skia gives Blink with subpixel positioning — over the FreeType face's
+/// tables. Size it with `setFaceSize`.
 pub fn createHbFont(face: FT_Face) ?*hb.hb_font_t {
-    const font = hb.hb_ft_font_create_referenced(face) orelse return null;
-    hb.hb_ft_font_set_load_flags(font, 1 << 1); // FT_LOAD_NO_HINTING
+    const hb_face = hb.hb_ft_face_create_referenced(face) orelse return null;
+    defer hb.hb_face_destroy(hb_face);
+    const font = hb.hb_font_create(hb_face) orelse return null;
+    if (hb.hb_font_is_immutable(font) != 0) return null; // the empty font: out of memory
     return font;
+}
+
+/// Size a face for `size_px`: the FreeType size (ascent / descent metrics, glyph
+/// loading) and the HarfBuzz scale in 16.16 (Blink: the size × 65536 as an int,
+/// truncated; `ptem` the size).
+pub fn setFaceSize(ft_face: FT_Face, hb_font: *hb.hb_font_t, size_px: f32) void {
+    const size_26_6: i32 = @intFromFloat(size_px * 64.0);
+    _ = hb.FT_Set_Char_Size(ft_face, 0, size_26_6, 72, 72);
+    const max_scale: f32 = @floatFromInt(std.math.maxInt(c_int) - 128);
+    const scale: c_int = @intFromFloat(std.math.clamp(size_px * @as(f32, hb_units_per_px), 0, max_scale));
+    hb.hb_font_set_scale(hb_font, scale, scale);
+    hb.hb_font_set_ptem(hb_font, size_px);
 }
 
 /// Destroy a HarfBuzz font created with createHbFont().
@@ -192,9 +215,7 @@ pub fn getVariant(fonts: *const Fonts, handle: Handle, weight: types.FontWeight,
 pub fn setFontSizeVariant(fonts: *const Fonts, handle: Handle, weight: types.FontWeight, style: types.FontStyle, size_px: f32) void {
     const entry = fonts.entryFor(handle) orelse return;
     const v = entry.variantFor(weight, style);
-    const size_26_6: i32 = @intFromFloat(size_px * 64.0);
-    _ = hb.FT_Set_Char_Size(v.ft_face, 0, size_26_6, 72, 72);
-    hb.hb_ft_font_changed(v.hb_font);
+    setFaceSize(v.ft_face, v.hb_font, size_px);
 }
 
 /// Reserve a custom slot without populating it (e.g. when @font-face download failed).
@@ -266,11 +287,7 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
     if (raw >= 5) {
         const idx = raw - 5;
         if (idx < fonts.custom_count) {
-            if (fonts.custom_entries[idx]) |entry| {
-                const size_26_6: i32 = @intFromFloat(size_px * 64.0);
-                _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
-                hb.hb_ft_font_changed(entry.hb_font);
-            }
+            if (fonts.custom_entries[idx]) |entry| setFaceSize(entry.ft_face, entry.hb_font, size_px);
         }
         return;
     }
@@ -282,15 +299,7 @@ pub fn setFontSize(fonts: *const Fonts, handle: Handle, size_px: f32) void {
         .invalid => return,
         _ => return,
     };
-    if (fonts.fonts[slot]) |entry| {
-        const size_26_6: i32 = @intFromFloat(size_px * 64.0);
-        _ = hb.FT_Set_Char_Size(entry.ft_face, 0, size_26_6, 72, 72);
-        // Signal HarfBuzz to re-read FT face metrics at the new size.
-        // Do NOT call hb_ft_font_set_funcs here — it resets internal caches
-        // and breaks advance scaling. hb_ft_font_changed is sufficient when
-        // the FT-backed functions were set at font creation time.
-        hb.hb_ft_font_changed(entry.hb_font);
-    }
+    if (fonts.fonts[slot]) |entry| setFaceSize(entry.ft_face, entry.hb_font, size_px);
 }
 
 fn familyToHandle(family: types.FontFamily) Handle {

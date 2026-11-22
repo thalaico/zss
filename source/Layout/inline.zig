@@ -831,14 +831,27 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
         .nowrap, .pre => false,
     };
 
+    // CSS Text 3 §4.1.1 makes the collapsed text; it is shaped a segment at a
+    // time (Blink shapes a text item whole: kerning and ligatures see the spaces —
+    // Liberation Sans kerns " T" by 18/64 px). A segment ends at a tab or a forced
+    // break, which are not shaped.
+    var seg: Segment = .{ .pre_wrap = white_space == .pre_wrap };
+    defer seg.deinit(allocator);
+    // The text item the runs belong to (Blink: one item per text node, split at
+    // forced breaks); its width is rounded up as a whole (`ItemAdvance`).
+    var item: ItemAdvance = .{};
     var run_begin: usize = 0;
     var i: usize = 0;
     while (i < text.len) : (i += 1) {
         const ch = text[i];
         if (preserve_breaks and ch == '\n') {
-            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            _ = try seg.addText(allocator, text, run_begin, i);
+            // pre-line: a collapsible space right before a segment break is removed.
+            if (white_space == .pre_line) seg.dropTrailingCollapsedSpace();
+            try seg.flush(box_tree, ifc, buffer, font, &item, wrap);
             if (white_space == .pre_line) dropTrailingCollapsibleSpace(ifc);
             try ifcAddLineBreak(box_tree, ifc);
+            item = .{};
             setSrc(ifc, 2, i);
             // pre-line: spaces after the break collapse away too.
             ifc.ends_in_collapsible_space = collapse;
@@ -848,17 +861,17 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
         const is_space = ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
         if (!is_space) continue;
         if (collapse) {
-            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            if (try seg.addText(allocator, text, run_begin, i)) ifc.ends_in_collapsible_space = false;
             if (!ifc.ends_in_collapsible_space) {
-                try ifcAddTextRun(box_tree, ifc, buffer, font, " ", i, wrap);
-                try ifc.spaces.append(allocator, .{ .glyph = @intCast(ifc.glyphs.len - 1), .collapsible = true });
+                try seg.add(allocator, .collapsed_space, " ", i);
                 ifc.ends_in_collapsible_space = true;
             }
             run_begin = i + 1;
         } else if (ch == '\t') {
-            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            if (try seg.addText(allocator, text, run_begin, i)) ifc.ends_in_collapsible_space = false;
+            try seg.flush(box_tree, ifc, buffer, font, &item, wrap);
             const space = try shapeRun(buffer, font, " ");
-            const space_advance: u16 = if (space.len > 0) @intCast(@max(0, space[0].advance)) else 0;
+            const space_advance: u16 = if (space.len > 0) @intCast(std.math.clamp(unitsCeil(space[0].advance), 0, std.math.maxInt(u16))) else 0;
             try box_tree.appendSpecialGlyph(ifc, .Tab, space_advance);
             setSrc(ifc, 2, i);
             if (wrap) try ifc.break_opportunities.append(allocator, @intCast(ifc.glyphs.len - 1));
@@ -866,22 +879,110 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
         } else if (ch == ' ') {
             // A run of preserved spaces: a soft wrap opportunity after it
             // (pre-wrap), hanging at a line's end.
-            try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, i);
+            _ = try seg.addText(allocator, text, run_begin, i);
             var end = i;
             while (end < text.len and text[end] == ' ') end += 1;
-            const first: u32 = @intCast(ifc.glyphs.len);
-            try ifcAddTextRun(box_tree, ifc, buffer, font, text[i..end], i, wrap);
-            if (white_space == .pre_wrap) {
-                var g = first;
-                while (g < ifc.glyphs.len) : (g += 1) try ifc.spaces.append(allocator, .{ .glyph = g, .collapsible = false });
-            }
+            try seg.add(allocator, .preserved_spaces, text[i..end], i);
             ifc.ends_in_collapsible_space = false;
             run_begin = end;
             i = end - 1;
         }
     }
-    try ifcEndTextRun(box_tree, ifc, text, buffer, font, run_begin, text.len);
+    if (try seg.addText(allocator, text, run_begin, text.len)) ifc.ends_in_collapsible_space = false;
+    try seg.flush(box_tree, ifc, buffer, font, &item, wrap);
 }
+
+/// The collapsed text of one shaping segment and where each piece of it came from.
+const Segment = struct {
+    text: std.ArrayListUnmanaged(u8) = .{},
+    pieces: std.ArrayListUnmanaged(Piece) = .{},
+    /// `white_space` of the text the pieces came from (spaces entries).
+    pre_wrap: bool = false,
+
+    const Piece = struct {
+        kind: enum { text, collapsed_space, preserved_spaces },
+        /// Byte offset of the piece in `Segment.text`.
+        offset: u32,
+        /// Byte offset of the piece in the text node.
+        src: u32,
+    };
+
+    fn deinit(seg: *Segment, allocator: Allocator) void {
+        seg.text.deinit(allocator);
+        seg.pieces.deinit(allocator);
+    }
+
+    fn add(seg: *Segment, allocator: Allocator, kind: @FieldType(Piece, "kind"), bytes: []const u8, src: usize) !void {
+        try seg.pieces.append(allocator, .{ .kind = kind, .offset = @intCast(seg.text.items.len), .src = @intCast(src) });
+        try seg.text.appendSlice(allocator, bytes);
+    }
+
+    /// Add `text[begin..end]` as a text piece; whether it was not empty.
+    fn addText(seg: *Segment, allocator: Allocator, text: []const u8, begin: usize, end: usize) !bool {
+        if (end <= begin) return false;
+        try seg.add(allocator, .text, text[begin..end], begin);
+        return true;
+    }
+
+    fn dropTrailingCollapsedSpace(seg: *Segment) void {
+        const last = seg.pieces.getLastOrNull() orelse return;
+        if (last.kind != .collapsed_space) return;
+        _ = seg.pieces.pop();
+        seg.text.shrinkRetainingCapacity(last.offset);
+    }
+
+    /// Shape the segment and append its glyphs to the IFC: each glyph's source
+    /// byte from its cluster; a collapsed space and a run of preserved spaces end
+    /// with a soft wrap opportunity (`wrap`), and their glyphs are spaces (hanging,
+    /// collapsible at a line's ends).
+    fn flush(seg: *Segment, box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, item: *ItemAdvance, wrap: bool) !void {
+        defer {
+            seg.text.clearRetainingCapacity();
+            seg.pieces.clearRetainingCapacity();
+        }
+        if (seg.pieces.items.len == 0) return;
+        const allocator = box_tree.ptr.allocator;
+        const shaped = try shapeRun(buffer, font, seg.text.items);
+        const t_glyphs = Layout.now();
+        defer Layout.profile.glyph_ns +|= Layout.now() -| t_glyphs;
+
+        const pieces = seg.pieces.items;
+        var p: usize = 0;
+        // The glyphs of piece `p` begin at IFC glyph `piece_first` (null: none yet).
+        var piece_first: ?u32 = null;
+        for (shaped) |sg| {
+            while (p + 1 < pieces.len and sg.cluster >= pieces[p + 1].offset) {
+                try finishPiece(ifc, allocator, pieces[p], piece_first, wrap, seg.pre_wrap);
+                p += 1;
+                piece_first = null;
+            }
+            const first: u32 = @intCast(ifc.glyphs.len);
+            const src: u32 = pieces[p].src + (sg.cluster -| pieces[p].offset);
+            try appendShapedGlyph(box_tree, ifc, sg.index, item.next(sg.advance), src);
+            if (piece_first == null) piece_first = first;
+        }
+        try finishPiece(ifc, allocator, pieces[p], piece_first, wrap, seg.pre_wrap);
+    }
+
+    fn finishPiece(ifc: *Ifc, allocator: Allocator, piece: Piece, first: ?u32, wrap: bool, pre_wrap: bool) !void {
+        const begin = first orelse return;
+        const end: u32 = @intCast(ifc.glyphs.len);
+        switch (piece.kind) {
+            .text => {},
+            .collapsed_space => {
+                if (wrap) try ifc.break_opportunities.append(allocator, end - 1);
+                try ifc.spaces.append(allocator, .{ .glyph = end - 1, .collapsible = true });
+            },
+            .preserved_spaces => {
+                if (wrap) try ifc.break_opportunities.append(allocator, end - 1);
+                if (pre_wrap) {
+                    var g = begin;
+                    while (g < end) : (g += 1) try ifc.spaces.append(allocator, .{ .glyph = g, .collapsible = false });
+                }
+            },
+        }
+    }
+};
 
 /// The last `count` glyph entries (a special glyph is two) came from byte
 /// `src` of the text node being added.
@@ -902,15 +1003,34 @@ fn dropTrailingCollapsibleSpace(ifc: *Ifc) void {
     }
 }
 
-fn ifcEndTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, run_begin: usize, run_end: usize) !void {
-    if (run_end > run_begin) {
-        try ifcAddTextRun(box_tree, ifc, buffer, font, text[run_begin..run_end], run_begin, false);
-        ifc.ends_in_collapsible_space = false;
-    }
-}
 
-/// One shaped glyph as the shaping cache stores it.
-const ShapedGlyph = struct { index: GlyphIndex, advance: Unit, cluster: u32 };
+/// One shaped glyph as the shaping cache stores it: `advance` in HarfBuzz
+/// positions (`Fonts.hb_units_per_px`, 16.16).
+const ShapedGlyph = struct { index: GlyphIndex, advance: i32, cluster: u32 };
+
+/// Where a text item's glyphs end so far: the exact sum of their advances (16.16)
+/// and the layout units given out. Blink sums an item's advances in float and makes
+/// its width a LayoutUnit rounded up (`ShapeResult::SnappedWidth`: `FromFloatCeil`);
+/// each glyph here ends at the running sum rounded up, so an item — and any part of
+/// it ending at a glyph — is as wide as that.
+const ItemAdvance = struct {
+    total: i64 = 0,
+    placed: Unit = 0,
+
+    /// The layout-unit advance of the next glyph, whose advance is `advance`.
+    fn next(item: *ItemAdvance, advance: i32) Unit {
+        item.total += advance;
+        const end = unitsCeil(item.total);
+        defer item.placed = end;
+        return end -| item.placed;
+    }
+};
+
+/// HarfBuzz positions to layout units, rounded up (saturated).
+fn unitsCeil(positions: i64) Unit {
+    const per_unit: i64 = @divExact(Fonts.hb_units_per_px, units_per_pixel);
+    return zss.math.saturate(std.math.divCeil(i64, positions, per_unit) catch unreachable);
+}
 
 /// Per-layout word shaping cache (Blink's CachingWordShaper idea): text is
 /// shaped one collapsed-whitespace-delimited run at a time, and on real
@@ -973,62 +1093,27 @@ fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]c
     const glyph_positions = hb.hb_buffer_get_glyph_positions(buffer, &pos_count);
     assert(glyph_count == pos_count);
     const glyphs = try arena.alloc(ShapedGlyph, glyph_count);
-    // HarfBuzz 26.6 fixed point → layout units (¼ px), keeping kerning/GPOS.
-    // Rounded cumulatively: each glyph's advance is the step between the
-    // rounded running totals, so a run's width is exact to ¼ px instead of
-    // accumulating a per-glyph rounding error (flooring lost ~⅛ px per glyph
-    // against Chromium's fractional advances).
-    var total_26_6: i64 = 0;
-    var placed_units: Unit = 0;
+    // The advances as HarfBuzz gives them (16.16, kerning / GPOS included);
+    // layout units are given out per text item (`ItemAdvance`).
     for (glyphs, 0..) |*g, i| {
-        total_26_6 += glyph_positions[i].x_advance;
-        const end_units: Unit = @intCast(@divFloor(total_26_6 * units_per_pixel + 32, 64));
-        g.* = .{ .index = glyph_infos[i].codepoint, .advance = end_units - placed_units, .cluster = glyph_infos[i].cluster };
-        placed_units = end_units;
+        g.* = .{ .index = glyph_infos[i].codepoint, .advance = glyph_positions[i].x_advance, .cluster = glyph_infos[i].cluster };
     }
     try shape_cache.put(arena, .{ .font = key.font, .text = try arena.dupe(u8, text) }, glyphs);
     return glyphs;
 }
 
-fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8, src_base: usize, is_break_opportunity: bool) !void {
-    const shaped = try shapeRun(buffer, font, text);
-    const t_glyphs = Layout.now();
-    defer Layout.profile.glyph_ns +|= Layout.now() -| t_glyphs;
-    const glyph_count = shaped.len;
-
-    for (shaped) |sg| {
-        const glyph_index: GlyphIndex = sg.index;
-        const shaped_advance: Unit = sg.advance;
-        if (glyph_index == 0) {
-            const special: Ifc.Special = .{
-                .kind = .ZeroGlyphIndex,
-                .data = undefined,
-            };
-            try ifc.glyphs.append(box_tree.ptr.allocator, .{
-                .index = 0,
-                .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
-                .src = @intCast(src_base + sg.cluster),
-            });
-            try ifc.glyphs.append(box_tree.ptr.allocator, .{
-                .index = @bitCast(special),
-                .metrics = undefined,
-                .src = @intCast(src_base + sg.cluster),
-            });
-        } else {
-            try ifc.glyphs.append(box_tree.ptr.allocator, .{
-                .index = glyph_index,
-                .metrics = .{ .offset = 0, .advance = shaped_advance, .width = 0 },
-                .src = @intCast(src_base + sg.cluster),
-            });
-        }
-    }
-
-    // Record a break opportunity at the LAST glyph of this run if it's a
-    // CSS-collapsed space sequence. splitIntoLineBoxes consults this list
-    // to prefer word-boundary breaks over character-level ones.
-    if (is_break_opportunity and glyph_count > 0 and ifc.glyphs.len > 0) {
-        const last_glyph_index: u32 = @intCast(ifc.glyphs.len - 1);
-        try ifc.break_opportunities.append(box_tree.ptr.allocator, last_glyph_index);
+/// Append one shaped glyph (a glyph index 0 — no glyph in the font — carries a
+/// ZeroGlyphIndex special after it).
+fn appendShapedGlyph(box_tree: BoxTreeManaged, ifc: *Ifc, glyph_index: GlyphIndex, advance: Unit, src: u32) !void {
+    const allocator = box_tree.ptr.allocator;
+    try ifc.glyphs.append(allocator, .{
+        .index = glyph_index,
+        .metrics = .{ .offset = 0, .advance = advance, .width = 0 },
+        .src = src,
+    });
+    if (glyph_index == 0) {
+        const special: Ifc.Special = .{ .kind = .ZeroGlyphIndex, .data = undefined };
+        try ifc.glyphs.append(allocator, .{ .index = @bitCast(special), .metrics = undefined, .src = src });
     }
 }
 
@@ -1858,9 +1943,10 @@ fn setMetricsGlyphExtents(metrics: *Ifc.Metrics, font_opt: ?*hb.hb_font_t, glyph
 fn glyphExtents(font: *hb.hb_font_t, glyph_index: GlyphIndex) struct { Unit, Unit } {
     var extents: hb.hb_glyph_extents_t = undefined;
     if (hb.hb_font_get_glyph_extents(font, glyph_index, &extents) == 0) return .{ 0, 0 };
+    const per_unit: i32 = @divExact(Fonts.hb_units_per_px, units_per_pixel);
     return .{
-        @divFloor(extents.x_bearing * units_per_pixel, 64),
-        @divFloor(extents.width * units_per_pixel, 64),
+        @divFloor(extents.x_bearing, per_unit),
+        @divFloor(extents.width, per_unit),
     };
 }
 

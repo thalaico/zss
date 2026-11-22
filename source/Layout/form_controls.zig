@@ -310,7 +310,7 @@ fn widestOptionWidth(env: *const Environment, node: NodeId, hb_font: ?*hb.hb_fon
     return widest;
 }
 
-/// Total shaped advance of `text` in px (HarfBuzz 26.6 fixed point → px).
+/// Total shaped advance of `text` in px (HarfBuzz positions, `Fonts.hb_units_per_px`).
 fn textAdvancePx(font: *hb.hb_font_t, text: []const u8) f32 {
     if (text.len == 0) return 0;
     const buffer = hb.hb_buffer_create() orelse return 0;
@@ -326,5 +326,5 @@ fn textAdvancePx(font: *hb.hb_font_t, text: []const u8) f32 {
     var total: i64 = 0;
     var i: c_uint = 0;
     while (i < count) : (i += 1) total += positions[i].x_advance;
-    return @as(f32, @floatFromInt(total)) / 64.0;
+    return @as(f32, @floatFromInt(total)) / zss.Fonts.hb_units_per_px;
 }
