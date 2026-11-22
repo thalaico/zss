@@ -278,7 +278,10 @@ pub const IntrinsicFlags = packed struct(u8) {
         margin_end_auto: bool = false,
         height_auto: bool = true,
         border_box: bool = false,
-        _: u2 = 0,
+        /// A replaced element whose `auto` height is its used width through its
+        /// natural ratio (CSS 2.1 §10.6.2): a new width gives a new height.
+        replaced_auto_height: bool = false,
+        _: u1 = 0,
     };
 
     pub const Block = struct {

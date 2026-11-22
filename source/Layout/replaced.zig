@@ -120,10 +120,11 @@ pub fn applyNaturalSize(env: *const zss.Environment, node: NodeId, sizes: *Block
         h = @floatFromInt(sizes.get(.block_size).?);
         w = std.math.clamp(if (ratio) |r| h * r else natural_w orelse default_width_px * upp, min_w, max_w);
     } else {
-        // §10.6.2: the used width divided by the ratio; else the natural
-        // height; else 150px.
         w = @floatFromInt(sizes.get(.inline_size).?);
-        h = std.math.clamp(if (ratio) |r| w / r else natural_h orelse default_height_px * upp, min_h, max_h);
+        h = @floatFromInt(heightForWidth(env, node, sizes.get(.inline_size).?, sizes.min_block_size, sizes.max_block_size));
+        // Laid out again at another width (a grid area, a flex item's size), the
+        // height follows (`relayout.relayoutContent`).
+        sizes.intrinsic.replaced_auto_height = true;
     }
 
     if (width_auto) {
@@ -137,6 +138,25 @@ pub fn applyNaturalSize(env: *const zss.Environment, node: NodeId, sizes: *Block
         sizes.setValue(.block_size, zss.math.unitsFromFloat(@round(h)));
         sizes.intrinsic.height_auto = false;
     }
+}
+
+/// CSS 2.1 §10.6.2: the `auto` height of replaced element `node` at the used width
+/// `width`: the width divided by the natural ratio; else the natural height; else
+/// 150px — within the min/max heights.
+pub fn heightForWidth(env: *const zss.Environment, node: NodeId, width: Unit, min_block_size: Unit, max_block_size: Unit) Unit {
+    const upp: f32 = @floatFromInt(units_per_pixel);
+    const natural_w: ?f32 = if (env.getNodeProperty(.natural_width, node)) |nw| nw * upp else null;
+    const natural_h: ?f32 = if (env.getNodeProperty(.natural_height, node)) |nh| nh * upp else null;
+    const ratio: ?f32 = env.getNodeProperty(.natural_ratio, node) orelse blk: {
+        const nw = natural_w orelse break :blk null;
+        const nh = natural_h orelse break :blk null;
+        break :blk if (nw > 0 and nh > 0) nw / nh else null;
+    };
+    const min_h: f32 = @floatFromInt(min_block_size);
+    const max_h: f32 = @max(min_h, units(max_block_size));
+    const w: f32 = @floatFromInt(width);
+    const h = std.math.clamp(if (ratio) |r| w / r else natural_h orelse default_height_px * upp, min_h, max_h);
+    return zss.math.unitsFromFloat(@round(h));
 }
 
 fn units(v: Unit) f32 {

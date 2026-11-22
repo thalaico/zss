@@ -40,6 +40,7 @@ const grid = @import("./grid.zig");
 const table = @import("./table.zig");
 const bfc = @import("./bfc.zig");
 const inline_layout = @import("./inline.zig");
+const replaced = @import("./replaced.zig");
 
 /// Used inline size and inline margins of a block-level box.
 pub const InlineSize = struct {
@@ -186,6 +187,15 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
     const box_tree = layout.box_tree.ptr;
     const bo = &subtree.items(.box_offsets)[index];
     const skip = subtree.items(.skip)[index];
+
+    // A replaced element has no content to lay out; its ratio-derived height follows
+    // the new width (CSS 2.1 §10.6.2).
+    if (subtree.items(.intrinsic)[index].replaced_auto_height) {
+        if (subtree.items(.node)[index]) |node| {
+            setContentHeight(subtree, index, replaced.heightForWidth(layout.inputs.env, node, content_w, subtree.items(.min_block_size)[index], subtree.items(.max_block_size)[index]));
+        }
+        return;
+    }
 
     if (table.relayoutTable(layout, subtree, subtree_id, index, content_w)) |height| {
         setContentHeight(subtree, index, height);
