@@ -56,7 +56,7 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
     const bo = subtree.items(.box_offsets)[index];
     const margins = subtree.items(.margins)[index];
     const flags = subtree.items(.intrinsic)[index];
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
 
     // Start from the specified margins: the used end margin of an
     // over-constrained block absorbed the old leftover space. Percentage
@@ -68,12 +68,12 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
         .fixed => bo.content_size.w,
         .percentage => blk: {
             const resolved: Unit = switch (subtree.items(.percent_width)[index]) {
-                .percentage => |p| @intFromFloat(@round(p * @as(f32, @floatFromInt(cb_width)))),
+                .percentage => |p| zss.math.unitsFromFloat(@round(p * @as(f32, @floatFromInt(cb_width)))),
                 .calc => |c| solve.positiveCalc(env, c, cb_width).?,
             };
-            break :blk @max(0, if (flags.border_box) resolved - edges else resolved);
+            break :blk @max(0, if (flags.border_box) resolved -| edges else resolved);
         },
-        .auto => @max(0, cb_width - edges - margin_left - margin_right),
+        .auto => @max(0, cb_width -| edges -| margin_left -| margin_right),
     };
     // CSS 2.1 §10.4: a width outside min/max-width is computed again with
     // the limit as the specified width — auto margins included.
@@ -83,14 +83,14 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
     if (flags.width != .auto or clamped) {
         // CSS 2.1 §10.3.3: auto margins take the remaining space (equally
         // when both are auto); with neither auto the end margin is ignored.
-        const remaining = cb_width - content_w - edges;
+        const remaining = cb_width -| content_w -| edges;
         if (flags.margin_start_auto and flags.margin_end_auto) {
             margin_left = @max(0, @divFloor(remaining, 2));
-            margin_right = remaining - margin_left;
+            margin_right = remaining -| margin_left;
         } else if (flags.margin_start_auto) {
-            margin_left = remaining - margin_right;
+            margin_left = remaining -| margin_right;
         } else {
-            margin_right = remaining - margin_left;
+            margin_right = remaining -| margin_left;
         }
     }
     return .{ .margin_left = margin_left, .margin_right = margin_right, .content_w = content_w };
@@ -104,12 +104,12 @@ pub fn relayoutBlock(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree
     const used = usedInlineSize(layout.inputs.env, subtree, index, cb_width);
     const bo = &subtree.items(.box_offsets)[index];
     const margins = &subtree.items(.margins)[index];
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
     const changed = used.content_w != bo.content_size.w;
     margins.left = used.margin_left;
     margins.right = used.margin_right;
     bo.border_pos.x = used.margin_left;
-    bo.border_size.w = used.content_w + edges;
+    bo.border_size.w = used.content_w +| edges;
     bo.content_size.w = used.content_w;
 
     if (changed) relayoutContent(layout, subtree, subtree_id, index, used.content_w);
@@ -140,7 +140,7 @@ pub fn resizeItem(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
         .block => {
             const bo = &subtree.items(.box_offsets)[index];
             if (bo.border_size.w == border_w) return;
-            const content_w = @max(0, border_w - (bo.border_size.w - bo.content_size.w));
+            const content_w = @max(0, border_w -| (bo.border_size.w -| bo.content_size.w));
             bo.border_size.w = border_w;
             bo.content_size.w = content_w;
             relayoutContent(layout, subtree, subtree_id, index, content_w);
@@ -229,7 +229,7 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
     const result = flow.offsetChildBlocks(subtree, index, skip, content_w, parent_edge, box_tree);
     if (!subtree.items(.intrinsic)[index].height_auto) return;
     // The last child's bottom margin collapses with this block's (§8.3.1).
-    const end_edges = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+    const end_edges = bo.border_size.h -| bo.content_pos.y -| bo.content_size.h;
     if (flow.collapsesBottomMargin(bfc_root, true, end_edges, result, subtree.items(.min_block_size)[index], subtree.items(.max_block_size)[index])) {
         setContentHeight(subtree, index, result.content_end);
         subtree.items(.margins)[index].bottom = result.trailing.with(subtree.items(.block_margins)[index][1]).sum();
@@ -242,7 +242,7 @@ pub fn relayoutContent(layout: *Layout, subtree: Subtree.View, subtree_id: Subtr
 pub fn setContentHeight(subtree: Subtree.View, index: Subtree.Size, height: Unit) void {
     const bo = &subtree.items(.box_offsets)[index];
     const top = bo.content_pos.y;
-    const bottom = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+    const bottom = bo.border_size.h -| bo.content_pos.y -| bo.content_size.h;
     bo.content_size.h = height;
-    bo.border_size.h = top + height + bottom;
+    bo.border_size.h = top +| height +| bottom;
 }

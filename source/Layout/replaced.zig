@@ -127,14 +127,14 @@ pub fn applyNaturalSize(env: *const zss.Environment, node: NodeId, sizes: *Block
     }
 
     if (width_auto) {
-        sizes.setValue(.inline_size, @intFromFloat(@round(w)));
+        sizes.setValue(.inline_size, zss.math.unitsFromFloat(@round(w)));
         sizes.was_auto_inline_size = false;
         // The width is the element's own, not the containing block's: its
         // intrinsic contributions are that width.
         sizes.intrinsic.width = .fixed;
     }
     if (height_auto) {
-        sizes.setValue(.block_size, @intFromFloat(@round(h)));
+        sizes.setValue(.block_size, zss.math.unitsFromFloat(@round(h)));
         sizes.intrinsic.height_auto = false;
     }
 }

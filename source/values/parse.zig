@@ -985,8 +985,8 @@ pub fn flexBasis(ctx: *Context) ?types.FlexBasis {
         return .auto;
     }
     // Try <length>
-    if (parseLengthToUnits(ctx)) |value| {
-        return .{ .px = @as(f32, @floatFromInt(value)) / 4.0 };
+    if (parseLengthPx(ctx)) |px| {
+        return .{ .px = px };
     }
     // Try <percentage>
     const item = ctx.next() orelse return null;
@@ -1490,10 +1490,17 @@ fn parseNumberFactor(ctx: *Context) ?f32 {
     }
 }
 
-/// Shared helper: parse a <length> token and convert to layout units (4 units = 1px).
+/// Shared helper: parse a <length> token and convert to layout units.
 fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
     const px = parseLengthPx(ctx) orelse return null;
-    return @intFromFloat(@round(px * 4.0)); // 4 units per px
+    return pxToUnits(px);
+}
+
+/// A length in px as layout units: rounded, clamped to the range (Chromium
+/// LayoutUnit::FromFloatRound).
+fn pxToUnits(px: f32) @import("../zss.zig").math.Unit {
+    const units_per_pixel: f32 = @floatFromInt(@import("../zss.zig").math.units_per_pixel);
+    return @intFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
 }
 
 /// A <length> in CSS px (font-relative units against the initial font
@@ -2096,7 +2103,7 @@ fn parseFrOrLength(ctx: *Context) ?types.GridTrackSize {
             .rem => number * 16.0,
             else => absLength(ctx, unit, number),
         };
-        return types.GridTrackSize.initFixed(@intFromFloat(px * 4.0));
+        return types.GridTrackSize.initFixed(pxToUnits(px));
     }
     ctx.resetPoint(item.index);
     return null;

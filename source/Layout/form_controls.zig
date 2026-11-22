@@ -106,18 +106,18 @@ pub fn baseline(layout: *Layout, node: NodeId, box_offsets: zss.BoxTree.BoxOffse
     if (isInputButton(env, node) and !hasLabel(env, node)) {
         const font = controlFont(layout, node) orelse return null;
         const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
-        const line_h: zss.math.Unit = @intFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
-        const content: zss.math.Unit = @intFromFloat(font.line_height_px * upp);
-        const ascent: zss.math.Unit = @intFromFloat(font.ascent_px * upp);
-        return box_offsets.content_pos.y + @divFloor(line_h - content, 2) + ascent;
+        const line_h: zss.math.Unit = zss.math.unitsFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
+        const content: zss.math.Unit = zss.math.unitsFromFloat(font.line_height_px * upp);
+        const ascent: zss.math.Unit = zss.math.unitsFromFloat(font.ascent_px * upp);
+        return box_offsets.content_pos.y +| @divFloor(line_h -| content, 2) +| ascent;
     }
     const kind = kindOf(env, node) orelse return null;
     if (kind == .textarea) return null;
     const font = controlFont(layout, node) orelse return null;
     const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
-    const line_h: zss.math.Unit = @intFromFloat(font.line_height_px * upp);
-    const ascent: zss.math.Unit = @intFromFloat(font.ascent_px * upp);
-    return box_offsets.content_pos.y + @divFloor(box_offsets.content_size.h - line_h, 2) + ascent;
+    const line_h: zss.math.Unit = zss.math.unitsFromFloat(font.line_height_px * upp);
+    const ascent: zss.math.Unit = zss.math.unitsFromFloat(font.ascent_px * upp);
+    return box_offsets.content_pos.y +| @divFloor(box_offsets.content_size.h -| line_h, 2) +| ascent;
 }
 
 /// The used `line-height` of `node` in px (CSS 2.1 §10.8.1; `normal` is the
@@ -152,7 +152,7 @@ pub fn lineIfEmpty(layout: *Layout, node: NodeId, auto_height: zss.math.Unit) zs
     if (!isInputButton(layout.inputs.env, node)) return auto_height;
     const font = controlFont(layout, node) orelse return auto_height;
     const upp: f32 = @floatFromInt(zss.math.units_per_pixel);
-    return @intFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
+    return zss.math.unitsFromFloat(@round(usedLineHeightPx(layout, node, font) * upp));
 }
 
 /// Whether an input button has a label to show: its value attribute when it
@@ -280,7 +280,7 @@ fn attributeInteger(env: *const Environment, node: NodeId, name: []const u8, def
     var value: u32 = 0;
     var digits: usize = 0;
     while (i < text.len and std.ascii.isDigit(text[i])) : (i += 1) {
-        digits += 1;
+        digits +|= 1;
         if (value < 1_000_000) value = value * 10 + (text[i] - '0');
     }
     if (digits == 0 or value == 0) return default;

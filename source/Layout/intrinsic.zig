@@ -56,9 +56,9 @@ pub const Sizes = struct {
 pub fn blockContribution(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) Sizes {
     var sizes = blockBorderBoxSizes(layout, subtree, subtree_id, index);
     const margins = subtree.items(.specified_margins)[index];
-    const margin_sum: Unit = margins[0] + margins[1];
-    sizes.min += margin_sum;
-    sizes.max += margin_sum;
+    const margin_sum: Unit = margins[0] +| margins[1];
+    sizes.min +|= margin_sum;
+    sizes.max +|= margin_sum;
     return sizes;
 }
 
@@ -71,10 +71,10 @@ pub fn blockBorderBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id: S
     if (table.intrinsicSizes(layout, subtree, subtree_id, index)) |sizes| return sizes;
     if (intrinsic.width == .fixed) return .{ .min = bo.border_size.w, .max = bo.border_size.w };
 
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
     var content = contentSizes(layout, subtree, subtree_id, index);
-    content.min += edges;
-    content.max += edges;
+    content.min +|= edges;
+    content.max +|= edges;
     return content;
 }
 
@@ -83,10 +83,10 @@ pub fn blockBorderBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id: S
 /// this by the table algorithm).
 pub fn contentBorderBoxSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id, index: Subtree.Size) Sizes {
     const bo = subtree.items(.box_offsets)[index];
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
     var content = contentSizes(layout, subtree, subtree_id, index);
-    content.min += edges;
-    content.max += edges;
+    content.min +|= edges;
+    content.max +|= edges;
     return content;
 }
 
@@ -117,7 +117,7 @@ fn contentSizesTo(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
             var sum: Unit = 0;
             for (columns.tracks[0..columns.count]) |track| {
                 if (track.kind != .fixed) break :fixed;
-                sum += track.value;
+                sum +|= track.value;
             }
             sum += info.column_gap * @as(Unit, columns.count - 1);
             return .{ .min = sum, .max = sum };
@@ -143,9 +143,9 @@ fn contentSizesTo(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree.Id
             // contributions; min-content is their sum on a single line and
             // the largest one when lines may wrap. Gaps add between items.
             const gap: Unit = if (items > 0) info.flex_gap else 0;
-            result.max += sizes.max + gap;
-            result.min = if (info.flex_wrap == .nowrap) result.min + sizes.min + gap else @max(result.min, sizes.min);
-            items += 1;
+            result.max +|= sizes.max +| gap;
+            result.min = if (info.flex_wrap == .nowrap) result.min +| sizes.min +| gap else @max(result.min, sizes.min);
+            items +|= 1;
         } else result.include(sizes);
     }
     return result;
@@ -192,11 +192,11 @@ pub fn ifcSizes(layout: *Layout, ifc: *const Ifc, subtree: Subtree.View, subtree
         if (indices[i] == 0) {
             // Special glyph pair [0, encoded]; its advance is on the first entry.
             const advance = metrics[i].advance;
-            i += 1;
+            i +|= 1;
             const special = Ifc.Special.decode(indices[i]);
             switch (@as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)))) {
                 .LineBreak => {
-                    result.max = @max(result.max, line - hanging);
+                    result.max = @max(result.max, line -| hanging);
                     line = 0;
                     hanging = 0;
                     line_has_content = false;
@@ -207,7 +207,7 @@ pub fn ifcSizes(layout: *Layout, ifc: *const Ifc, subtree: Subtree.View, subtree
                     // Atomic inline: soft wrap opportunity on both sides.
                     const block_index: Subtree.Size = special.data;
                     const atomic = inlineBlockContribution(layout, subtree, subtree_id, block_index);
-                    line += atomic.max;
+                    line +|= atomic.max;
                     hanging = 0;
                     line_has_content = true;
                     result.min = @max(result.min, segment);
@@ -218,14 +218,14 @@ pub fn ifcSizes(layout: *Layout, ifc: *const Ifc, subtree: Subtree.View, subtree
                 .OutOfFlowInline, .OutOfFlowBlock => {},
                 // A preserved tab, at its advance in the last line layout.
                 .ZeroGlyphIndex, .Tab => {
-                    line += advance;
+                    line +|= advance;
                     hanging = 0;
                     line_has_content = true;
-                    segment += advance;
+                    segment +|= advance;
                 },
                 .BoxStart, .BoxEnd => {
-                    line += advance;
-                    segment += advance;
+                    line +|= advance;
+                    segment +|= advance;
                 },
             }
         } else {
@@ -236,20 +236,20 @@ pub fn ifcSizes(layout: *Layout, ifc: *const Ifc, subtree: Subtree.View, subtree
                 // A collapsed space: removed at the start of a line, hangs at
                 // its end, and ends the current unbreakable segment.
                 if (line_has_content) {
-                    line += advance;
-                    hanging += advance;
+                    line +|= advance;
+                    hanging +|= advance;
                 }
                 result.min = @max(result.min, segment);
                 segment = 0;
             } else {
-                line += advance;
+                line +|= advance;
                 hanging = 0;
                 line_has_content = true;
-                segment += advance;
+                segment +|= advance;
             }
         }
     }
-    result.max = @max(result.max, line - hanging);
+    result.max = @max(result.max, line -| hanging);
     result.min = @max(result.min, segment);
     return result;
 }
@@ -261,8 +261,8 @@ fn inlineBlockContribution(layout: *Layout, subtree: Subtree.View, subtree_id: S
             var sizes = blockBorderBoxSizes(layout, child_subtree, child_id, 0);
             const margins = subtree.items(.margins)[index];
             // An inline-block's margins are never over-constrained.
-            sizes.min += margins.left + margins.right;
-            sizes.max += margins.left + margins.right;
+            sizes.min +|= margins.left +| margins.right;
+            sizes.max +|= margins.left +| margins.right;
             return sizes;
         },
         else => return blockContribution(layout, subtree, subtree_id, index),

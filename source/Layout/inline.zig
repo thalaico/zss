@@ -77,7 +77,7 @@ pub const FontProps = struct {
 };
 
 pub fn beginMode(box_gen: *BoxGen, size_mode: SizeMode, containing_block_size: ContainingBlockSize) !void {
-    Layout.profile.inline_modes += 1;
+    Layout.profile.inline_modes +|= 1;
     assert(containing_block_size.width >= 0);
     if (containing_block_size.height) |h| assert(h >= 0);
 
@@ -142,8 +142,8 @@ fn endMode(box_gen: *BoxGen) !Result {
     ifcSolveMetrics(ifc.ptr, subtree, layout.inputs.fonts);
     const t_split = Layout.now();
     const line_split_result = try splitIntoLineBoxes(layout, subtree, ifc.ptr, containing_block_width, ifc.parent_float_ctx);
-    Layout.profile.line_split_ns += Layout.now() - t_split;
-    Layout.profile.line_split_calls += 1;
+    Layout.profile.line_split_ns +|= Layout.now() -| t_split;
+    Layout.profile.line_split_calls +|= 1;
 
     // CSS 2.1 §9.2.2.1: In a block container with only block-level children,
     // whitespace-only text content does not generate boxes. Detect whitespace-
@@ -441,10 +441,10 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     // (the available width) until popFlowBlock shrinks it to
                     // fit, before the container's algorithm runs.
                     const auto_width = sizes.get(.inline_size) == null;
-                    const available = solve.clampSize(ifc.containing_block_size.width -
-                        (sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged +
-                            sizes.border_inline_start + sizes.border_inline_end +
-                            sizes.padding_inline_start + sizes.padding_inline_end), sizes.min_inline_size, sizes.max_inline_size);
+                    const available = solve.clampSize(ifc.containing_block_size.width -|
+                        (sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged +|
+                            sizes.border_inline_start +| sizes.border_inline_end +|
+                            sizes.padding_inline_start +| sizes.padding_inline_end), sizes.min_inline_size, sizes.max_inline_size);
                     if (auto_width) sizes.setValue(.inline_size, available);
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
                     const ref = try box_gen.pushFlowBlock(box_style, sizes, .normal, stacking_context, node);
@@ -471,10 +471,10 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     try layout.pushNode();
                     return box_gen.beginFlowMode(.not_root);
                 } else {
-                    const available_width_unclamped = ifc.containing_block_size.width -
-                        (sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged +
-                            sizes.border_inline_start + sizes.border_inline_end +
-                            sizes.padding_inline_start + sizes.padding_inline_end);
+                    const available_width_unclamped = ifc.containing_block_size.width -|
+                        (sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged +|
+                            sizes.border_inline_start +| sizes.border_inline_end +|
+                            sizes.padding_inline_start +| sizes.padding_inline_end);
                     const available_width = solve.clampSize(available_width_unclamped, sizes.min_inline_size, sizes.max_inline_size);
 
                     const box_style = BoxTree.BoxStyle{ .outer = .{ .block = .flow }, .position = position };
@@ -555,11 +555,11 @@ pub fn reopenSplitInlines(box_gen: *BoxGen) !void {
     var level = currentLevel(layout);
     while (count < entries.len) {
         const entry = entries[entries.len - 1 - count];
-        while (level > entry.level and isContentsLevel(layout, level)) level -= 1;
+        while (level > entry.level and isContentsLevel(layout, level)) level -|= 1;
         if (entry.level != level) break;
         count += 1;
         if (level == 0) break;
-        level -= 1;
+        level -|= 1;
     }
     if (count == 0) return;
 
@@ -700,22 +700,22 @@ fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytyp
     };
     const size = font.font_size.px_val();
     const m = layout.inputs.fonts.lineMetrics(handle, size);
-    const ascent: Unit = @intFromFloat(m.ascent * upp);
-    const descent: Unit = @intFromFloat(m.descent * upp);
-    const content: Unit = ascent + descent;
+    const ascent: Unit = zss.math.unitsFromFloat(m.ascent * upp);
+    const descent: Unit = zss.math.unitsFromFloat(m.descent * upp);
+    const content: Unit = ascent +| descent;
     const line_height: Unit = switch (font.line_height) {
-        .normal => content + @as(Unit, @intFromFloat(m.line_gap * upp)),
-        .number => |n| @intFromFloat(@round(n * size * upp)),
-        .length => |px| @intFromFloat(@round(px * upp)),
+        .normal => content +| @as(Unit, zss.math.unitsFromFloat(m.line_gap * upp)),
+        .number => |n| zss.math.unitsFromFloat(@round(n * size * upp)),
+        .length => |px| zss.math.unitsFromFloat(@round(px * upp)),
         // Font-relative lengths are computed to lengths
         // (StyleComputer.computeFont); these are computed values.
         .em, .rem => unreachable,
     };
     // Blink floors the half-leading above the ascent to whole pixels; the
     // descent side gets the rest.
-    const half_leading = @divFloor(@divFloor(line_height - content, 2), units_per_pixel) * units_per_pixel;
-    const above = ascent + half_leading;
-    const below = line_height - above;
+    const half_leading = @divFloor(@divFloor(line_height -| content, 2), units_per_pixel) * units_per_pixel;
+    const above = ascent +| half_leading;
+    const below = line_height -| above;
 
     const slice = ifc.inline_boxes.slice();
     var shift: Unit = 0;
@@ -726,27 +726,27 @@ fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytyp
             .baseline, .top, .bottom => 0,
             // Blink: sub lowers by the parent's font size / 5 + 1px, super
             // raises by its font size / 3 + 1px.
-            .sub => @intFromFloat(p_em / 5.0 + upp),
-            .super => -@as(Unit, @intFromFloat(p_em / 3.0 + upp)),
+            .sub => zss.math.unitsFromFloat(p_em / 5.0 + upp),
+            .super => (0 -| zss.math.unitsFromFloat(p_em / 3.0 + upp)),
             // The content area's top / bottom at the parent's.
-            .text_top => ascent - slice.items(.ascent)[p],
-            .text_bottom => slice.items(.descent)[p] - descent,
+            .text_top => ascent -| slice.items(.ascent)[p],
+            .text_bottom => slice.items(.descent)[p] -| descent,
             // The layout box's midpoint at the parent's baseline plus half
             // its x-height.
-            .middle => -@divFloor(slice.items(.x_height)[p], 2) - @divFloor(below - above, 2),
-            .px => |v| -@as(Unit, @intFromFloat(v * upp)),
-            .em => |v| -@as(Unit, @intFromFloat(v * size * upp)),
-            .percentage => |v| -@as(Unit, @intFromFloat(v * @as(f32, @floatFromInt(line_height)))),
+            .middle => -@divFloor(slice.items(.x_height)[p], 2) -| @divFloor(below -| above, 2),
+            .px => |v| (0 -| zss.math.unitsFromFloat(v * upp)),
+            .em => |v| (0 -| zss.math.unitsFromFloat(v * size * upp)),
+            .percentage => |v| (0 -| zss.math.unitsFromFloat(v * @as(f32, @floatFromInt(line_height)))),
         };
-        shift = p_shift + relative;
+        shift = p_shift +| relative;
     }
     slice.items(.ascent)[index] = ascent;
     slice.items(.descent)[index] = descent;
     slice.items(.above)[index] = above;
     slice.items(.below)[index] = below;
     slice.items(.shift)[index] = shift;
-    slice.items(.em)[index] = @intFromFloat(size * upp);
-    slice.items(.x_height)[index] = @intFromFloat(m.x_height * upp);
+    slice.items(.em)[index] = zss.math.unitsFromFloat(size * upp);
+    slice.items(.x_height)[index] = zss.math.unitsFromFloat(m.x_height * upp);
     slice.items(.vertical_align)[index] = vertical_align;
 }
 
@@ -964,8 +964,8 @@ fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]c
     hb.hb_buffer_add_utf8(buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
     if (hb.hb_buffer_allocation_successful(buffer) == 0) return error.OutOfMemory;
     hb.hb_shape(font, buffer, null, 0);
-    Layout.profile.shape_ns += Layout.now() - t_shape;
-    Layout.profile.shape_calls += 1;
+    Layout.profile.shape_ns +|= Layout.now() -| t_shape;
+    Layout.profile.shape_calls +|= 1;
 
     var glyph_count: c_uint = 0;
     const glyph_infos = hb.hb_buffer_get_glyph_infos(buffer, &glyph_count);
@@ -993,7 +993,7 @@ fn shapeRun(buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8) ![]c
 fn ifcAddTextRun(box_tree: BoxTreeManaged, ifc: *Ifc, buffer: *hb.hb_buffer_t, font: *hb.hb_font_t, text: []const u8, src_base: usize, is_break_opportunity: bool) !void {
     const shaped = try shapeRun(buffer, font, text);
     const t_glyphs = Layout.now();
-    defer Layout.profile.glyph_ns += Layout.now() - t_glyphs;
+    defer Layout.profile.glyph_ns +|= Layout.now() -| t_glyphs;
     const glyph_count = shaped.len;
 
     for (shaped) |sg| {
@@ -1654,14 +1654,14 @@ fn inlineBlockSolveSizes(
     computed.content_width.box_sizing = specified.content_width.box_sizing;
     if (specified.content_width.box_sizing == .border_box) {
         if (used.get(.inline_size)) |w| {
-            const h_adjustment = used.border_inline_start + used.border_inline_end +
-                used.padding_inline_start + used.padding_inline_end;
-            used.setValue(.inline_size, @max(0, w - h_adjustment));
+            const h_adjustment = used.border_inline_start +| used.border_inline_end +|
+                used.padding_inline_start +| used.padding_inline_end;
+            used.setValue(.inline_size, @max(0, w -| h_adjustment));
         }
         if (used.get(.block_size)) |h| {
-            const v_adjustment = used.border_block_start + used.border_block_end +
-                used.padding_block_start + used.padding_block_end;
-            used.setValue(.block_size, @max(0, h - v_adjustment));
+            const v_adjustment = used.border_block_start +| used.border_block_end +|
+                used.padding_block_start +| used.padding_block_end;
+            used.setValue(.block_size, @max(0, h -| v_adjustment));
         }
     }
     // An atomic inline replaced element (CSS 2.1 §10.3.2, §10.6.2).
@@ -1714,7 +1714,7 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
         const metrics = &glyphs_slice.items(.metrics)[i];
 
         if (glyph_index == 0) {
-            i += 1;
+            i +|= 1;
             const special = Ifc.Special.decode(glyphs_slice.items(.index)[i]);
             const kind = @as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)));
             switch (kind) {
@@ -1743,7 +1743,7 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
         } else {
             // Advance to the font run covering this glyph; restore its face and size.
             while (run_idx < runs.len and runs[run_idx].glyph_end <= i) {
-                run_idx += 1;
+                run_idx +|= 1;
             }
             if (run_idx < runs.len and i >= runs[run_idx].glyph_start and current_run != run_idx) {
                 current_run = run_idx;
@@ -1781,11 +1781,11 @@ pub fn computeMaxContentWidth(ifc: *const Ifc, subtree: ?Subtree.View) Unit {
                         const block_box_index: Subtree.Size = special.data;
                         const box_offsets = st.items(.box_offsets)[block_box_index];
                         const margins = st.items(.margins)[block_box_index];
-                        total += box_offsets.border_size.w + margins.left + margins.right;
+                        total +|= box_offsets.border_size.w +| margins.left +| margins.right;
                     }
                 }
             }
-            i += 1;
+            i +|= 1;
             continue;
         }
         total += metrics[i].advance;
@@ -1811,7 +1811,7 @@ pub fn computeMinContentWidth(ifc: *const Ifc) Unit {
         const gi = indices[i];
         if (gi == 0) {
             // Special glyph — skip the second element of the pair
-            i += 1;
+            i +|= 1;
             continue;
         }
         const m = metrics[i];
@@ -1821,7 +1821,7 @@ pub fn computeMinContentWidth(ifc: *const Ifc) Unit {
             max_word_width = @max(max_word_width, current_word_width);
             current_word_width = 0;
         } else {
-            current_word_width += m.advance;
+            current_word_width +|= m.advance;
         }
     }
     // Don't forget the last word
@@ -1867,16 +1867,16 @@ fn glyphExtents(font: *hb.hb_font_t, glyph_index: GlyphIndex) struct { Unit, Uni
 fn setMetricsBoxStart(metrics: *Ifc.Metrics, ifc_slice: Ifc.Slice, inline_box_index: Ifc.Size) void {
     const inline_start = ifc_slice.items(.inline_start)[inline_box_index];
     const margin = ifc_slice.items(.margins)[inline_box_index].start;
-    const width = inline_start.border + inline_start.padding;
-    const advance = width + margin;
+    const width = inline_start.border +| inline_start.padding;
+    const advance = width +| margin;
     metrics.* = .{ .offset = margin, .advance = advance, .width = width };
 }
 
 fn setMetricsBoxEnd(metrics: *Ifc.Metrics, ifc_slice: Ifc.Slice, inline_box_index: Ifc.Size) void {
     const inline_end = ifc_slice.items(.inline_end)[inline_box_index];
     const margin = ifc_slice.items(.margins)[inline_box_index].end;
-    const width = inline_end.border + inline_end.padding;
-    const advance = width + margin;
+    const width = inline_end.border +| inline_end.padding;
+    const advance = width +| margin;
     metrics.* = .{ .offset = 0, .advance = advance, .width = width };
 }
 
@@ -1889,7 +1889,7 @@ fn setMetricsInlineBlock(metrics: *Ifc.Metrics, subtree: Subtree.View, block_box
     const margins = subtree.items(.margins)[block_box_index];
 
     const width = box_offsets.border_size.w;
-    const advance = width + margins.left + margins.right;
+    const advance = width +| margins.left +| margins.right;
     metrics.* = .{ .offset = margins.left, .advance = advance, .width = width };
 }
 
@@ -1907,7 +1907,7 @@ fn inlineBlockPlacement(layout: *Layout, subtree: Subtree.View, ifc: *Ifc, index
     const upp: f32 = @floatFromInt(units_per_pixel);
     const box_offsets = subtree.items(.box_offsets)[index];
     const margins = subtree.items(.margins)[index];
-    const height = box_offsets.border_size.h + margins.top + margins.bottom;
+    const height = box_offsets.border_size.h +| margins.top +| margins.bottom;
     const boxes = ifc.inline_boxes.slice();
     const p_shift = boxes.items(.shift)[parent];
     const p_em: f32 = @floatFromInt(boxes.items(.em)[parent]);
@@ -1920,24 +1920,24 @@ fn inlineBlockPlacement(layout: *Layout, subtree: Subtree.View, ifc: *Ifc, index
     // Its margin box's extent above the parent's baseline.
     const ascent: Unit = switch (align_value) {
         .baseline, .top, .bottom => baseline_ascent,
-        .sub => baseline_ascent - @as(Unit, @intFromFloat(p_em / 5.0 + upp)),
-        .super => baseline_ascent + @as(Unit, @intFromFloat(p_em / 3.0 + upp)),
+        .sub => baseline_ascent -| @as(Unit, zss.math.unitsFromFloat(p_em / 5.0 + upp)),
+        .super => baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(p_em / 3.0 + upp)),
         .text_top => boxes.items(.ascent)[parent],
-        .text_bottom => height - boxes.items(.descent)[parent],
+        .text_bottom => height -| boxes.items(.descent)[parent],
         // Its vertical midpoint at the parent's baseline plus half the
         // parent's x-height.
-        .middle => @divFloor(height, 2) + @divFloor(boxes.items(.x_height)[parent], 2),
-        .px => |v| baseline_ascent + @as(Unit, @intFromFloat(v * upp)),
-        .em => |v| baseline_ascent + @as(Unit, @intFromFloat(v * p_em)),
+        .middle => @divFloor(height, 2) +| @divFloor(boxes.items(.x_height)[parent], 2),
+        .px => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * upp)),
+        .em => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * p_em)),
         // Percentages refer to the element's own line-height; an
         // inline-block's is its parent's here (it inherits).
-        .percentage => |v| baseline_ascent + @as(Unit, @intFromFloat(v * @as(f32, @floatFromInt(boxes.items(.above)[parent] + boxes.items(.below)[parent])))),
+        .percentage => |v| baseline_ascent + @as(Unit, zss.math.unitsFromFloat(v * @as(f32, @floatFromInt(boxes.items(.above)[parent] + boxes.items(.below)[parent])))),
     };
     return .{
         .offset = &subtree.items(.offset)[index],
         .cursor = cursor,
         .at = at,
-        .above = ascent - p_shift,
+        .above = ascent -| p_shift,
         .height = height,
         .line_relative = switch (align_value) {
             .top => .top,
@@ -2016,7 +2016,7 @@ const IFCLineSplitState = struct {
             const g = lc.ifc.glyphs.slice();
             var k = self.line_box.elements[1];
             while (k > self.line_box.elements[0]) {
-                const j = k - 1;
+                const j = k -| 1;
                 if (j >= 1 and j - 1 >= self.line_box.elements[0] and g.items(.index)[j - 1] == 0) {
                     const special = Ifc.Special.decode(g.items(.index)[j]);
                     switch (special.kind) {
@@ -2024,13 +2024,13 @@ const IFCLineSplitState = struct {
                         .BoxStart, .BoxEnd, .OutOfFlowInline, .OutOfFlowBlock => {},
                         else => break,
                     }
-                    k -= 2;
+                    k -|= 2;
                     continue;
                 }
                 if (spaceAt(lc.ifc, j) == null) break;
                 self.cursor -= g.items(.metrics)[j].advance;
                 self.line_box.trail_start = j;
-                k -= 1;
+                k -|= 1;
             }
         }
         const boxes = lc.ifc.inline_boxes.slice();
@@ -2041,46 +2041,46 @@ const IFCLineSplitState = struct {
             above = 0;
             below = 0;
         } else for (self.line_start_boxes.items) |b| {
-            above = @max(above, boxes.items(.above)[b] - boxes.items(.shift)[b]);
-            below = @max(below, boxes.items(.below)[b] + boxes.items(.shift)[b]);
+            above = @max(above, boxes.items(.above)[b] -| boxes.items(.shift)[b]);
+            below = @max(below, boxes.items(.below)[b] +| boxes.items(.shift)[b]);
         }
         const glyphs = lc.ifc.glyphs.slice();
         var j = self.line_box.elements[0];
         while (!phantom and j + 1 < self.line_box.elements[1]) : (j += 1) {
             if (glyphs.items(.index)[j] != 0) continue;
-            j += 1;
+            j +|= 1;
             const special = Ifc.Special.decode(glyphs.items(.index)[j]);
             if (special.kind != .BoxStart) continue;
             const b: Ifc.Size = @intCast(special.data);
-            above = @max(above, boxes.items(.above)[b] - boxes.items(.shift)[b]);
-            below = @max(below, boxes.items(.below)[b] + boxes.items(.shift)[b]);
+            above = @max(above, boxes.items(.above)[b] -| boxes.items(.shift)[b]);
+            below = @max(below, boxes.items(.below)[b] +| boxes.items(.shift)[b]);
         }
         const blocks = self.inline_blocks_in_this_line_box.items;
         for (blocks) |info| {
             if (info.at >= self.line_box.elements[1] or info.line_relative != .no) continue;
             above = @max(above, info.above);
-            below = @max(below, info.height - info.above);
+            below = @max(below, info.height -| info.above);
         }
         for (blocks) |info| {
             if (info.at >= self.line_box.elements[1]) continue;
             switch (info.line_relative) {
-                .top => if (info.height > above + below) {
-                    below = info.height - above;
+                .top => if (info.height > above +| below) {
+                    below = info.height -| above;
                 },
-                .bottom => if (info.height > above + below) {
-                    above = info.height - below;
+                .bottom => if (info.height > above +| below) {
+                    above = info.height -| below;
                 },
                 .no, .static_in_line, .static_next_line => {},
             }
         }
         self.max_top_height = above;
         self.max_bottom_height = below;
-        self.line_box.baseline += above;
+        self.line_box.baseline +|= above;
         self.longest_line_box_length = @max(self.longest_line_box_length, self.cursor);
 
         // CSS Text 3 §7.1 (horizontal-tb, ltr): `cursor` is the end of the
         // line's content, its hanging spaces left out (§4.1.2).
-        const remaining = right - self.cursor;
+        const remaining = right -| self.cursor;
         const shift: Unit = if (phantom or remaining <= 0) 0 else switch (lc.ifc.text_align) {
             .center, .@"-webkit-center" => @divFloor(remaining, 2),
             .right, .end, .@"-webkit-right" => remaining,
@@ -2092,17 +2092,17 @@ const IFCLineSplitState = struct {
         for (blocks) |info| {
             if (info.at >= self.line_box.elements[1]) continue;
             const top = switch (info.line_relative) {
-                .no => self.line_box.baseline - info.above,
-                .top, .static_in_line => self.line_box.baseline - above,
-                .bottom => self.line_box.baseline + below - info.height,
-                .static_next_line => self.line_box.baseline + below,
+                .no => self.line_box.baseline -| info.above,
+                .top, .static_in_line => self.line_box.baseline -| above,
+                .bottom => self.line_box.baseline +| below -| info.height,
+                .static_next_line => self.line_box.baseline +| below,
             };
             // A static position among the line's trailing spaces is at the
             // end of its content: those spaces hang (CSS Text 3 §4.1.2).
             const x = switch (info.line_relative) {
                 .static_next_line => self.line_box.x_offset,
-                .static_in_line => @min(info.cursor, self.cursor) + shift,
-                else => info.cursor + shift,
+                .static_in_line => @min(info.cursor, self.cursor) +| shift,
+                else => info.cursor +| shift,
             };
             info.offset.* = .{ .x = x, .y = top };
         }
@@ -2111,7 +2111,7 @@ const IFCLineSplitState = struct {
     fn newLineBox(self: *IFCLineSplitState, skipped_glyphs: usize) void {
         self.cursor = 0;
         self.line_box = .{
-            .baseline = self.line_box.baseline + self.max_bottom_height,
+            .baseline = self.line_box.baseline +| self.max_bottom_height,
             .elements = [2]usize{ self.line_box.elements[1] + skipped_glyphs, self.line_box.elements[1] + skipped_glyphs },
             .inline_box = self.current_inline_box,
         };
@@ -2169,9 +2169,9 @@ fn clearLineYUntilFits(
     // Iteration limit guards against degenerate cases (overlapping
     // floats whose combined coverage spans many lines).
     var attempts: u8 = 0;
-    while (attempts < 32) : (attempts += 1) {
+    while (attempts < 32) : (attempts +|= 1) {
         const ex = fctx.getLineExclusion(line_y, line_h, container_width);
-        if (ex.right_limit - ex.left_offset >= min_w) {
+        if (ex.right_limit -| ex.left_offset >= min_w) {
             return .{ .line_y = line_y, .left = ex.left_offset, .right = ex.right_limit };
         }
         // Find the lowest float bottom among floats intersecting this
@@ -2179,9 +2179,9 @@ fn clearLineYUntilFits(
         // contributing to the exclusion.
         var next_clear: ?Unit = null;
         for (fctx.floats) |f| {
-            if (f.y + f.h <= line_y) continue;
-            if (f.y >= line_y + line_h) continue;
-            const bottom = f.y + f.h;
+            if (f.y +| f.h <= line_y) continue;
+            if (f.y >= line_y +| line_h) continue;
+            const bottom = f.y +| f.h;
             if (next_clear == null or bottom < next_clear.?) next_clear = bottom;
         }
         if (next_clear) |nc| {
@@ -2235,7 +2235,7 @@ fn lineHasContent(ifc: *const Ifc, line: Ifc.LineBox) bool {
             if (j >= line.lead_end) return true;
             continue;
         }
-        j += 1;
+        j +|= 1;
         const special = Ifc.Special.decode(glyphs.items(.index)[j]);
         switch (@as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)))) {
             .BoxStart, .BoxEnd => {
@@ -2287,7 +2287,7 @@ pub fn splitIntoLineBoxes(
     // The strut: the root inline box's layout box (CSS 2.1 §10.8.1).
     const top_height = ifc.inline_boxes.items(.above)[0];
     const bottom_height = ifc.inline_boxes.items(.below)[0];
-    const nominal_line_h: Unit = top_height + bottom_height;
+    const nominal_line_h: Unit = top_height +| bottom_height;
     ifc.ascender = top_height;
     ifc.descender = bottom_height;
     const lc: LineContext = .{ .layout = layout, .subtree = subtree, .ifc = ifc };
@@ -2367,7 +2367,7 @@ pub fn splitIntoLineBoxes(
         const marker = i;
 
         if (gi == 0) {
-            i += 1;
+            i +|= 1;
             const special = Ifc.Special.decode(glyphs.items(.index)[i]);
             switch (@as(std.meta.Tag(BoxTreeManaged.SpecialGlyph), @enumFromInt(@intFromEnum(special.kind)))) {
                 .BoxStart => try s.pushInlineBox(layout.allocator, @as(Ifc.Size, special.data)),
@@ -2384,8 +2384,8 @@ pub fn splitIntoLineBoxes(
                     s.at_line_start = false;
                     const space: Unit = special.data;
                     const stop: Unit = @max(1, 8 * space);
-                    var advance = stop - @mod(s.cursor - s.line_box.x_offset, stop);
-                    if (advance * 2 < space) advance += stop;
+                    var advance = stop -| @mod(s.cursor -| s.line_box.x_offset, stop);
+                    if (advance * 2 < space) advance +|= stop;
                     glyphs.items(.metrics)[marker].advance = advance;
                     metrics.advance = advance;
                 },
@@ -2406,7 +2406,11 @@ pub fn splitIntoLineBoxes(
             s.at_line_start = false;
         }
 
-        if (!overflowing and s.cursor > s.line_box.x_offset and metrics.width > 0 and s.cursor + metrics.offset + metrics.width > effective_right_mut) {
+        // CSS Text 3 §5: content fits by its advance measure (as Blink
+        // compares inline item widths); ink past a glyph's advance does not
+        // count. Items without ink (spaces) never start the break: they hang
+        // or are removed at the end of the line (§4.1.2).
+        if (!overflowing and s.cursor > s.line_box.x_offset and metrics.width > 0 and s.cursor +| metrics.advance > effective_right_mut) {
             if (last_break_i != null and last_break_elements_1 > s.line_box.elements[0]) {
                 // End the line at the last soft wrap opportunity and lay
                 // out what follows it again on the next line.
@@ -2466,7 +2470,7 @@ pub fn splitIntoLineBoxes(
             s.line_box.elements[1] += 1;
         }
 
-        s.cursor += metrics.advance;
+        s.cursor +|= metrics.advance;
 
         if (isBreakAfter(ifc, i)) {
             if (overflowing) {
@@ -2508,7 +2512,7 @@ pub fn splitIntoLineBoxes(
 
     return IFCLineSplitResult{
         .height = if (ifc.line_boxes.items.len > 0)
-            ifc.line_boxes.items[ifc.line_boxes.items.len - 1].baseline + s.max_bottom_height
+            ifc.line_boxes.items[ifc.line_boxes.items.len - 1].baseline +| s.max_bottom_height
         else
             0, // TODO: This is never reached because the root inline box always creates at least 1 line box.
         .longest_line_box_length = s.longest_line_box_length,
@@ -2576,16 +2580,16 @@ fn entryBaseline(layout: *Layout, subtree: Subtree.View, index: Subtree.Size, co
                 break :blk null;
             } else last: {
                 var k = lines.len;
-                while (k > 0) : (k -= 1) if (!lines[k - 1].phantom) break :last lines[k - 1];
+                while (k > 0) : (k -|= 1) if (!lines[k -| 1].phantom) break :last lines[k -| 1];
                 break :blk null;
             };
-            break :blk bo.border_pos.y + line.baseline;
+            break :blk bo.border_pos.y +| line.baseline;
         },
         .block => if (boxBaseline(layout, subtree, index, set)) |b| bo.border_pos.y + b else null,
         .subtree_proxy => |child_id| blk: {
             const child_subtree = box_tree.getSubtree(child_id).view();
             const own = entryBaseline(layout, child_subtree, 0, set) orelse break :blk null;
-            break :blk child_subtree.items(.offset)[0].y + own;
+            break :blk child_subtree.items(.offset)[0].y +| own;
         },
     };
 }

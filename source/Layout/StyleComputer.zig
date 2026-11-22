@@ -591,6 +591,8 @@ fn InheritedValue(comptime group: groups.Tag) type {
     };
 }
 
+const max_font_size_px: f32 = 10000;
+
 /// CSS Fonts 4 §2.5 computed font-size, plus Blink's generic family rule:
 /// a size not derived from an absolute length is recomputed when the
 /// element's family switches to or from the lone generic `monospace`
@@ -628,6 +630,9 @@ fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *co
         else
             size * 13.0 / 16.0;
     }
+    // Blink's maximum font size (FontSize kMaximumAllowedFontSize, measured:
+    // `font-size: 1e12px` computes to 10000px in Chromium).
+    size = @min(size, max_font_size_px);
     var result = specified;
     // CSS Fonts 4 §2.2: relative weights from the inherited weight.
     const parent_weight: u16 = @intFromEnum(parent.font_weight);

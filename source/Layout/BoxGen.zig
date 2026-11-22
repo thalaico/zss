@@ -139,11 +139,11 @@ pub fn run(box_gen: *BoxGen) !void {
     try analyzeAllNodes(box_gen);
     reuse.finish(box_gen.getLayout());
     try reuse.repaint(box_gen.getLayout());
-    Layout.profile.analyze_ns += Layout.now() - t_analyze;
+    Layout.profile.analyze_ns +|= Layout.now() -| t_analyze;
     // Absolutely positioned boxes: final sizes and positions.
     const t_abs = Layout.now();
     positioned.run(box_gen.getLayout());
-    Layout.profile.abs_ns += Layout.now() - t_abs;
+    Layout.profile.abs_ns +|= Layout.now() -| t_abs;
     box_gen.sct_builder.endFrame();
 }
 
@@ -165,14 +165,14 @@ fn analyzeAllNodes(box_gen: *BoxGen) !void {
         const t0 = Layout.now();
         const analyzed = try analyzeNode(box_gen.getLayout(), .not_root, parent_blockifies);
         const t1 = Layout.now();
-        Layout.profile.analyze_node_ns += t1 - t0;
+        Layout.profile.analyze_node_ns +|= t1 -| t0;
         const node, const box_style = analyzed orelse {
             try box_gen.dispatchNullNode(.not_root, mode);
-            Layout.profile.null_ns += Layout.now() - t1;
+            Layout.profile.null_ns +|= Layout.now() -| t1;
             continue;
         };
         try box_gen.dispatch(.not_root, mode, node, box_style);
-        Layout.profile.dispatch_ns[@intFromEnum(mode)] += Layout.now() - t1;
+        Layout.profile.dispatch_ns[@intFromEnum(mode)] +|= Layout.now() -| t1;
     }
 
     try box_gen.dispatchNullNode(.root, {});
@@ -483,14 +483,14 @@ pub fn absoluteContainingBlockSize(box_gen: *BoxGen, position: BoxTree.BoxStyle.
     const stack = &box_gen.stacks.block_info;
     var i: usize = stack.rest.items.len + 1;
     while (i > 0) {
-        i -= 1;
+        i -|= 1;
         const info: *const BlockInfo = if (i == stack.rest.items.len) &(stack.top orelse return icb) else &stack.rest.items[i];
         if (info.position == .static) continue;
         const sizes = info.sizes;
         const width = sizes.get(.inline_size) orelse return box_gen.containingBlockSize();
         return .{
-            .width = width + sizes.padding_inline_start + sizes.padding_inline_end,
-            .height = if (sizes.get(.block_size)) |h| h + sizes.padding_block_start + sizes.padding_block_end else null,
+            .width = width +| sizes.padding_inline_start +| sizes.padding_inline_end,
+            .height = if (sizes.get(.block_size)) |h| h +| sizes.padding_block_start +| sizes.padding_block_end else null,
         };
     }
     return icb;
@@ -722,7 +722,7 @@ fn markFloat(box_gen: *BoxGen) void {
     if (stack.top == null) return;
     var i: usize = stack.rest.items.len + 1;
     while (i > 0) {
-        i -= 1;
+        i -|= 1;
         const info: *BlockInfo = if (i == stack.rest.items.len) &stack.top.? else &stack.rest.items[i];
         const parent: ?*const BlockInfo = if (i == 0) null else &stack.rest.items[i - 1];
         const is_root = info.is_bfc or info.out_of_flow or info.float_side != .none or
@@ -878,7 +878,7 @@ pub fn popFlowBlock(
             .normal => block_info.sizes.get(.inline_size).?,
             .stf => |aw| aw,
         };
-        var parent_edge = block_info.sizes.border_block_start + block_info.sizes.padding_block_start;
+        var parent_edge = block_info.sizes.border_block_start +| block_info.sizes.padding_block_start;
         // BFC roots (absolutely positioned boxes among them) prevent
         // parent-child margin collapsing (CSS 2.1 §8.3.1, §9.4.1).
         const bfc_root = block_info.is_bfc or block_info.out_of_flow;
@@ -890,7 +890,7 @@ pub fn popFlowBlock(
         // the first child's escaped margin (CSS 2.1 Section 8.3.1).
         if (!bfc_root) block_info.sizes.margin_block_start = result.escaped_top.with(block_info.sizes.margin_block_start).sum();
         // The last child's bottom margin collapses with this block's.
-        const end_edges = block_info.sizes.border_block_end + block_info.sizes.padding_block_end;
+        const end_edges = block_info.sizes.border_block_end +| block_info.sizes.padding_block_end;
         if (flow.collapsesBottomMargin(bfc_root, block_info.sizes.get(.block_size) == null, end_edges, result, block_info.sizes.min_block_size, block_info.sizes.max_block_size)) {
             block_info.sizes.margin_block_end = result.trailing.with(block_info.sizes.margin_block_end).sum();
             break :blk result.content_end;
@@ -991,7 +991,7 @@ pub fn popStfFlowBlock2(
     const subtree_id = box_gen.stacks.subtree.top.?.id;
     const subtree = box_tree.ptr.getSubtree(subtree_id).view();
     const container_width = sizes.get(.inline_size) orelse auto_width;
-    const parent_edge = sizes.border_block_start + sizes.padding_block_start;
+    const parent_edge = sizes.border_block_start +| sizes.padding_block_start;
     const auto_height = flow.offsetChildBlocks(subtree, block.index, block.skip, container_width, parent_edge, box_tree.ptr).auto_height;
     const width = flow.solveUsedWidth(auto_width, sizes.min_inline_size, sizes.max_inline_size); // TODO This is probably redundant
     const height = flow.solveUsedHeight(sizes, form_controls.lineIfEmpty(box_gen.getLayout(), node, auto_height));
@@ -1287,9 +1287,9 @@ fn setDataBlock(
 
     // Horizontal sizes
     box_offsets.border_pos.x = used.get(.margin_inline_start).?;
-    box_offsets.content_pos.x = used.border_inline_start + used.padding_inline_start;
+    box_offsets.content_pos.x = used.border_inline_start +| used.padding_inline_start;
     box_offsets.content_size.w = width;
-    box_offsets.border_size.w = box_offsets.content_pos.x + box_offsets.content_size.w + used.padding_inline_end + used.border_inline_end;
+    box_offsets.border_size.w = box_offsets.content_pos.x +| box_offsets.content_size.w +| used.padding_inline_end +| used.border_inline_end;
 
     borders.left = used.border_inline_start;
     borders.right = used.border_inline_end;
@@ -1299,9 +1299,9 @@ fn setDataBlock(
 
     // Vertical sizes
     box_offsets.border_pos.y = used.margin_block_start;
-    box_offsets.content_pos.y = used.border_block_start + used.padding_block_start;
+    box_offsets.content_pos.y = used.border_block_start +| used.padding_block_start;
     box_offsets.content_size.h = height;
-    box_offsets.border_size.h = box_offsets.content_pos.y + box_offsets.content_size.h + used.padding_block_end + used.border_block_end;
+    box_offsets.border_size.h = box_offsets.content_pos.y +| box_offsets.content_size.h +| used.padding_block_end +| used.border_block_end;
 
     borders.top = used.border_block_start;
     borders.bottom = used.border_block_end;
@@ -1605,8 +1605,8 @@ fn setDataSubtreeProxy(
         const view = proxied_subtree.view();
         var border_size = view.items(.box_offsets)[0].border_size;
         const margins = view.items(.margins)[0];
-        border_size.w += margins.left + margins.right;
-        border_size.h += margins.top + margins.bottom;
+        border_size.w +|= margins.left +| margins.right;
+        border_size.h +|= margins.top +| margins.bottom;
         break :blk border_size;
     };
 

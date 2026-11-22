@@ -70,18 +70,18 @@ fn visit(
     const insets = view.items(.insets)[index];
     const origin = if (out_of_flow) cb.origin else parent_content;
     const border_origin: math.Vector = .{
-        .x = origin.x + offset.x + insets.x + bo.border_pos.x,
-        .y = origin.y + offset.y + insets.y + bo.border_pos.y,
+        .x = origin.x +| offset.x +| insets.x +| bo.border_pos.x,
+        .y = origin.y +| offset.y +| insets.y +| bo.border_pos.y,
     };
-    const content: math.Vector = .{ .x = border_origin.x + bo.content_pos.x, .y = border_origin.y + bo.content_pos.y };
+    const content: math.Vector = .{ .x = border_origin.x +| bo.content_pos.x, .y = border_origin.y +| bo.content_pos.y };
     const positioned = block_type == .block and (out_of_flow or view.items(.creates_absolute_cb)[index]);
     const child_cb: Cb = if (positioned) blk: {
         const borders = view.items(.borders)[index];
         break :blk .{
-            .origin = .{ .x = border_origin.x + borders.left, .y = border_origin.y + borders.top },
+            .origin = .{ .x = border_origin.x +| borders.left, .y = border_origin.y +| borders.top },
             .size = .{
-                .w = bo.border_size.w - borders.left - borders.right,
-                .h = bo.border_size.h - borders.top - borders.bottom,
+                .w = bo.border_size.w -| borders.left -| borders.right,
+                .h = bo.border_size.h -| borders.top -| borders.bottom,
             },
         };
     } else cb;
@@ -133,9 +133,9 @@ fn place(
     // Width.
     if (flags.width == .auto) {
         const border_w = if (left != null and right != null)
-            @max(0, cb.size.w - left.? - right.? - ml - mr)
+            @max(0, cb.size.w -| left.? - right.? - ml -| mr)
         else blk: {
-            const available = @max(0, cb.size.w - (left orelse 0) - (right orelse 0) - ml - mr);
+            const available = @max(0, cb.size.w -| (left orelse 0) -| (right orelse 0) -| ml -| mr);
             const sizes = intrinsic.blockBorderBoxSizes(layout, view, subtree_id, index);
             break :blk @min(@max(sizes.min, available), sizes.max);
         };
@@ -144,10 +144,10 @@ fn place(
     // Height.
     const bo = &view.items(.box_offsets)[index];
     if (flags.height_auto and top != null and bottom != null) {
-        const border_h = @max(0, cb.size.h - top.? - bottom.? - mt - mb);
-        const edges = bo.border_size.h - bo.content_size.h;
+        const border_h = @max(0, cb.size.h -| top.? - bottom.? - mt -| mb);
+        const edges = bo.border_size.h -| bo.content_size.h;
         bo.border_size.h = border_h;
-        bo.content_size.h = @max(0, border_h - edges);
+        bo.content_size.h = @max(0, border_h -| edges);
     }
 
     margins.left = ml;
@@ -156,19 +156,19 @@ fn place(
 
     // The static position: the margin box where it was laid out in flow.
     const offset = view.items(.offset)[index];
-    const static_x = parent_content.x + offset.x;
-    const static_y = parent_content.y + offset.y;
+    const static_x = parent_content.x +| offset.x;
+    const static_y = parent_content.y +| offset.y;
 
     const x: Unit = if (left) |l|
-        cb.origin.x + l
+        cb.origin.x +| l
     else if (right) |r|
-        cb.origin.x + cb.size.w - r - (ml + bo.border_size.w + mr)
+        cb.origin.x +| cb.size.w -| r -| (ml +| bo.border_size.w +| mr)
     else
         static_x;
     const y: Unit = if (top) |t|
-        cb.origin.y + t
+        cb.origin.y +| t
     else if (bottom) |b|
-        cb.origin.y + cb.size.h - b - (mt + bo.border_size.h + mb)
+        cb.origin.y +| cb.size.h -| b -| (mt +| bo.border_size.h +| mb)
     else
         static_y;
 

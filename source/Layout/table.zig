@@ -283,7 +283,7 @@ pub fn layoutTable(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: Subtree.
         // edges as its border, and has no padding.
         t.own_borders = .{ sizes.border_inline_start, sizes.border_inline_end, sizes.border_block_start, sizes.border_block_end };
         prepareCollapsed(layout, subtree, t);
-        const old_h = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
+        const old_h = sizes.border_inline_start +| sizes.border_inline_end +| sizes.padding_inline_start +| sizes.padding_inline_end;
         sizes.border_inline_start = t.outer[0];
         sizes.border_inline_end = t.outer[1];
         sizes.border_block_start = t.outer[2];
@@ -292,7 +292,7 @@ pub fn layoutTable(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: Subtree.
         sizes.padding_inline_end = 0;
         sizes.padding_block_start = 0;
         sizes.padding_block_end = 0;
-        if (!t.specified_width) available += old_h - (t.outer[0] + t.outer[1]);
+        if (!t.specified_width) available +|= old_h -| (t.outer[0] +| t.outer[1]);
     }
     const result = layoutGrid(layout, subtree, t, available);
     sizes.setValue(.inline_size, result.width);
@@ -300,23 +300,23 @@ pub fn layoutTable(box_gen: *BoxGen, subtree: Subtree.View, subtree_id: Subtree.
     // CSS 2.1 §10.3.3 for the table's used width: auto margins share the
     // remaining space (block-level tables center with `margin: auto`).
     const cb_width: Unit = if (box_gen.stacks.containing_block_size.top) |cb| cb.width else result.width;
-    const edges = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
-    const remaining = cb_width - result.width - edges;
+    const edges = sizes.border_inline_start +| sizes.border_inline_end +| sizes.padding_inline_start +| sizes.padding_inline_end;
+    const remaining = cb_width -| result.width -| edges;
     const flags = sizes.intrinsic;
     if (flags.margin_start_auto and flags.margin_end_auto) {
         const start = @max(0, @divFloor(remaining, 2));
         sizes.setValue(.margin_inline_start, start);
-        sizes.setValue(.margin_inline_end, remaining - start);
+        sizes.setValue(.margin_inline_end, remaining -| start);
     } else if (flags.margin_start_auto) {
-        sizes.setValue(.margin_inline_start, remaining - sizes.margin_inline_end_untagged);
+        sizes.setValue(.margin_inline_start, remaining -| sizes.margin_inline_end_untagged);
     } else if (flags.margin_end_auto) {
-        sizes.setValue(.margin_inline_end, remaining - sizes.margin_inline_start_untagged);
+        sizes.setValue(.margin_inline_end, remaining -| sizes.margin_inline_start_untagged);
     } else if (box_gen.stacks.block_info.top) |parent| {
         // A table is a non-auto-width box for legacy alignment.
         const saved_width_kind = sizes.intrinsic.width;
         sizes.intrinsic.width = .fixed;
         sizes.setValue(.margin_inline_start, sizes.specified_margins[0]);
-        sizes.setValue(.margin_inline_end, remaining - sizes.specified_margins[0]);
+        sizes.setValue(.margin_inline_end, remaining -| sizes.specified_margins[0]);
         flow.alignToParentTextAlign(sizes, cb_width, parent.text_align);
         sizes.intrinsic.width = saved_width_kind;
     }
@@ -332,9 +332,9 @@ pub fn relayoutTable(layout: *Layout, subtree: Subtree.View, subtree_id: Subtree
     const available = if (t.specified_width) subtree.items(.box_offsets)[index].content_size.w else content_w;
     const result = layoutGrid(layout, subtree, t, available);
     const bo = &subtree.items(.box_offsets)[index];
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
     bo.content_size.w = result.width;
-    bo.border_size.w = result.width + edges;
+    bo.border_size.w = result.width +| edges;
     return result.height;
 }
 
@@ -350,12 +350,12 @@ pub fn intrinsicSizes(layout: *Layout, subtree: Subtree.View, subtree_id: Subtre
     var measured = measure(layout, subtree, t) catch return null;
     defer measured.deinit();
     const bo = subtree.items(.box_offsets)[index];
-    const edges = bo.border_size.w - bo.content_size.w;
+    const edges = bo.border_size.w -| bo.content_size.w;
     if (t.specified_width) {
-        const w = @max(bo.content_size.w, measured.table_min) + edges;
-        return .{ .min = @max(measured.table_min + edges, w), .max = w };
+        const w = @max(bo.content_size.w, measured.table_min) +| edges;
+        return .{ .min = @max(measured.table_min +| edges, w), .max = w };
     }
-    return .{ .min = measured.table_min + edges, .max = measured.table_max + edges };
+    return .{ .min = measured.table_min +| edges, .max = measured.table_max +| edges };
 }
 
 const GridResult = struct { width: Unit, height: Unit };
@@ -435,41 +435,41 @@ fn measure(layout: *Layout, subtree: Subtree.View, t: *Table) !Measured {
     }
     // Spanning cells, narrowest span first.
     var span: u32 = 2;
-    while (span <= ncols) : (span += 1) {
+    while (span <= ncols) : (span +|= 1) {
         for (t.cells.items, 0..) |cell, ci| {
             if (cell.colspan != span) continue;
-            const spanned = cols[cell.col..@min(ncols, cell.col + span)];
+            const spanned = cols[cell.col..@min(ncols, cell.col +| span)];
             const spacing_inside = t.spacing_h * @as(Unit, @intCast(spanned.len - 1));
-            distributeExcess(spanned, measures[ci].min - spacing_inside, .min);
-            distributeExcess(spanned, measures[ci].max - spacing_inside, .max);
+            distributeExcess(spanned, measures[ci].min -| spacing_inside, .min);
+            distributeExcess(spanned, measures[ci].max -| spacing_inside, .max);
             for (spanned) |*col| col.max = @max(col.max, col.min);
         }
     }
 
     // 4. The table's used content width.
-    const spacing_total: Unit = if (ncols > 0) t.spacing_h * @as(Unit, @intCast(ncols + 1)) else 0;
+    const spacing_total: Unit = if (ncols > 0) t.spacing_h *| @as(Unit, @intCast(ncols + 1)) else 0;
     var sum_min: Unit = 0;
     var sum_max: Unit = 0;
     var sum_percent: f32 = 0;
     var max_non_percent: Unit = 0;
     for (cols) |col| {
-        sum_min += col.min;
-        sum_max += col.max;
+        sum_min +|= col.min;
+        sum_max +|= col.max;
         sum_percent += col.percent;
-        if (col.percent == 0) max_non_percent += col.max;
+        if (col.percent == 0) max_non_percent +|= col.max;
     }
-    var table_max = sum_max + spacing_total;
+    var table_max = sum_max +| spacing_total;
     if (sum_percent > 0) {
         // Percentage columns widen the table's max-content width so each
         // keeps its share (Chromium AutoTableLayout).
         const pct_total = @min(sum_percent, 1.0);
         for (cols) |col| {
-            if (col.percent > 0) table_max = @max(table_max, @as(Unit, @intFromFloat(@as(f32, @floatFromInt(col.max)) / col.percent)) + spacing_total);
+            if (col.percent > 0) table_max = @max(table_max, @as(Unit, zss.math.unitsFromFloat(@as(f32, @floatFromInt(col.max)) / col.percent)) + spacing_total);
         }
-        if (pct_total < 1.0) table_max = @max(table_max, @as(Unit, @intFromFloat(@as(f32, @floatFromInt(max_non_percent)) / (1.0 - pct_total))) + spacing_total);
+        if (pct_total < 1.0) table_max = @max(table_max, @as(Unit, zss.math.unitsFromFloat(@as(f32, @floatFromInt(max_non_percent)) / (1.0 - pct_total))) + spacing_total);
     }
     result.spacing_total = spacing_total;
-    result.table_min = sum_min + spacing_total;
+    result.table_min = sum_min +| spacing_total;
     result.table_max = table_max;
     return result;
 }
@@ -491,28 +491,28 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         @max(measured.table_min, @min(measured.table_max, available));
 
     // 5. Distribute to columns.
-    distributeWidth(cols, width - spacing_total);
+    distributeWidth(cols, width -| spacing_total);
 
     // 6. Cells at their widths.
-    const col_x = allocator.alloc(Unit, ncols + 1) catch return .{ .width = width, .height = 0 };
+    const col_x = allocator.alloc(Unit, ncols +| 1) catch return .{ .width = width, .height = 0 };
     defer allocator.free(col_x);
     {
         var x = t.spacing_h;
         for (cols, 0..) |col, c| {
             col_x[c] = x;
-            x += col.width + t.spacing_h;
+            x +|= col.width +| t.spacing_h;
         }
         col_x[ncols] = x;
     }
     const cell_heights = allocator.alloc(Unit, t.cells.items.len) catch return .{ .width = width, .height = 0 };
     defer allocator.free(cell_heights);
     for (t.cells.items, 0..) |cell, ci| {
-        const end_col = @min(ncols, cell.col + cell.colspan);
-        const cell_w = col_x[end_col] - t.spacing_h - col_x[cell.col];
+        const end_col = @min(ncols, cell.col +| cell.colspan);
+        const cell_w = col_x[end_col] -| t.spacing_h -| col_x[cell.col];
         const bo = &box_offsets[cell.block];
-        const edges = bo.border_size.w - bo.content_size.w;
-        const content_w = @max(0, cell_w - edges);
-        bo.border_size.w = content_w + edges;
+        const edges = bo.border_size.w -| bo.content_size.w;
+        const content_w = @max(0, cell_w -| edges);
+        bo.border_size.w = content_w +| edges;
         bo.content_size.w = content_w;
         // Cells have no margins (CSS 2.1 §17.5).
         subtree.items(.margins)[cell.block].left = 0;
@@ -537,7 +537,7 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         if (cell.span_rows == 1) continue;
         var have = t.spacing_v * @as(Unit, @intCast(cell.span_rows - 1));
         for (row_h[cell.row .. cell.row + cell.span_rows]) |h| have += h;
-        if (cell_heights[ci] > have) row_h[cell.row + cell.span_rows - 1] += cell_heights[ci] - have;
+        if (cell_heights[ci] > have) row_h[cell.row +| cell.span_rows -| 1] +|= cell_heights[ci] -| have;
     }
     const row_y = allocator.alloc(Unit, nrows) catch return .{ .width = width, .height = 0 };
     defer allocator.free(row_y);
@@ -549,12 +549,12 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         subtree.items(.offset)[cap] = .{ .x = 0, .y = y };
         y += box_offsets[cap].border_size.h + subtree.items(.margins)[cap].top + subtree.items(.margins)[cap].bottom;
     }
-    if (nrows > 0) y += t.spacing_v;
+    if (nrows > 0) y +|= t.spacing_v;
     for (0..nrows) |pos| {
         row_y[pos] = y;
-        y += row_h[pos] + t.spacing_v;
+        y +|= row_h[pos] +| t.spacing_v;
     }
-    const grid_width = @max(0, width - 2 * t.spacing_h);
+    const grid_width = @max(0, width -| 2 *| t.spacing_h);
 
     // Groups and rows.
     var pos: u32 = 0;
@@ -567,15 +567,15 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         const first = pos;
         const last = pos + @as(u32, @intCast(g.rows.items.len)) - 1;
         const group_top = row_y[first];
-        const group_bottom = row_y[last] + row_h[last];
+        const group_bottom = row_y[last] +| row_h[last];
         // Rows are offset within their group, or within the table for the
         // anonymous group.
         const origin_x: Unit = if (g.block != null) 0 else t.spacing_h;
         const origin_y: Unit = if (g.block != null) group_top else 0;
         if (g.block) |gb| placeBox(subtree, gb, t.spacing_h, group_top, grid_width, group_bottom - group_top);
         for (g.rows.items) |r| {
-            placeBox(subtree, t.rows.items[r].block, origin_x, row_y[pos] - origin_y, grid_width, row_h[pos]);
-            pos += 1;
+            placeBox(subtree, t.rows.items[r].block, origin_x, row_y[pos] -| origin_y, grid_width, row_h[pos]);
+            pos +|= 1;
         }
     }
 
@@ -586,17 +586,17 @@ fn layoutGrid(layout: *Layout, subtree: Subtree.View, t: *Table, available: Unit
         for (row_h[cell.row .. cell.row + cell.span_rows]) |rh| h += rh;
         const content_h = bo.content_size.h;
         const top_edge = bo.content_pos.y;
-        const bottom_edge = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        const bottom_edge = bo.border_size.h -| bo.content_pos.y -| bo.content_size.h;
         bo.border_size.h = h;
-        const free = h - top_edge - bottom_edge - content_h;
+        const free = h -| top_edge -| bottom_edge -| content_h;
         // CSS 2.1 §17.5.4: other values align the cell like baseline.
         const shift: Unit = switch (cell.vertical_align) {
             .middle => @divFloor(free, 2),
             .bottom => free,
             else => 0,
         };
-        bo.content_pos.y = top_edge + @max(0, shift);
-        bo.content_size.h = h - bo.content_pos.y - bottom_edge;
+        bo.content_pos.y = top_edge +| @max(0, shift);
+        bo.content_size.h = h -| bo.content_pos.y -| bottom_edge;
         subtree.items(.offset)[cell.block] = .{ .x = col_x[cell.col] - t.spacing_h, .y = 0 };
     }
 
@@ -608,10 +608,10 @@ fn placeBox(subtree: Subtree.View, index: Subtree.Size, x: Unit, y: Unit, w: Uni
     const margins = &subtree.items(.margins)[index];
     margins.* = .{};
     bo.border_pos = .{ .x = 0, .y = 0 };
-    const edges_w = bo.border_size.w - bo.content_size.w;
-    const edges_h = bo.border_size.h - bo.content_size.h;
+    const edges_w = bo.border_size.w -| bo.content_size.w;
+    const edges_h = bo.border_size.h -| bo.content_size.h;
     bo.border_size = .{ .w = w, .h = h };
-    bo.content_size = .{ .w = @max(0, w - edges_w), .h = @max(0, h - edges_h) };
+    bo.content_size = .{ .w = @max(0, w -| edges_w), .h = @max(0, h -| edges_h) };
     subtree.items(.offset)[index] = .{ .x = x, .y = y };
 }
 
@@ -622,21 +622,21 @@ fn distributeExcess(spanned: []Column, target: Unit, comptime which: enum { min,
     var have: Unit = 0;
     var weight: i64 = 0;
     for (spanned) |col| {
-        have += @field(col, @tagName(which));
-        weight += col.max;
+        have +|= @field(col, @tagName(which));
+        weight +|= col.max;
     }
     if (target <= have) return;
-    const excess = target - have;
+    const excess = target -| have;
     var given: Unit = 0;
     for (spanned, 0..) |*col, i| {
         const share: Unit = if (i == spanned.len - 1)
-            excess - given
+            excess -| given
         else if (weight > 0)
             @intCast(@divFloor(@as(i64, excess) * col.max, weight))
         else
             @divFloor(excess, @as(Unit, @intCast(spanned.len)));
-        @field(col, @tagName(which)) += share;
-        given += share;
+        @field(col, @tagName(which)) +|= share;
+        given +|= share;
     }
 }
 
@@ -648,7 +648,7 @@ fn distributeWidth(cols: []Column, target: Unit) void {
     var sums: [guesses.len]Unit = undefined;
     for (guesses, 0..) |g, gi| {
         var sum: Unit = 0;
-        for (cols) |col| sum += guess(col, g, target);
+        for (cols) |col| sum +|= guess(col, g, target);
         sums[gi] = sum;
     }
     if (target <= sums[0]) {
@@ -658,19 +658,19 @@ fn distributeWidth(cols: []Column, target: Unit) void {
     // Interpolate between the two guesses bracketing the target.
     var gi: usize = 0;
     while (gi + 1 < guesses.len) : (gi += 1) {
-        if (target <= sums[gi + 1]) {
-            const span = sums[gi + 1] - sums[gi];
+        if (target <= sums[gi +| 1]) {
+            const span = sums[gi +| 1] -| sums[gi];
             var given: Unit = 0;
             for (cols, 0..) |*col, c| {
                 const a = guess(col.*, guesses[gi], target);
-                const b = guess(col.*, guesses[gi + 1], target);
+                const b = guess(col.*, guesses[gi +| 1], target);
                 col.width = if (c == cols.len - 1)
-                    target - given
+                    target -| given
                 else if (span > 0)
                     a + @as(Unit, @intCast(@divFloor(@as(i64, b - a) * (target - sums[gi]), span)))
                 else
                     a;
-                given += col.width;
+                given +|= col.width;
             }
             return;
         }
@@ -687,7 +687,7 @@ fn distributeWidth(cols: []Column, target: Unit) void {
         for (cols) |col| {
             if (picked(col, pick)) {
                 count += 1;
-                weight += col.max;
+                weight +|= col.max;
             }
         }
         if (count > 0) {
@@ -695,15 +695,15 @@ fn distributeWidth(cols: []Column, target: Unit) void {
             var seen: usize = 0;
             for (cols) |*col| {
                 if (!picked(col.*, pick)) continue;
-                seen += 1;
+                seen +|= 1;
                 const share: Unit = if (seen == count)
-                    excess - given
+                    excess -| given
                 else if (weight > 0 and pick != .auto_any and pick != .all)
                     @intCast(@divFloor(@as(i64, excess) * col.max, weight))
                 else
                     @divFloor(excess, @as(Unit, @intCast(count)));
-                col.width += share;
-                given += share;
+                col.width +|= share;
+                given +|= share;
             }
             return;
         }
@@ -724,7 +724,7 @@ fn picked(col: Column, pick: anytype) bool {
 const Guess = enum { min, min_percent, min_specified, max };
 
 fn guess(col: Column, g: Guess, target: Unit) Unit {
-    const percent_width: Unit = @intFromFloat(col.percent * @as(f32, @floatFromInt(target)));
+    const percent_width: Unit = zss.math.unitsFromFloat(col.percent * @as(f32, @floatFromInt(target)));
     return switch (g) {
         .min => col.min,
         .min_percent => if (col.percent > 0) @max(col.min, percent_width) else col.min,
@@ -765,14 +765,14 @@ fn assignSlots(allocator: Allocator, t: *Table, group_order: []const u32) !u32 {
                 cell.row = row_pos;
                 cell.col = col;
                 cell.span_rows = @max(1, span_rows);
-                const end_col = col + cell.colspan;
+                const end_col = col +| cell.colspan;
                 while (busy.items.len < end_col) try busy.append(allocator, 0);
                 var c = col;
-                while (c < end_col) : (c += 1) busy.items[c] = row_pos + cell.span_rows;
+                while (c < end_col) : (c +|= 1) busy.items[c] = row_pos +| cell.span_rows;
                 col = end_col;
                 ncols = @max(ncols, end_col);
             }
-            row_pos += 1;
+            row_pos +|= 1;
         }
     }
     return ncols;
@@ -864,20 +864,20 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
         return;
     }
     // Vertical edges: (nrows) x (ncols + 1); horizontal: (nrows + 1) x ncols.
-    const v = allocator.alloc(Edge, nrows * (ncols + 1)) catch return;
+    const v = allocator.alloc(Edge, nrows * (ncols +| 1)) catch return;
     defer allocator.free(v);
-    const h = allocator.alloc(Edge, (nrows + 1) * ncols) catch return;
+    const h = allocator.alloc(Edge, (nrows +| 1) * ncols) catch return;
     defer allocator.free(h);
     @memset(v, .{});
     @memset(h, .{});
     const V = struct {
         fn at(edges: []Edge, n: u32, r: u32, c: u32) *Edge {
-            return &edges[r * (n + 1) + c];
+            return &edges[r * (n +| 1) +| c];
         }
     };
     const H = struct {
         fn at(edges: []Edge, n: u32, r: u32, c: u32) *Edge {
-            return &edges[r * n + c];
+            return &edges[r * n +| c];
         }
     };
 
@@ -890,16 +890,16 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
         }
         const sides = ownSides(layout, cell.node, cell.own_borders.?);
         const r0 = cell.row;
-        const r1 = @min(nrows, cell.row + cell.span_rows);
+        const r1 = @min(nrows, cell.row +| cell.span_rows);
         const c0 = cell.col;
-        const c1 = @min(ncols, cell.col + cell.colspan);
+        const c1 = @min(ncols, cell.col +| cell.colspan);
         var r = r0;
-        while (r < r1) : (r += 1) {
+        while (r < r1) : (r +|= 1) {
             offer(V.at(v, ncols, r, c0), sides.widths[0], sides.styles[0], 4, sides.colors[0]);
             offer(V.at(v, ncols, r, c1), sides.widths[1], sides.styles[1], 4, sides.colors[1]);
         }
         var c = c0;
-        while (c < c1) : (c += 1) {
+        while (c < c1) : (c +|= 1) {
             offer(H.at(h, ncols, r0, c), sides.widths[2], sides.styles[2], 4, sides.colors[2]);
             offer(H.at(h, ncols, r1, c), sides.widths[3], sides.styles[3], 4, sides.colors[3]);
         }
@@ -917,13 +917,13 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
     // Cells: half edges (widest segment of a spanning side).
     for (t.cells.items) |cell| {
         const r0 = cell.row;
-        const r1 = @min(nrows, cell.row + cell.span_rows);
+        const r1 = @min(nrows, cell.row +| cell.span_rows);
         const c0 = cell.col;
-        const c1 = @min(ncols, cell.col + cell.colspan);
+        const c1 = @min(ncols, cell.col +| cell.colspan);
         var widths = [4]Unit{ 0, 0, 0, 0 };
         var colors = [4]math.Color{ .transparent, .transparent, .transparent, .transparent };
         var r = r0;
-        while (r < r1) : (r += 1) {
+        while (r < r1) : (r +|= 1) {
             const left = V.at(v, ncols, r, c0).*;
             const right = V.at(v, ncols, r, c1).*;
             if (r == r0 or edgeWidth(left) > widths[0] * 2) colors[0] = left.color;
@@ -931,10 +931,10 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
             // A cell is on the end side of its left edge: it takes the
             // rounded-down half; the cell or table before it the rest.
             widths[0] = @max(widths[0], @divFloor(edgeWidth(left), 2));
-            widths[1] = @max(widths[1], edgeWidth(right) - @divFloor(edgeWidth(right), 2));
+            widths[1] = @max(widths[1], edgeWidth(right) -| @divFloor(edgeWidth(right), 2));
         }
         var c = c0;
-        while (c < c1) : (c += 1) {
+        while (c < c1) : (c +|= 1) {
             const top = H.at(h, ncols, r0, c).*;
             const bottom = H.at(h, ncols, r1, c).*;
             if (c == c0) {
@@ -942,7 +942,7 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
                 colors[3] = bottom.color;
             }
             widths[2] = @max(widths[2], @divFloor(edgeWidth(top), 2));
-            widths[3] = @max(widths[3], edgeWidth(bottom) - @divFloor(edgeWidth(bottom), 2));
+            widths[3] = @max(widths[3], edgeWidth(bottom) -| @divFloor(edgeWidth(bottom), 2));
         }
         setCellBorders(subtree, cell.block, widths);
         subtree.items(.border_colors)[cell.block] = .{ .left = colors[0], .right = colors[1], .top = colors[2], .bottom = colors[3] };
@@ -957,7 +957,7 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
     for (0..nrows) |r| {
         const left = V.at(v, ncols, @intCast(r), 0).*;
         const right = V.at(v, ncols, @intCast(r), ncols).*;
-        const lw = edgeWidth(left) - @divFloor(edgeWidth(left), 2);
+        const lw = edgeWidth(left) -| @divFloor(edgeWidth(left), 2);
         const rw = @divFloor(edgeWidth(right), 2);
         if (r == 0 or lw > outer[0]) outer_colors[0] = left.color;
         if (r == 0 or rw > outer[1]) outer_colors[1] = right.color;
@@ -967,7 +967,7 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
     for (0..ncols) |c| {
         const top = H.at(h, ncols, 0, @intCast(c)).*;
         const bottom = H.at(h, ncols, nrows, @intCast(c)).*;
-        const tw = edgeWidth(top) - @divFloor(edgeWidth(top), 2);
+        const tw = edgeWidth(top) -| @divFloor(edgeWidth(top), 2);
         const bw = @divFloor(edgeWidth(bottom), 2);
         if (c == 0 or tw > outer[2]) outer_colors[2] = top.color;
         if (c == 0 or bw > outer[3]) outer_colors[3] = bottom.color;
@@ -983,15 +983,15 @@ fn prepareCollapsed(layout: *Layout, subtree: Subtree.View, t: *Table) void {
 fn setCellBorders(subtree: Subtree.View, index: Subtree.Size, widths: [4]Unit) void {
     const bo = &subtree.items(.box_offsets)[index];
     const borders = &subtree.items(.borders)[index];
-    const pad_left = bo.content_pos.x - borders.left;
-    const pad_top = bo.content_pos.y - borders.top;
-    const pad_right = bo.border_size.w - bo.content_size.w - bo.content_pos.x - borders.right;
-    const pad_bottom = bo.border_size.h - bo.content_size.h - bo.content_pos.y - borders.bottom;
+    const pad_left = bo.content_pos.x -| borders.left;
+    const pad_top = bo.content_pos.y -| borders.top;
+    const pad_right = bo.border_size.w -| bo.content_size.w -| bo.content_pos.x -| borders.right;
+    const pad_bottom = bo.border_size.h -| bo.content_size.h -| bo.content_pos.y -| borders.bottom;
     borders.* = .{ .left = widths[0], .right = widths[1], .top = widths[2], .bottom = widths[3] };
-    bo.content_pos = .{ .x = widths[0] + pad_left, .y = widths[2] + pad_top };
+    bo.content_pos = .{ .x = widths[0] +| pad_left, .y = widths[2] +| pad_top };
     bo.border_size = .{
-        .w = widths[0] + pad_left + bo.content_size.w + pad_right + widths[1],
-        .h = widths[2] + pad_top + bo.content_size.h + pad_bottom + widths[3],
+        .w = widths[0] +| pad_left +| bo.content_size.w +| pad_right +| widths[1],
+        .h = widths[2] +| pad_top +| bo.content_size.h +| pad_bottom +| widths[3],
     };
 }
 

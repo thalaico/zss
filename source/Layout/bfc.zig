@@ -117,7 +117,7 @@ const Pass = struct {
     /// Content after adjoining margins: they collapse into one, and every
     /// pending block's border-box top is there.
     fn resolve(pass: *Pass) !void {
-        const position = pass.y + pass.strut.sum();
+        const position = pass.y +| pass.strut.sum();
         for (pass.pending.items) |index| pass.top(index).* = position;
         pass.pending.clearRetainingCapacity();
         pass.y = position;
@@ -146,9 +146,9 @@ const Pass = struct {
     /// The inline space between the floats present over [y, y + height)
     /// within [x0, x0 + width).
     fn opportunity(pass: *const Pass, y: Unit, height: Unit, x0: Unit, width: Unit) Opportunity {
-        var result: Opportunity = .{ .left = x0, .right = x0 + width, .constrained = false };
+        var result: Opportunity = .{ .left = x0, .right = x0 +| width, .constrained = false };
         for (pass.exclusions.items) |e| {
-            if (e.bottom <= y or e.top >= y + @max(height, 1)) continue;
+            if (e.bottom <= y or e.top >= y +| @max(height, 1)) continue;
             switch (e.side) {
                 .left => if (e.right > result.left) {
                     result.left = e.right;
@@ -175,7 +175,7 @@ const Pass = struct {
     fn walk(pass: *Pass, container: Subtree.Size, end: Subtree.Size, x0: Unit, width: Unit) error{OutOfMemory}!void {
         const subtree = pass.subtree;
         const skips = subtree.items(.skip);
-        var child = container + 1;
+        var child = container +| 1;
         while (child < end) : (child += skips[child]) {
             if (subtree.items(.out_of_flow)[child]) continue;
             switch (subtree.items(.type)[child]) {
@@ -223,10 +223,10 @@ const Pass = struct {
             if (e.bottom <= ifc_top) continue;
             try pass.line_floats.append(pass.layout.allocator, .{
                 .side = e.side,
-                .x = e.left - x0,
-                .y = e.top - ifc_top,
-                .w = e.right - e.left,
-                .h = e.bottom - e.top,
+                .x = e.left -| x0,
+                .y = e.top -| ifc_top,
+                .w = e.right -| e.left,
+                .h = e.bottom -| e.top,
             });
         }
         const floats: ?flow.FloatContext = if (pass.line_floats.items.len > 0) .{ .floats = pass.line_floats.items } else null;
@@ -235,7 +235,7 @@ const Pass = struct {
         bo.border_size = .{ .w = width, .h = result.height };
         bo.content_size = .{ .w = width, .h = result.height };
         pass.top(index).* = ifc_top;
-        pass.y = ifc_top + result.height;
+        pass.y = ifc_top +| result.height;
     }
 
     /// Clearance (§9.5.2): if the border box would start above the floats
@@ -252,10 +252,10 @@ const Pass = struct {
             pass.strut.append(margin_top);
         }
         const bottom = pass.clearBottom(clear) orelse return false;
-        if (bottom <= pass.y + pass.strut.sum()) return false;
+        if (bottom <= pass.y +| pass.strut.sum()) return false;
         pass.strut = strut_before;
         try pass.resolve();
-        pass.y = @max(bottom, pass.y + margin_top);
+        pass.y = @max(bottom, pass.y +| margin_top);
         pass.top(index).* = pass.y;
         return true;
     }
@@ -271,12 +271,12 @@ const Pass = struct {
         const subtree = pass.subtree;
         const bo = &subtree.items(.box_offsets)[index];
         const used = relayout.usedInlineSize(pass.layout.inputs.env, subtree, index, width);
-        const edges_w = bo.border_size.w - bo.content_size.w;
+        const edges_w = bo.border_size.w -| bo.content_size.w;
         const margins = &subtree.items(.margins)[index];
         margins.left = used.margin_left;
         margins.right = used.margin_right;
         bo.border_pos.x = used.margin_left;
-        bo.border_size.w = used.content_w + edges_w;
+        bo.border_size.w = used.content_w +| edges_w;
         bo.content_size.w = used.content_w;
         subtree.items(.offset)[index].x = 0;
 
@@ -297,7 +297,7 @@ const Pass = struct {
 
         try pass.walk(index, index + subtree.items(.skip)[index], x0 + used.margin_left + bo.content_pos.x, used.content_w);
 
-        const edges_bottom = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        const edges_bottom = bo.border_size.h -| bo.content_pos.y -| bo.content_size.h;
         const height_auto = subtree.items(.intrinsic)[index].height_auto;
         const min_h = subtree.items(.min_block_size)[index];
         const max_h = subtree.items(.max_block_size)[index];
@@ -305,7 +305,7 @@ const Pass = struct {
             if (height_auto and edges_bottom == 0 and min_h <= 0) {
                 // No content: its margins collapse through it (§8.3.1). Its
                 // top is where it would be with a bottom border.
-                const position = pass.y + pass.strut.sum();
+                const position = pass.y +| pass.strut.sum();
                 while (pass.pending.items.len > 0 and pass.pending.items[pass.pending.items.len - 1] >= index) {
                     pass.top(pass.pending.pop().?).* = position;
                 }
@@ -317,7 +317,7 @@ const Pass = struct {
         }
         const content_top = pass.top(index).* + edges_top;
         if (height_auto and edges_bottom == 0) {
-            const h = pass.y - content_top;
+            const h = pass.y -| content_top;
             if (std.math.clamp(h, min_h, @max(min_h, max_h)) == h) {
                 // The last child's bottom margin collapses with this one's.
                 setHeight(bo, h);
@@ -325,18 +325,18 @@ const Pass = struct {
                 return;
             }
         }
-        const inner_end = pass.y + pass.strut.sum();
+        const inner_end = pass.y +| pass.strut.sum();
         pass.strut = .{};
-        const h = if (height_auto) std.math.clamp(inner_end - content_top, min_h, @max(min_h, max_h)) else bo.content_size.h;
+        const h = if (height_auto) std.math.clamp(inner_end -| content_top, min_h, @max(min_h, max_h)) else bo.content_size.h;
         setHeight(bo, h);
-        pass.y = content_top + h + edges_bottom;
+        pass.y = content_top +| h +| edges_bottom;
         pass.strut.append(m[1]);
     }
 
     fn setHeight(bo: *BoxTree.BoxOffsets, content_h: Unit) void {
-        const bottom = bo.border_size.h - bo.content_pos.y - bo.content_size.h;
+        const bottom = bo.border_size.h -| bo.content_pos.y -| bo.content_size.h;
         bo.content_size.h = content_h;
-        bo.border_size.h = bo.content_pos.y + content_h + bottom;
+        bo.border_size.h = bo.content_pos.y +| content_h +| bottom;
     }
 
     /// A block-level BFC root: its border box may not overlap floats in
@@ -354,7 +354,7 @@ const Pass = struct {
         const specified = subtree.items(.specified_margins)[index];
         var left = x0;
         var attempts: usize = 0;
-        while (true) : (attempts += 1) {
+        while (true) : (attempts +|= 1) {
             const bo = subtree.items(.box_offsets)[index];
             const opp = pass.opportunity(y, bo.border_size.h, x0, width);
             if (!opp.constrained or attempts > pass.exclusions.items.len) {
@@ -362,16 +362,16 @@ const Pass = struct {
                 left = x0;
                 break;
             }
-            const available = opp.right - opp.left;
+            const available = opp.right -| opp.left;
             const fits = if (auto_width)
                 available >= intrinsic.blockContribution(pass.layout, subtree, pass.subtree_id, index).min
             else
-                bo.border_size.w + specified[0] + specified[1] <= available;
+                bo.border_size.w +| specified[0] +| specified[1] <= available;
             if (fits) {
                 if (!is_table) relayout.relayoutBlock(pass.layout, subtree, pass.subtree_id, index, available);
                 // The relaid box may be taller: it must still fit there.
                 const again = pass.opportunity(y, subtree.items(.box_offsets)[index].border_size.h, x0, width);
-                if (again.right - again.left >= available or again.left == opp.left and again.right == opp.right) {
+                if (again.right -| again.left >= available or again.left == opp.left and again.right == opp.right) {
                     left = opp.left;
                     break;
                 }
@@ -402,10 +402,10 @@ const Pass = struct {
         const flags = subtree.items(.intrinsic)[index];
         const margin_left: Unit = if (flags.margin_start_auto) 0 else specified[0];
         const margin_right: Unit = if (flags.margin_end_auto) 0 else specified[1];
-        const available = @max(0, width - margin_left - margin_right);
+        const available = @max(0, width -| margin_left -| margin_right);
         {
             const bo = subtree.items(.box_offsets)[index];
-            const edges = bo.border_size.w - bo.content_size.w;
+            const edges = bo.border_size.w -| bo.content_size.w;
             // §10.3.5: an auto width is shrink-to-fit.
             const border_w = switch (flags.width) {
                 .auto => blk: {
@@ -423,25 +423,25 @@ const Pass = struct {
         margins.right = margin_right;
         bo.border_pos.x = margin_left;
         pass.setMargins(index, m);
-        const outer_w = margin_left + bo.border_size.w + margin_right;
-        const outer_h = m[0] + bo.border_size.h + m[1];
+        const outer_w = margin_left +| bo.border_size.w +| margin_right;
+        const outer_h = m[0] +| bo.border_size.h +| m[1];
         const side: flow.FloatContext.Side = if (subtree.items(.float_side)[index] == .left) .left else .right;
 
         // §9.5.1 rules 4-9.
-        var y = @max(pass.y + pass.strut.sum(), pass.float_top);
+        var y = @max(pass.y +| pass.strut.sum(), pass.float_top);
         if (subtree.items(.clear_side)[index] != .none) {
             if (pass.clearBottom(subtree.items(.clear_side)[index])) |bottom| y = @max(y, bottom);
         }
         var opp = pass.opportunity(y, outer_h, x0, width);
-        while (opp.constrained and opp.right - opp.left < outer_w) {
+        while (opp.constrained and opp.right -| opp.left < outer_w) {
             y = pass.nextBottom(y) orelse break;
             opp = pass.opportunity(y, outer_h, x0, width);
         }
         const x = switch (side) {
             .left => opp.left,
-            .right => opp.right - outer_w,
+            .right => opp.right -| outer_w,
         };
-        try pass.exclusions.append(pass.layout.allocator, .{ .side = side, .left = x, .right = x + outer_w, .top = y, .bottom = y + outer_h });
+        try pass.exclusions.append(pass.layout.allocator, .{ .side = side, .left = x, .right = x +| outer_w, .top = y, .bottom = y +| outer_h });
         pass.float_top = y;
         subtree.items(.offset)[index].x = x - x0;
         pass.top(index).* = y + m[0];
@@ -451,18 +451,18 @@ const Pass = struct {
     fn writeOffsets(pass: *Pass, container: Subtree.Size, end: Subtree.Size, content_top: Unit) void {
         const subtree = pass.subtree;
         const skips = subtree.items(.skip);
-        var child = container + 1;
+        var child = container +| 1;
         while (child < end) : (child += skips[child]) {
             if (subtree.items(.out_of_flow)[child]) continue;
             const child_top = pass.top(child).*;
             if (child_top == unresolved) continue;
             const offset = &subtree.items(.offset)[child];
             switch (subtree.items(.type)[child]) {
-                .ifc_container => offset.* = .{ .x = 0, .y = child_top - content_top },
+                .ifc_container => offset.* = .{ .x = 0, .y = child_top -| content_top },
                 .subtree_proxy => offset.y = child_top - content_top,
                 .block => {
                     const bo = subtree.items(.box_offsets)[child];
-                    offset.y = child_top - bo.border_pos.y - content_top;
+                    offset.y = child_top -| bo.border_pos.y -| content_top;
                     if (subtree.items(.float_side)[child] == .none and !pass.isBfcRoot(child)) {
                         pass.writeOffsets(child, child + skips[child], child_top + bo.content_pos.y);
                     }

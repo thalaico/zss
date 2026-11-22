@@ -16,7 +16,8 @@ pub const LengthUnit = enum { px };
 
 pub fn length(comptime unit: LengthUnit, value: f32) Unit {
     return switch (unit) {
-        .px => @as(Unit, @intFromFloat(@round(value * units_per_pixel))),
+        // Chromium LayoutUnit::FromFloatRound: clamped to the range, NaN 0.
+        .px => zss.math.unitsFromFloat(@round(zss.values.calc.clampPx(value) * units_per_pixel)),
     };
 }
 
@@ -26,7 +27,7 @@ pub fn positiveLength(comptime unit: LengthUnit, value: f32) Unit {
 }
 
 pub fn percentage(value: f32, unit: Unit) Unit {
-    return @intFromFloat(@round(@as(f32, @floatFromInt(unit)) * value));
+    return zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(unit)) * value));
 }
 
 pub fn positivePercentage(value: f32, unit: Unit) Unit {
@@ -40,7 +41,7 @@ pub fn positivePercentage(value: f32, unit: Unit) Unit {
 pub fn calc(env: *const zss.Environment, value: types.Calc, base: ?Unit) ?Unit {
     const base_px: ?f32 = if (base) |b| @as(f32, @floatFromInt(b)) / units_per_pixel else null;
     const px = env.calc.eval(value.id, value.font_size, base_px) orelse return null;
-    return @intFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
+    return zss.math.unitsFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
 }
 
 /// `calc` for properties that take no negative values: the result is
@@ -371,8 +372,8 @@ pub fn backgroundImage(
 
     const border_width = box_offsets.border_size.w;
     const border_height = box_offsets.border_size.h;
-    const padding_width = border_width - borders.left - borders.right;
-    const padding_height = border_height - borders.top - borders.bottom;
+    const padding_width = border_width -| borders.left -| borders.right;
+    const padding_height = border_height -| borders.top -| borders.bottom;
     const content_width = box_offsets.content_size.w;
     const content_height = box_offsets.content_size.h;
     const positioning_area: struct { origin: BoxTree.BackgroundImage.Origin, width: Unit, height: Unit } = switch (specified.origin) {
@@ -407,18 +408,18 @@ pub fn backgroundImage(
             // at the size of the background positioning area.
             if (!natural_size.has_aspect_ratio) break :blk BoxTree.BackgroundImage.Size{ .w = positioning_area.width, .h = positioning_area.height };
 
-            const positioning_area_is_wider_than_image = positioning_area.width * natural_size.height > positioning_area.height * natural_size.width;
+            const positioning_area_is_wider_than_image = @as(i64, positioning_area.width) * natural_size.height > @as(i64, positioning_area.height) * natural_size.width;
             const is_contain = (specified.size == .contain);
 
             if (positioning_area_is_wider_than_image == is_contain) {
                 break :blk BoxTree.BackgroundImage.Size{
-                    .w = @divFloor(positioning_area.height * natural_size.width, natural_size.height),
+                    .w = math.mulDivFloor(positioning_area.height, natural_size.width, natural_size.height),
                     .h = positioning_area.height,
                 };
             } else {
                 break :blk BoxTree.BackgroundImage.Size{
                     .w = positioning_area.width,
-                    .h = @divFloor(positioning_area.width * natural_size.height, natural_size.width),
+                    .h = math.mulDivFloor(positioning_area.width, natural_size.height, natural_size.width),
                 };
             }
         },
@@ -450,12 +451,12 @@ pub fn backgroundImage(
             size.h = if (dimensions != null) natural_size.height else positioning_area.height;
         } else if (width_was_auto) {
             size.w = if (natural_size.has_aspect_ratio)
-                divRound(size.h * natural_size.width, natural_size.height)
+                math.mulDivRound(size.h, natural_size.width, natural_size.height)
             else
                 positioning_area.width;
         } else if (height_was_auto) {
             size.h = if (natural_size.has_aspect_ratio)
-                divRound(size.w * natural_size.height, natural_size.width)
+                math.mulDivRound(size.w, natural_size.height, natural_size.width)
             else
                 positioning_area.height;
         }
@@ -465,22 +466,22 @@ pub fn backgroundImage(
             size.h = @divFloor(positioning_area.height, @max(1, divRound(positioning_area.height, size.h)));
         } else if (repeat.x == .round) {
             if (size.w > 0) size.w = @divFloor(positioning_area.width, @max(1, divRound(positioning_area.width, size.w)));
-            if (height_was_auto and natural_size.has_aspect_ratio) size.h = @divFloor(size.w * natural_size.height, natural_size.width);
+            if (height_was_auto and natural_size.has_aspect_ratio) size.h = math.mulDivFloor(size.w, natural_size.height, natural_size.width);
         } else if (repeat.y == .round) {
             if (size.h > 0) size.h = @divFloor(positioning_area.height, @max(1, divRound(positioning_area.height, size.h)));
-            if (width_was_auto and natural_size.has_aspect_ratio) size.w = @divFloor(size.h * natural_size.width, natural_size.height);
+            if (width_was_auto and natural_size.has_aspect_ratio) size.w = math.mulDivFloor(size.h, natural_size.width, natural_size.height);
         }
     }
 
     const position: BoxTree.BackgroundImage.Position = .{
         .x = blk: {
-            const available_space = positioning_area.width - size.w;
+            const available_space = positioning_area.width -| size.w;
             switch (specified.position.x.side) {
                 .start, .end => {
                     switch (specified.position.x.offset) {
                         .px => |val| {
                             const offset = length(.px, val);
-                            const offset_adjusted = if (specified.position.x.side == .start) offset else available_space - offset;
+                            const offset_adjusted = if (specified.position.x.side == .start) offset else available_space -| offset;
                             break :blk offset_adjusted;
                         },
                         .percentage => |p| {
@@ -493,13 +494,13 @@ pub fn backgroundImage(
             }
         },
         .y = blk: {
-            const available_space = positioning_area.height - size.h;
+            const available_space = positioning_area.height -| size.h;
             switch (specified.position.y.side) {
                 .start, .end => {
                     switch (specified.position.y.offset) {
                         .px => |val| {
                             const offset = length(.px, val);
-                            const offset_adjusted = if (specified.position.y.side == .start) offset else available_space - offset;
+                            const offset_adjusted = if (specified.position.y.side == .start) offset else available_space -| offset;
                             break :blk offset_adjusted;
                         },
                         .percentage => |p| {

@@ -11,7 +11,7 @@ const expect = std.testing.expect;
 pub const Unit = i32;
 
 /// The number of Units contained wthin the width or height of 1 screen pixel.
-pub const units_per_pixel = 4;
+pub const units_per_pixel = 64;
 
 pub fn pixelsToUnits(px: anytype) ?Unit {
     const scaled = std.math.mul(@TypeOf(px), px, units_per_pixel) catch return null;
@@ -112,7 +112,41 @@ pub const Ratio = struct {
 
 pub fn divRound(a: anytype, b: anytype) @TypeOf(a, b) {
     const Return = @TypeOf(a, b);
-    return @divFloor(a, b) + @as(Return, @intFromBool(2 * @mod(a, b) >= b));
+    const m = @mod(a, b);
+    // 2m >= b, without overflowing 2m.
+    return @divFloor(a, b) + @as(Return, @intFromBool(m >= b - m));
+}
+
+/// `v` clamped to the range of Unit: arithmetic on layout units saturates,
+/// as Chromium's LayoutUnit does (its operations clamp instead of wrapping).
+pub fn saturate(v: anytype) Unit {
+    return @intCast(std.math.clamp(v, std.math.minInt(Unit), std.math.maxInt(Unit)));
+}
+
+/// A float number of layout units as a Unit: truncated toward zero like
+/// @intFromFloat, clamped to the range and NaN as 0 (Chromium
+/// LayoutUnit::FromFloat* clamp instead of overflowing).
+pub fn unitsFromFloat(v: anytype) Unit {
+    if (std.math.isNan(v)) return 0;
+    const lo: @TypeOf(v) = @floatFromInt(std.math.minInt(Unit));
+    // The largest float of the type that fits (f32: 2^31 - 128).
+    const hi: @TypeOf(v) = switch (@TypeOf(v)) {
+        f32 => 2147483520.0,
+        f64 => 2147483647.0,
+        else => @compileError("unitsFromFloat: f32 or f64"),
+    };
+    return @intFromFloat(std.math.clamp(v, lo, hi));
+}
+
+/// a × num / den rounded down, the product taken in 64 bits (two lengths
+/// multiplied overflow 32 at a few hundred pixels), saturated to Unit.
+pub fn mulDivFloor(a: Unit, num: Unit, den: Unit) Unit {
+    return saturate(@divFloor(@as(i64, a) * num, den));
+}
+
+/// a × num / den rounded to the nearest (halves up), as mulDivFloor.
+pub fn mulDivRound(a: Unit, num: Unit, den: Unit) Unit {
+    return saturate(divRound(@as(i64, a) * num, @as(i64, den)));
 }
 
 pub fn roundUp(a: anytype, comptime multiple: comptime_int) @TypeOf(a) {

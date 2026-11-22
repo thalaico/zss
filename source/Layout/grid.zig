@@ -229,8 +229,8 @@ pub fn layoutGridChildrenInSubtree(
                     if (template_areas.findArea(area_hash)) |area| {
                         placed_row = area.row_start;
                         placed_col = area.col_start;
-                        span_rows = area.row_end - area.row_start;
-                        span_cols = area.col_end - area.col_start;
+                        span_rows = area.row_end -| area.row_start;
+                        span_cols = area.col_end -| area.col_start;
                         named_placement = true;
 
                         // Extend grid if named area exceeds explicit dimensions
@@ -265,10 +265,10 @@ pub fn layoutGridChildrenInSubtree(
             placed_col = auto_col;
 
             // Advance auto-placement cursor
-            auto_col += 1;
+            auto_col +|= 1;
             if (auto_col >= num_cols) {
                 auto_col = 0;
-                auto_row += 1;
+                auto_row +|= 1;
             }
         }
 
@@ -277,8 +277,8 @@ pub fn layoutGridChildrenInSubtree(
         for (0..span_cols) |sc| {
             const col_idx = placed_col + @as(u8, @intCast(sc));
             if (col_idx < num_cols) {
-                cell_width += col_sizes[col_idx];
-                if (sc > 0) cell_width += column_gap;
+                cell_width +|= col_sizes[col_idx];
+                if (sc > 0) cell_width +|= column_gap;
             }
         }
         // CSS Grid 1 §6.2: the grid area is the item's containing block;
@@ -319,8 +319,8 @@ pub fn layoutGridChildrenInSubtree(
         // Set X position (column positions don't change)
         var x: Unit = 0;
         for (0..placed_col) |c| {
-            x += col_sizes[c];
-            x += column_gap;
+            x +|= col_sizes[c];
+            x +|= column_gap;
         }
         offsets[child].x = x;
 
@@ -338,8 +338,8 @@ pub fn layoutGridChildrenInSubtree(
     for (placements[0..placement_count]) |p| {
         var y: Unit = 0;
         for (0..p.placed_row) |r| {
-            y += row_sizes[r];
-            y += row_gap;
+            y +|= row_sizes[r];
+            y +|= row_gap;
         }
         offsets[p.child_idx].y = y;
     }
@@ -361,8 +361,8 @@ pub fn layoutGridChildrenInSubtree(
         var area_h: Unit = 0;
         const first_row: usize = p.placed_row;
         for (first_row..@min(@as(usize, num_rows), first_row + p.span_rows)) |r| {
-            area_h += row_sizes[r];
-            if (r > first_row) area_h += row_gap;
+            area_h +|= row_sizes[r];
+            if (r > first_row) area_h +|= row_gap;
         }
         const bo = box_offsets[item];
         const target = area_h - bo.border_pos.y - subtree.items(.margins)[item].bottom - (bo.border_size.h - bo.content_size.h);
@@ -372,8 +372,8 @@ pub fn layoutGridChildrenInSubtree(
     // --- Phase 6: Compute total grid height ---
     var total_height: Unit = 0;
     for (0..num_rows) |r| {
-        total_height += row_sizes[r];
-        if (r > 0) total_height += row_gap;
+        total_height +|= row_sizes[r];
+        if (r > 0) total_height +|= row_gap;
     }
 
     // DIAGNOSTIC: dump grid container track sizes and item widths.
@@ -413,7 +413,7 @@ fn resolveTrackSizes(
 
     // Total gap space
     const total_gaps = gap_size * @as(Unit, @intCast(if (count > 1) count - 1 else 0));
-    var remaining = available_space - total_gaps;
+    var remaining = available_space -| total_gaps;
     if (remaining < 0) remaining = 0;
 
     // First pass: resolve fixed sizes and count fr units
@@ -427,7 +427,7 @@ fn resolveTrackSizes(
         switch (track.kind) {
             .fixed => {
                 sizes[i] = track.value;
-                fixed_total += track.value;
+                fixed_total +|= track.value;
             },
             .fr => {
                 total_fr += track.frValue();
@@ -439,12 +439,12 @@ fn resolveTrackSizes(
                 // Use pre-measured intrinsic width if available
                 const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
                 sizes[i] = intrinsic;
-                fixed_total += intrinsic;
+                fixed_total +|= intrinsic;
             },
             .max_content => {
                 const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
                 sizes[i] = intrinsic;
-                fixed_total += intrinsic;
+                fixed_total +|= intrinsic;
                 auto_count += 1;
             },
             .minmax => {
@@ -453,7 +453,7 @@ fn resolveTrackSizes(
                 switch (track.max_kind) {
                     .fr => {
                         // minmax(fixed, fr): participate in fr distribution (pass 2)
-                        fixed_total += track.value;
+                        fixed_total +|= track.value;
                         total_fr += track.maxFrValue();
                         fr_count += 1;
                     },
@@ -464,19 +464,19 @@ fn resolveTrackSizes(
                         // the container when available_space < sum of maxes
                         // (e.g. Wikipedia's nested .mw-body grid inside
                         // .mw-page-container-inner). CSS Grid §12.6.
-                        fixed_total += track.value;
+                        fixed_total +|= track.value;
                     },
                     .auto, .min_content, .max_content => {
                         // minmax(fixed, auto/content): use intrinsic width with floor
                         const intrinsic = if (intrinsic_sizes) |is| is[i] else 0;
                         const resolved = @max(intrinsic, track.value);
                         sizes[i] = resolved;
-                        fixed_total += resolved;
+                        fixed_total +|= resolved;
                         auto_count += 1;
                     },
                     .minmax => {
                         // Nested minmax not valid CSS; treat as fixed at min
-                        fixed_total += track.value;
+                        fixed_total +|= track.value;
                     },
                 }
             },
@@ -493,15 +493,15 @@ fn resolveTrackSizes(
     // headroom — matches Chrome's behavior on Wikipedia's nested grids.
     {
         var used_for_max: Unit = 0;
-        for (0..count) |i| used_for_max += sizes[i];
-        const max_leftover = remaining - used_for_max;
+        for (0..count) |i| used_for_max +|= sizes[i];
+        const max_leftover = remaining -| used_for_max;
         if (max_leftover > 0) {
             var total_headroom: Unit = 0;
             for (0..count) |i| {
                 const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
                 if (track.kind == .minmax and track.max_kind == .fixed) {
-                    const headroom = track.max_value - sizes[i];
-                    if (headroom > 0) total_headroom += headroom;
+                    const headroom = track.max_value -| sizes[i];
+                    if (headroom > 0) total_headroom +|= headroom;
                 }
             }
             if (total_headroom > 0) {
@@ -509,10 +509,10 @@ fn resolveTrackSizes(
                     for (0..count) |i| {
                         const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
                         if (track.kind == .minmax and track.max_kind == .fixed) {
-                            const headroom = track.max_value - sizes[i];
+                            const headroom = track.max_value -| sizes[i];
                             if (headroom > 0) {
-                                sizes[i] += headroom;
-                                fixed_total += headroom;
+                                sizes[i] +|= headroom;
+                                fixed_total +|= headroom;
                             }
                         }
                     }
@@ -520,13 +520,13 @@ fn resolveTrackSizes(
                     for (0..count) |i| {
                         const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
                         if (track.kind == .minmax and track.max_kind == .fixed) {
-                            const headroom = track.max_value - sizes[i];
+                            const headroom = track.max_value -| sizes[i];
                             if (headroom <= 0) continue;
                             const grow_f: f32 = @as(f32, @floatFromInt(max_leftover)) *
                                 @as(f32, @floatFromInt(headroom)) / @as(f32, @floatFromInt(total_headroom));
-                            const grow: Unit = @intFromFloat(grow_f);
-                            sizes[i] += grow;
-                            fixed_total += grow;
+                            const grow: Unit = zss.math.unitsFromFloat(grow_f);
+                            sizes[i] +|= grow;
+                            fixed_total +|= grow;
                         }
                     }
                 }
@@ -535,19 +535,19 @@ fn resolveTrackSizes(
     }
 
     // Third pass: distribute remaining space to fr tracks
-    const space_for_flex = remaining - fixed_total;
+    const space_for_flex = remaining -| fixed_total;
     if (space_for_flex > 0 and total_fr > 0) {
         for (0..count) |i| {
             const track = if (i < template.count) template.tracks[i] else types.GridTrackSize{};
             switch (track.kind) {
                 .fr => {
                     const fraction = track.frValue();
-                    sizes[i] = @intFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
+                    sizes[i] = zss.math.unitsFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
                 },
                 .minmax => {
                     if (track.max_kind == .fr) {
                         const fraction = track.maxFrValue();
-                        const fr_size: Unit = @intFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
+                        const fr_size: Unit = zss.math.unitsFromFloat(@as(f32, @floatFromInt(space_for_flex)) * fraction / total_fr);
                         // minmax: use max of min and fr allocation
                         if (fr_size > sizes[i]) {
                             sizes[i] = fr_size;
@@ -563,8 +563,8 @@ fn resolveTrackSizes(
     // Don't shrink below intrinsic sizes already set in pass 1.
     if (stretch_auto and auto_count > 0) {
         var used: Unit = 0;
-        for (0..count) |i| used += sizes[i];
-        const auto_space = remaining - used;
+        for (0..count) |i| used +|= sizes[i];
+        const auto_space = remaining -| used;
         if (auto_space > 0) {
             const per_auto = @divFloor(auto_space, @as(Unit, auto_count));
             for (0..count) |i| {
@@ -585,14 +585,14 @@ fn stretchAutoRows(sizes: *[MAX_TRACKS]Unit, count: u8, template: *const types.G
     var used: Unit = gap * @as(Unit, count - 1);
     var auto_rows: Unit = 0;
     for (0..count) |i| {
-        used += sizes[i];
-        if (hasAutoMax(template, i)) auto_rows += 1;
+        used +|= sizes[i];
+        if (hasAutoMax(template, i)) auto_rows +|= 1;
     }
-    const free = available - used;
+    const free = available -| used;
     if (free <= 0 or auto_rows == 0) return;
     const share = @divFloor(free, auto_rows);
     for (0..count) |i| {
-        if (hasAutoMax(template, i)) sizes[i] += share;
+        if (hasAutoMax(template, i)) sizes[i] +|= share;
     }
 }
 
@@ -621,7 +621,7 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
             const inline_layout = @import("./inline.zig");
             const max_content = inline_layout.computeMaxContentWidth(ifc, subtree);
             const left_edge = bo.content_pos.x;
-            return max_content + left_edge * 2;
+            return max_content +| left_edge * 2;
         },
         else => {},
     }
@@ -629,7 +629,7 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
     // Block container: recurse to find max intrinsic child width
     var max_child_intrinsic: Unit = 0;
     var has_children = false;
-    var gc = child_idx + 1;
+    var gc = child_idx +| 1;
     while (gc < child_end) {
         if (!subtree.items(.out_of_flow)[gc]) {
             has_children = true;
@@ -645,8 +645,8 @@ fn measureGridItemWidth(box_tree: *BoxTree, subtree: Subtree.View, child_idx: Su
 
     // Add this block's own edges
     const left_edge = bo.content_pos.x;
-    const right_edge = bo.border_size.w - bo.content_pos.x - bo.content_size.w;
-    const child_based = left_edge + max_child_intrinsic + right_edge;
+    const right_edge = bo.border_size.w -| bo.content_pos.x -| bo.content_size.w;
+    const child_based = left_edge +| max_child_intrinsic +| right_edge;
 
     // CSS Grid §6.6: a grid item's min-content contribution is the larger of
     // the size derived from its content and the size derived from its own

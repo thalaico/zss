@@ -217,7 +217,7 @@ pub const Context = struct {
         const parent = &ctx.object.top.?;
         // Consecutive IFCs (e.g. ::before pseudo + sibling text) are on the same
         // inline line, so their min-widths add. Block elements reset inline_run_width.
-        parent.inline_run_width += layout_result.min_width;
+        parent.inline_run_width +|= layout_result.min_width;
         parent.auto_width = @max(parent.auto_width, parent.inline_run_width);
     }
 
@@ -233,10 +233,10 @@ pub const Context = struct {
         const parent_object_tag = ctx.tree.items(.tag)[parent.object_index];
         switch (parent_object_tag) {
             .flow_stf => {
-                const full_width = data.width_clamped +
-                    data.used.padding_inline_start + data.used.padding_inline_end +
-                    data.used.border_inline_start + data.used.border_inline_end +
-                    data.used.margin_inline_start_untagged + data.used.margin_inline_end_untagged;
+                const full_width = data.width_clamped +|
+                    data.used.padding_inline_start +| data.used.padding_inline_end +|
+                    data.used.border_inline_start +| data.used.border_inline_end +|
+                    data.used.margin_inline_start_untagged +| data.used.margin_inline_end_untagged;
                 parent.inline_run_width = 0;
                 parent.auto_width = @max(parent.auto_width, full_width);
             },
@@ -252,7 +252,7 @@ pub const Result = struct {
 };
 
 pub fn beginMode(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, used_sizes: BlockUsedSizes) !void {
-    Layout.profile.stf_modes += 1;
+    Layout.profile.stf_modes +|= 1;
     const ctx = &box_gen.stf_context;
     switch (inner_block) {
         .flow, .flex, .grid => {
@@ -299,9 +299,9 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
     computer.setComputedValue(.box_gen, .opacity, computer.getSpecifiedValue(.box_gen, .opacity));
     computer.commitNode(.box_gen);
 
-    const edge_width = sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged +
-        sizes.border_inline_start + sizes.border_inline_end +
-        sizes.padding_inline_start + sizes.padding_inline_end;
+    const edge_width = sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged +|
+        sizes.border_inline_start +| sizes.border_inline_end +|
+        sizes.padding_inline_start +| sizes.padding_inline_end;
 
     switch (inner_block) {
         .flow, .flex, .grid => {
@@ -320,7 +320,7 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
                 try box_gen.getLayout().pushNode();
                 return box_gen.beginFlowMode(.not_root);
             } else {
-                const available_width = solve.clampSize(containing_block_size.width - edge_width, sizes.min_inline_size, sizes.max_inline_size);
+                const available_width = solve.clampSize(containing_block_size.width -| edge_width, sizes.min_inline_size, sizes.max_inline_size);
                 try pushFlowObject(box_gen, node, sizes, available_width, stacking_context);
             }
         },
@@ -500,13 +500,13 @@ fn resolveFlowNormalMargins(box_gen: *BoxGen, data: *const Context.FlowNormal, c
     var end = resolve(data.margin_end, containing_block_width, margins.right);
     const border_width = box_offsets.border_size.w;
     if (start == null or end == null) {
-        const leftover = containing_block_width - border_width - (start orelse 0) - (end orelse 0);
+        const leftover = containing_block_width -| border_width -| (start orelse 0) -| (end orelse 0);
         if (leftover < 0) {
             start = start orelse 0;
             end = end orelse 0;
         } else if (start == null and end == null) {
             start = @divFloor(leftover, 2);
-            end = leftover - start.?;
+            end = leftover -| start.?;
         } else if (start == null) {
             start = leftover;
         } else {

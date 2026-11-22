@@ -98,9 +98,9 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                     .auto => blk: {
                         const cw = computer.getSpecifiedValue(.box_gen, .content_width);
                         break :blk switch (cw.width) {
-                            .px => |v| @as(i32, @intFromFloat(@round(v * 4.0))),
-                            .em => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedFontSizePx(.box_gen) * 4.0))),
-                            .rem => |v| @as(i32, @intFromFloat(@round(v * computer.resolvedRootFontSizePx(.box_gen) * 4.0))),
+                            .px => |v| solve.length(.px, v),
+                            .em => |v| solve.length(.px, v * computer.resolvedFontSizePx(.box_gen)),
+                            .rem => |v| solve.length(.px, v * computer.resolvedRootFontSizePx(.box_gen)),
                             // CSS Flexbox §7.2 + §9.2A: flex-basis:auto uses the main
                             // size property. width:<percentage> resolved against a
                             // definite containing block is itself definite, so the
@@ -108,13 +108,13 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                             // Chrome; falling back to content here caused e.g.
                             // Wikipedia's .mw-header (width:100%) to shrink to its
                             // intrinsic content width inside .vector-header-container.
-                            .percentage => |pct| @as(i32, @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct))),
+                            .percentage => |pct| @as(i32, zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct))),
                             .calc => |c| solve.positiveCalc(computer.env, .{ .id = c.id, .font_size = computer.resolvedFontSizePx(.box_gen) }, containing_block_size.width) orelse -1,
                             .auto => @as(i32, -1),
                         };
                     },
-                    .px => |v| @intFromFloat(@round(v * 4.0)),
-                    .percentage => |pct| @intFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct)),
+                    .px => |v| solve.length(.px, v),
+                    .percentage => |pct| zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct)),
                 };
                 info.grid_area_hash = box_style_specified.grid_area;
                 // CSS spec: float and clear have no effect on flex/grid items.
@@ -291,10 +291,10 @@ pub fn alignToParentTextAlign(sizes: *BlockUsedSizes, cb_width: Unit, parent_ali
     }
     if (sizes.intrinsic.width == .auto or sizes.intrinsic.margin_start_auto or sizes.intrinsic.margin_end_auto) return;
     const width = sizes.get(.inline_size) orelse return;
-    const edges = sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end;
+    const edges = sizes.border_inline_start +| sizes.border_inline_end +| sizes.padding_inline_start +| sizes.padding_inline_end;
     const start = sizes.specified_margins[0];
     const end = sizes.specified_margins[1];
-    const leftover = cb_width - width - edges - start - end;
+    const leftover = cb_width -| width -| edges -| start -| end;
     if (leftover <= 0) return;
     const new_start: Unit = switch (parent_align) {
         .@"-webkit-center" => start + @divFloor(leftover, 2),
@@ -302,7 +302,7 @@ pub fn alignToParentTextAlign(sizes: *BlockUsedSizes, cb_width: Unit, parent_ali
         else => start,
     };
     sizes.setValue(.margin_inline_start, new_start);
-    sizes.setValue(.margin_inline_end, cb_width - width - edges - new_start);
+    sizes.setValue(.margin_inline_end, cb_width -| width -| edges -| new_start);
 }
 
 /// The specified-value kinds `Layout/intrinsic.zig` needs: whether `width`
@@ -332,7 +332,7 @@ pub fn specifiedMargins(env: *const zss.Environment, specified: BlockComputedSiz
     const conv = struct {
         fn f(e: *const zss.Environment, m: zss.values.types.Margin) Unit {
             return switch (m) {
-                .px => |px| @intFromFloat(@round(px * @as(f32, @floatFromInt(zss.math.units_per_pixel)))),
+                .px => |px| solve.length(.px, px),
                 // Percentages resolve against zero here.
                 .calc => |c| solve.calc(e, c, 0).?,
                 else => 0,
@@ -353,9 +353,9 @@ pub fn percentWidth(env: *const zss.Environment, specified: BlockComputedSizes) 
 /// The width the constraint equation of CSS 2.1 §10.3.3 gives an element of
 /// `sizes` in a containing block `cbw` wide, its auto margins taken as 0.
 pub fn stretchWidth(sizes: BlockUsedSizes, cbw: Unit) Unit {
-    return @max(0, cbw - (sizes.border_inline_start + sizes.border_inline_end +
-        sizes.padding_inline_start + sizes.padding_inline_end +
-        (sizes.get(.margin_inline_start) orelse 0) + (sizes.get(.margin_inline_end) orelse 0)));
+    return @max(0, cbw -| (sizes.border_inline_start +| sizes.border_inline_end +|
+        sizes.padding_inline_start +| sizes.padding_inline_end +|
+        (sizes.get(.margin_inline_start) orelse 0) +| (sizes.get(.margin_inline_end) orelse 0)));
 }
 
 /// The percentage base of a containing block width: none while shrinking to fit.
@@ -405,14 +405,14 @@ pub fn solveAllSizes(
     // Subtract them to get content-box dimensions that the layout engine uses internally.
     if (specified_sizes.content_width.box_sizing == .border_box) {
         if (sizes.get(.inline_size)) |w| {
-            const h_adjustment = sizes.border_inline_start + sizes.border_inline_end +
-                sizes.padding_inline_start + sizes.padding_inline_end;
-            sizes.setValue(.inline_size, @max(0, w - h_adjustment));
+            const h_adjustment = sizes.border_inline_start +| sizes.border_inline_end +|
+                sizes.padding_inline_start +| sizes.padding_inline_end;
+            sizes.setValue(.inline_size, @max(0, w -| h_adjustment));
         }
         if (sizes.get(.block_size)) |h| {
-            const v_adjustment = sizes.border_block_start + sizes.border_block_end +
-                sizes.padding_block_start + sizes.padding_block_end;
-            sizes.setValue(.block_size, @max(0, h - v_adjustment));
+            const v_adjustment = sizes.border_block_start +| sizes.border_block_end +|
+                sizes.padding_block_start +| sizes.padding_block_end;
+            sizes.setValue(.block_size, @max(0, h -| v_adjustment));
         }
     }
     // A replaced element's auto sizes come from its natural size (CSS 2.1
@@ -438,10 +438,10 @@ pub fn solveAllSizes(
                 if (was_auto.margin_inline_start) sizes.setValue(.margin_inline_start, 0);
                 if (was_auto.margin_inline_end) sizes.setValue(.margin_inline_end, 0);
                 if (was_auto.inline_size) {
-                    sizes.setValue(.inline_size, percentage_base_unit -
-                        (sizes.border_inline_start + sizes.border_inline_end +
-                         sizes.padding_inline_start + sizes.padding_inline_end +
-                         sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged));
+                    sizes.setValue(.inline_size, percentage_base_unit -|
+                        (sizes.border_inline_start +| sizes.border_inline_end +|
+                         sizes.padding_inline_start +| sizes.padding_inline_end +|
+                         sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged));
                 }
                 sizes.setValueFlagOnly(.margin_inline_start);
                 sizes.setValueFlagOnly(.margin_inline_end);
@@ -456,14 +456,14 @@ pub fn solveAllSizes(
             // re-compute auto margins as if width were a fixed value.
             if (was_auto.inline_size) {
                 if (was_auto.margin_inline_start or was_auto.margin_inline_end) {
-                    const width_margin_space = percentage_base_unit -
-                        (sizes.border_inline_start + sizes.border_inline_end +
-                         sizes.padding_inline_start + sizes.padding_inline_end);
+                    const width_margin_space = percentage_base_unit -|
+                        (sizes.border_inline_start +| sizes.border_inline_end +|
+                         sizes.padding_inline_start +| sizes.padding_inline_end);
                     const shr_amount = @intFromBool(was_auto.margin_inline_start and was_auto.margin_inline_end);
-                    const leftover_margin = @max(0, width_margin_space -
-                        (sizes.inline_size_untagged + sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged));
+                    const leftover_margin = @max(0, width_margin_space -|
+                        (sizes.inline_size_untagged +| sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged));
                     if (was_auto.margin_inline_start) sizes.setValue(.margin_inline_start, leftover_margin >> shr_amount);
-                    if (was_auto.margin_inline_end) sizes.setValue(.margin_inline_end, (leftover_margin >> shr_amount) + @mod(leftover_margin, 2));
+                    if (was_auto.margin_inline_end) sizes.setValue(.margin_inline_end, (leftover_margin >> shr_amount) +| @mod(leftover_margin, 2));
                 }
             }
         },
@@ -965,8 +965,8 @@ pub fn solveInsets(
 pub fn adjustWidthAndMargins(sizes: *BlockUsedSizes, containing_block_width: Unit) void {
     // TODO: This algorithm doesn't completely follow the rules regarding `min-width` and `max-width`
     //       described in CSS 2.2 Section 10.4.
-    const width_margin_space = containing_block_width -
-        (sizes.border_inline_start + sizes.border_inline_end + sizes.padding_inline_start + sizes.padding_inline_end);
+    const width_margin_space = containing_block_width -|
+        (sizes.border_inline_start +| sizes.border_inline_end +| sizes.padding_inline_start +| sizes.padding_inline_end);
     const auto = .{
         .inline_size = sizes.isAuto(.inline_size),
         .margin_inline_start = sizes.isAuto(.margin_inline_start),
@@ -976,21 +976,21 @@ pub fn adjustWidthAndMargins(sizes: *BlockUsedSizes, containing_block_width: Uni
     if (!auto.inline_size and !auto.margin_inline_start and !auto.margin_inline_end) {
         // None of the values were auto, so one of the margins must be set according to the other values.
         // TODO the margin that gets set is determined by the 'direction' property
-        sizes.setValue(.margin_inline_end, width_margin_space - sizes.inline_size_untagged - sizes.margin_inline_start_untagged);
+        sizes.setValue(.margin_inline_end, width_margin_space -| sizes.inline_size_untagged -| sizes.margin_inline_start_untagged);
     } else if (!auto.inline_size) {
         // 'inline-size' is not auto, but at least one of 'margin-inline-start' and 'margin-inline-end' is.
         // If there is only one "auto", then that value gets the remaining margin space.
         // Else, there are 2 "auto"s, and both values get half the remaining margin space.
         const shr_amount = @intFromBool(auto.margin_inline_start and auto.margin_inline_end);
-        const leftover_margin = @max(0, width_margin_space -
-            (sizes.inline_size_untagged + sizes.margin_inline_start_untagged + sizes.margin_inline_end_untagged));
+        const leftover_margin = @max(0, width_margin_space -|
+            (sizes.inline_size_untagged +| sizes.margin_inline_start_untagged +| sizes.margin_inline_end_untagged));
         // TODO the margin that gets the extra 1 unit shall be determined by the 'direction' property
         if (auto.margin_inline_start) sizes.setValue(.margin_inline_start, leftover_margin >> shr_amount);
-        if (auto.margin_inline_end) sizes.setValue(.margin_inline_end, (leftover_margin >> shr_amount) + @mod(leftover_margin, 2));
+        if (auto.margin_inline_end) sizes.setValue(.margin_inline_end, (leftover_margin >> shr_amount) +| @mod(leftover_margin, 2));
     } else {
         // 'inline-size' is auto, so it is set according to the other values.
         // The margin values don't need to change.
-        sizes.setValue(.inline_size, width_margin_space - sizes.margin_inline_start_untagged - sizes.margin_inline_end_untagged);
+        sizes.setValue(.inline_size, width_margin_space -| sizes.margin_inline_start_untagged -| sizes.margin_inline_end_untagged);
         sizes.setValueFlagOnly(.margin_inline_start);
         sizes.setValueFlagOnly(.margin_inline_end);
     }
@@ -1034,7 +1034,7 @@ pub const MarginStrut = struct {
     }
 
     pub fn sum(strut: MarginStrut) Unit {
-        return strut.positive + strut.negative;
+        return strut.positive +| strut.negative;
     }
 
     /// `strut` with `margin` added.
@@ -1102,10 +1102,10 @@ pub const FloatContext = struct {
         var right_limit: Unit = container_width;
         for (self.floats) |f| {
             // Float rect [f.y, f.y + f.h) intersects line range [line_y, line_y + line_h)?
-            if (f.y + f.h <= line_y) continue;
-            if (f.y >= line_y + line_h) continue;
+            if (f.y +| f.h <= line_y) continue;
+            if (f.y >= line_y +| line_h) continue;
             switch (f.side) {
-                .left => left_offset = @max(left_offset, f.x + f.w),
+                .left => left_offset = @max(left_offset, f.x +| f.w),
                 .right => right_limit = @min(right_limit, f.x),
             }
         }
@@ -1185,9 +1185,9 @@ pub fn offsetChildBlocks(
                 strut.append(margin_bottom);
                 at_top_edge = false;
             } else {
-                const border_box_y = cursor + strut.sum();
+                const border_box_y = cursor +| strut.sum();
                 subtree.items(.offset)[child] = .{ .x = 0, .y = border_box_y - margin_top };
-                cursor = border_box_y + border_box_h;
+                cursor = border_box_y +| border_box_h;
                 strut = .{};
                 strut.append(margin_bottom);
                 at_top_edge = false;
@@ -1205,7 +1205,7 @@ pub fn offsetChildBlocks(
     // do not contribute to the parent's content height (CSS 2.1 §10.6.3).
     const has_content = cursor > 0;
     return .{
-        .auto_height = if (has_content) cursor + strut.sum() else cursor,
+        .auto_height = if (has_content) cursor +| strut.sum() else cursor,
         .escaped_top = escaped_top,
         .content_end = cursor,
         .trailing = if (has_content) strut else .{},
@@ -1229,7 +1229,7 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
         if (!out_of_flow_flags[child]) {
             const box_offsets = subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
-            const child_height = box_offsets.border_pos.y + box_offsets.border_size.h + margins.bottom;
+            const child_height = box_offsets.border_pos.y +| box_offsets.border_size.h +| margins.bottom;
             max_height = @max(max_height, child_height);
         }
         child += skips[child];
@@ -1241,10 +1241,10 @@ pub fn offsetChildBlocksHorizontal(subtree: Subtree.View, index: Subtree.Size, s
         if (!out_of_flow_flags[child]) {
             const box_offsets = &subtree.items(.box_offsets)[child];
             const margins = subtree.items(.margins)[child];
-            const non_content = box_offsets.border_pos.y + margins.bottom;
-            box_offsets.border_size.h = max_height - non_content;
+            const non_content = box_offsets.border_pos.y +| margins.bottom;
+            box_offsets.border_size.h = max_height -| non_content;
             // Recompute content_size.h from border_size.h
-            box_offsets.content_size.h = box_offsets.border_size.h - box_offsets.content_pos.y;
+            box_offsets.content_size.h = box_offsets.border_size.h -| box_offsets.content_pos.y;
         }
         child += skips[child];
     }
@@ -1352,7 +1352,7 @@ pub fn offsetChildBlocksFlex(
             const flags = subtree.items(.intrinsic)[child_idx];
             const margins = subtree.items(.specified_margins)[child_idx];
             const bo = subtree.items(.box_offsets)[child_idx];
-            const available = @max(0, container_width - margins[0] - margins[1]);
+            const available = @max(0, container_width -| margins[0] -| margins[1]);
             const border_w = switch (flags.width) {
                 .auto => if (stretch and !flags.margin_start_auto and !flags.margin_end_auto)
                     available
@@ -1395,7 +1395,7 @@ pub fn offsetChildBlocksFlex(
     var main_margin_sums: [MAX_CHILDREN]Unit = undefined;
     for (0..child_count) |ci| {
         const mm = childMainMargins(subtree, children[ci], flex_is_column);
-        main_margin_sums[ci] = mm[0] + mm[1];
+        main_margin_sums[ci] = mm[0] +| mm[1];
     }
 
     // --- Phase 3 (§9.3): Collect into flex lines ---
@@ -1410,7 +1410,7 @@ pub fn offsetChildBlocksFlex(
             var line_main: Unit = 0;
             var line_items: usize = 0;
             for (0..child_count) |ci| {
-                const item_main = hypothetical_main_sizes[ci] + main_margin_sums[ci];
+                const item_main = hypothetical_main_sizes[ci] +| main_margin_sums[ci];
                 const with_gap: Unit = if (line_items > 0) flex_gap else 0;
                 if (line_items > 0 and line_main + with_gap + item_main > container_main and num_lines < MAX_LINES) {
                     num_lines += 1;
@@ -1418,8 +1418,8 @@ pub fn offsetChildBlocksFlex(
                     line_main = item_main;
                     line_items = 1;
                 } else {
-                    line_main += with_gap + item_main;
-                    line_items += 1;
+                    line_main +|= with_gap +| item_main;
+                    line_items +|= 1;
                 }
             }
             num_lines += 1;
@@ -1431,7 +1431,7 @@ pub fn offsetChildBlocksFlex(
     var used_main_sizes: [MAX_CHILDREN]Unit = undefined;
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
-        const le = line_starts[line_idx + 1];
+        const le = line_starts[line_idx +| 1];
 
         resolveFlexibleLengths(
             children[ls..le],
@@ -1461,14 +1461,14 @@ pub fn offsetChildBlocksFlex(
     var total_cross: Unit = 0;
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
-        const le = line_starts[line_idx + 1];
+        const le = line_starts[line_idx +| 1];
         var max_cross: Unit = 0;
         for (ls..le) |ci| {
             const cm = childCrossMargins(subtree, children[ci], flex_is_column);
-            max_cross = @max(max_cross, childCrossSize(subtree, children[ci], flex_is_column) + cm[0] + cm[1]);
+            max_cross = @max(max_cross, childCrossSize(subtree, children[ci], flex_is_column) +| cm[0] +| cm[1]);
         }
         line_cross_sizes[line_idx] = max_cross;
-        total_cross += max_cross;
+        total_cross +|= max_cross;
     }
     // §9.4: For a single-line flex-column container with a definite cross
     // (horizontal) size, the line cross size equals the container width so
@@ -1512,24 +1512,24 @@ pub fn offsetChildBlocksFlex(
 
     for (0..num_lines) |line_idx| {
         const ls = line_starts[line_idx];
-        const le = line_starts[line_idx + 1];
+        const le = line_starts[line_idx +| 1];
         const line_child_count = le - ls;
         const line_cross = line_cross_sizes[line_idx];
 
         if (reverse_cross) {
-            cross_cursor -= line_cross;
+            cross_cursor -|= line_cross;
         }
 
         // Compute line main extent for justify-content (outer sizes per §9.5)
         var line_total_main: Unit = 0;
         for (ls..le) |ci| {
-            line_total_main += childMainSize(subtree, children[ci], flex_is_column) + main_margin_sums[ci];
+            line_total_main +|= childMainSize(subtree, children[ci], flex_is_column) +| main_margin_sums[ci];
         }
-        if (line_child_count > 1) line_total_main += flex_gap * @as(Unit, @intCast(line_child_count - 1));
+        if (line_child_count > 1) line_total_main +|= flex_gap *| @as(Unit, @intCast(line_child_count - 1));
         max_main_extent = @max(max_main_extent, line_total_main);
 
         // Main-axis alignment (§9.5)
-        const free_space = @max(0, container_main - line_total_main);
+        const free_space = @max(0, container_main -| line_total_main);
         var main_cursor: Unit = switch (justify) {
             .flex_start => 0,
             .flex_end => free_space,
@@ -1540,7 +1540,7 @@ pub fn offsetChildBlocksFlex(
             @divFloor(free_space, @as(Unit, @intCast(line_child_count - 1)))
         else
             0;
-        const total_item_gap = flex_gap + sb_gap;
+        const total_item_gap = flex_gap +| sb_gap;
 
         // Cross-axis alignment (§9.6). `align-self` on an item overrides the
         // container's `align-items` for that specific item — `.auto` defers
@@ -1553,7 +1553,7 @@ pub fn offsetChildBlocksFlex(
             const box_offsets = subtree.items(.box_offsets)[child_idx];
             const child_cross_sz = childCrossSize(subtree, child_idx, flex_is_column);
             const cm = childCrossMargins(subtree, child_idx, flex_is_column);
-            const outer_cross_sz = child_cross_sz + cm[0] + cm[1];
+            const outer_cross_sz = child_cross_sz +| cm[0] +| cm[1];
             const mm = childMainMargins(subtree, child_idx, flex_is_column);
             const effective_align: BlockInfo.FlexAlign = switch (subtree.items(.align_self)[child_idx]) {
                 .auto => align_items,
@@ -1569,13 +1569,13 @@ pub fn offsetChildBlocksFlex(
             if (!flex_is_column and effective_align == .stretch and block_types[child_idx] == .block and
                 subtree.items(.intrinsic)[child_idx].height_auto)
             {
-                const edges = box_offsets.border_size.h - box_offsets.content_size.h;
+                const edges = box_offsets.border_size.h -| box_offsets.content_size.h;
                 relayout.setContentHeight(subtree, child_idx, @max(0, line_cross - cm[0] - cm[1] - edges));
             }
-            const cross_offset: Unit = cross_cursor + switch (effective_align) {
+            const cross_offset: Unit = cross_cursor +| switch (effective_align) {
                 .flex_start => 0,
-                .flex_end => @max(0, line_cross - outer_cross_sz),
-                .center => @max(0, @divFloor(line_cross - outer_cross_sz, 2)),
+                .flex_end => @max(0, line_cross -| outer_cross_sz),
+                .center => @max(0, @divFloor(line_cross -| outer_cross_sz, 2)),
                 .stretch => 0,
             };
 
@@ -1584,19 +1584,19 @@ pub fn offsetChildBlocksFlex(
                     .x = cross_offset,
                     .y = main_cursor,
                 };
-                main_cursor += mm[0] + box_offsets.border_size.h + mm[1];
+                main_cursor +|= mm[0] +| box_offsets.border_size.h +| mm[1];
             } else {
                 subtree.items(.offset)[child_idx] = .{
                     .x = main_cursor,
                     .y = cross_offset,
                 };
-                main_cursor += mm[0] + box_offsets.border_size.w + mm[1];
+                main_cursor +|= mm[0] +| box_offsets.border_size.w +| mm[1];
             }
-            if (ci + 1 < le) main_cursor += total_item_gap;
+            if (ci +| 1 < le) main_cursor +|= total_item_gap;
         }
 
         if (!reverse_cross) {
-            cross_cursor += line_cross;
+            cross_cursor +|= line_cross;
             if (line_idx + 1 < num_lines) cross_cursor += flex_gap;
         } else {
             if (line_idx + 1 < num_lines) cross_cursor -= flex_gap;
@@ -1643,9 +1643,9 @@ fn resolveFlexibleLengths(
     // Step 1: Determine grow vs shrink (using outer sizes per §9.7).
     var sum_hypothetical_outer: Unit = 0;
     for (0..n) |i| {
-        sum_hypothetical_outer += hypothetical[i] + margin_sums[i];
+        sum_hypothetical_outer +|= hypothetical[i] +| margin_sums[i];
     }
-    if (n > 1) sum_hypothetical_outer += flex_gap * @as(Unit, @intCast(n - 1));
+    if (n > 1) sum_hypothetical_outer +|= flex_gap *| @as(Unit, @intCast(n - 1));
     const growing = sum_hypothetical_outer <= container_main;
 
     // Step 2: Initialize targets and frozen state.
@@ -1669,18 +1669,18 @@ fn resolveFlexibleLengths(
 
     // Step 3: Calculate initial free space (outer sizes include margins).
     var initial_free_space: Unit = container_main;
-    if (n > 1) initial_free_space -= flex_gap * @as(Unit, @intCast(n - 1));
+    if (n > 1) initial_free_space -|= flex_gap *| @as(Unit, @intCast(n - 1));
     for (0..n) |i| {
         if (frozen[i]) {
-            initial_free_space -= targets[i] + margin_sums[i];
+            initial_free_space -|= targets[i] +| margin_sums[i];
         } else {
-            initial_free_space -= flex_base[i] + margin_sums[i];
+            initial_free_space -|= flex_base[i] +| margin_sums[i];
         }
     }
 
     // Step 4: Iterative resolution loop.
     var iterations: u32 = 0;
-    while (iterations < 10) : (iterations += 1) {
+    while (iterations < 10) : (iterations +|= 1) {
         var all_frozen = true;
         for (0..n) |i| {
             if (!frozen[i]) { all_frozen = false; break; }
@@ -1689,13 +1689,13 @@ fn resolveFlexibleLengths(
 
         // Remaining free space (outer sizes include margins)
         var remaining: Unit = container_main;
-        if (n > 1) remaining -= flex_gap * @as(Unit, @intCast(n - 1));
+        if (n > 1) remaining -|= flex_gap *| @as(Unit, @intCast(n - 1));
         var sum_factors: f32 = 0.0;
         for (0..n) |i| {
             if (frozen[i]) {
-                remaining -= targets[i] + margin_sums[i];
+                remaining -|= targets[i] +| margin_sums[i];
             } else {
-                remaining -= flex_base[i] + margin_sums[i];
+                remaining -|= flex_base[i] +| margin_sums[i];
                 const ci = line_children[i];
                 if (growing) {
                     sum_factors += flex_grows[ci];
@@ -1707,7 +1707,7 @@ fn resolveFlexibleLengths(
 
         // §9.7 step 4b: sum of factors < 1 caps free space
         if (sum_factors > 0.0 and sum_factors < 1.0) {
-            const scaled = @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(initial_free_space)) * sum_factors)));
+            const scaled = @as(Unit, zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(initial_free_space)) * sum_factors)));
             if ((growing and scaled < remaining) or (!growing and scaled > remaining)) {
                 remaining = scaled;
             }
@@ -1721,12 +1721,12 @@ fn resolveFlexibleLengths(
             const ci = line_children[i];
             if (growing) {
                 const ratio = flex_grows[ci] / sum_factors;
-                targets[i] = flex_base[i] + @as(Unit, @intFromFloat(@round(@as(f32, @floatFromInt(remaining)) * ratio)));
+                targets[i] = flex_base[i] +| @as(Unit, zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(remaining)) * ratio)));
             } else {
                 const scaled_shrink = flex_shrinks[ci] * @as(f32, @floatFromInt(@max(1, flex_base[i])));
                 const ratio = scaled_shrink / sum_factors;
-                const abs_remaining = @as(f32, @floatFromInt(@max(0, -remaining)));
-                targets[i] = flex_base[i] - @as(Unit, @intFromFloat(@round(abs_remaining * ratio)));
+                const abs_remaining = @as(f32, @floatFromInt(@max(0, 0 -| remaining)));
+                targets[i] = flex_base[i] -| @as(Unit, zss.math.unitsFromFloat(@round(abs_remaining * ratio)));
             }
         }
 
