@@ -204,7 +204,7 @@ pub fn flex(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.flex) {
     // When flex specifies a number, flex-basis defaults to 0% (not auto)
     const grow = values.parse.flexFactor(ctx) orelse return null;
     var shrink: f32 = 1.0;
-    var basis: values.types.FlexBasis = .{ .percentage = 0.0 };
+    var basis: values.types.FlexBasis = .{ .percentage = .{ .number = 0 } };
     // Optional second number (flex-shrink)
     if (values.parse.flexFactor(ctx)) |s| {
         shrink = s;

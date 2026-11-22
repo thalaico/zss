@@ -164,7 +164,7 @@ fn backgroundPosition3Or4ValuesInfo(ctx: *Context) ?struct { bg_position.Info, u
                 break :blk .{ value, 2 };
             }
         }
-        break :blk .{ .{ .percentage = 0 }, 1 };
+        break :blk .{ .{ .percentage = .{ .number = 0 } }, 1 };
     };
 
     return .{ .{ .axis = map_value.axis, .side = map_value.side, .offset = offset }, num_values };
@@ -205,7 +205,7 @@ fn backgroundPosition1Or2Values(ctx: *Context) ?types.BackgroundPosition {
         },
         .y = .{
             .side = .center,
-            .offset = .{ .percentage = 0 },
+            .offset = .{ .percentage = .{ .number = 0 } },
         },
     };
     if (first.axis == .y) {
@@ -216,7 +216,7 @@ fn backgroundPosition1Or2Values(ctx: *Context) ?types.BackgroundPosition {
 
 fn backgroundPosition1Or2ValuesInfo(ctx: *Context) ?bg_position.Info {
     if (values.parse.keyword(ctx, bg_position.KeywordMapValue, bg_position.keyword_map)) |map_value| {
-        return .{ .axis = map_value.axis, .side = map_value.side, .offset = .{ .percentage = 0 } };
+        return .{ .axis = map_value.axis, .side = map_value.side, .offset = .{ .percentage = .{ .number = 0 } } };
     } else if (values.parse.lengthPercentage(ctx, bg_position.Offset)) |offset| {
         return .{ .axis = .either, .side = .start, .offset = offset };
     } else {

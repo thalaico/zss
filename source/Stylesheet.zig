@@ -430,8 +430,8 @@ const RuleProcessor = struct {
                     expect_offset = false;
                 },
                 .token_percentage => {
-                    const percentage = component.extra(ctx.ast).number;
-                    // The token's number is the fraction (50% = 0.5).
+                    // The token's number is as written (50% = 50); an offset is a fraction.
+                    const percentage: ?f32 = if (component.extra(ctx.ast).number) |n| n / 100.0 else null;
                     if (!expect_offset or percentage == null or percentage.? < 0 or percentage.? > 1) selector_valid = false else try offsets.append(arena, percentage.?);
                     expect_offset = false;
                 },

@@ -1108,7 +1108,7 @@ pub const BlockUsedSizes = struct {
     /// Specified width / inline margin kinds, copied to the box for
     /// intrinsic contributions. Set by every size solver.
     intrinsic: BoxTree.Subtree.IntrinsicFlags = .{},
-    percent_width: BoxTree.Subtree.PercentWidth = .{ .percentage = 0 },
+    percent_width: BoxTree.Subtree.PercentWidth = .{ .percentage = .{ .number = 0 } },
     specified_margins: [2]math.Unit = .{ 0, 0 },
 
     pub const Flags = packed struct {
@@ -1134,7 +1134,7 @@ pub const BlockUsedSizes = struct {
     pub const IsAutoOrPercentage = union(IsAutoOrPercentageTag) {
         value: math.Unit,
         auto,
-        percentage: f32,
+        percentage: zss.values.types.Percentage,
     };
 
     pub fn setValue(self: *BlockUsedSizes, comptime field: Flags.Field, value: math.Unit) void {
@@ -1157,9 +1157,9 @@ pub const BlockUsedSizes = struct {
         @field(self, @tagName(field) ++ "_untagged") = 0;
     }
 
-    pub fn setPercentage(self: *BlockUsedSizes, comptime field: Flags.Field, value: f32) void {
+    pub fn setPercentage(self: *BlockUsedSizes, comptime field: Flags.Field, value: zss.values.types.Percentage) void {
         @field(self.flags, @tagName(field)) = .percentage;
-        @field(self, @tagName(field) ++ "_untagged") = @bitCast(value);
+        @field(self, @tagName(field) ++ "_untagged") = @bitCast(value.number);
     }
 
     pub fn GetReturnType(comptime field: Flags.Field) type {
@@ -1181,7 +1181,7 @@ pub const BlockUsedSizes = struct {
             IsAutoOrPercentageTag => switch (flag) {
                 .value => .{ .value = value },
                 .auto => .auto,
-                .percentage => .{ .percentage = @bitCast(value) },
+                .percentage => .{ .percentage = .{ .number = @bitCast(value) } },
             },
             else => comptime unreachable,
         };

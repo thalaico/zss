@@ -389,7 +389,13 @@ fn genericLength(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Ty
 
 fn genericPercentage(ctx: *const Context, comptime Type: type, index: Ast.Index) ?Type {
     const value = index.extra(ctx.ast).number orelse return null;
-    return .{ .percentage = value };
+    return .{ .percentage = percentageOf(@FieldType(Type, "percentage"), value) };
+}
+
+/// A percentage token's number (as written) as the payload type `P`: a
+/// `types.Percentage` keeps the number, an `f32` is the fraction.
+fn percentageOf(comptime P: type, number: f32) P {
+    return if (P == types.Percentage) .{ .number = number } else number / 100.0;
 }
 
 pub fn identifier(ctx: *Context) ?Location {
@@ -492,7 +498,7 @@ fn mathFunction(ctx: *Context, comptime Type: type, index: Ast.Index, percentage
                 if (@hasField(Type, "em")) return .{ .em = l.em };
                 return .{ .px = l.em * ctx.font_size_px };
             }
-            if (@hasField(Type, "percentage") and l.px == 0 and l.em == 0) return .{ .percentage = l.percentage };
+            if (@hasField(Type, "percentage") and l.px == 0 and l.em == 0) return .{ .percentage = percentageOf(@FieldType(Type, "percentage"), l.percentage) };
         },
         .node => {},
     }
@@ -541,7 +547,12 @@ pub fn nonNegativeLengthPercentageNone(ctx: *Context, comptime Type: type) ?Type
 /// clamped where layout resolves it.
 fn clampFolded(comptime Type: type, value: Type) Type {
     return switch (value) {
-        inline else => |payload, tag| if (@TypeOf(payload) == f32) @unionInit(Type, @tagName(tag), @max(payload, 0)) else value,
+        inline else => |payload, tag| if (@TypeOf(payload) == f32)
+            @unionInit(Type, @tagName(tag), @max(payload, 0))
+        else if (@TypeOf(payload) == types.Percentage)
+            @unionInit(Type, @tagName(tag), types.Percentage{ .number = @max(payload.number, 0) })
+        else
+            value,
     };
 }
 
@@ -551,7 +562,12 @@ fn nonNegativeLiteral(ctx: *Context, comptime Type: type) ?Type {
     const save = ctx.savePoint();
     const value = length(ctx, Type) orelse percentage(ctx, Type) orelse return null;
     const negative = switch (value) {
-        inline else => |payload| if (@TypeOf(payload) == f32) payload < 0 else false,
+        inline else => |payload| if (@TypeOf(payload) == f32)
+            payload < 0
+        else if (@TypeOf(payload) == types.Percentage)
+            payload.number < 0
+        else
+            false,
     };
     if (!negative) return value;
     ctx.resetPoint(save);
@@ -695,8 +711,8 @@ fn colorArg(ctx: *Context) ?ColorArg {
     switch (arg.tag) {
         .token_integer => return .{ .number = @floatFromInt(arg.index.extra(ctx.ast).integer orelse return null) },
         .token_number => return .{ .number = arg.index.extra(ctx.ast).number orelse return null },
-        // Percentage tokens hold the fraction (50% = 0.5).
-        .token_percentage => return .{ .percentage = arg.index.extra(ctx.ast).number orelse return null },
+        // Percentage tokens hold the number as written (50% = 50); a color argument is the fraction.
+        .token_percentage => return .{ .percentage = (arg.index.extra(ctx.ast).number orelse return null) / 100.0 },
         .token_dimension => {
             ctx.resetPoint(arg.index);
             return .{ .degrees = angle(ctx) orelse return null };
@@ -996,7 +1012,7 @@ pub fn flexBasis(ctx: *Context) ?types.FlexBasis {
                 ctx.resetPoint(item.index);
                 return null;
             };
-            return .{ .percentage = value };
+            return .{ .percentage = percentageOf(@FieldType(types.FlexBasis, "percentage"), value) };
         },
         else => {
             ctx.resetPoint(item.index);
@@ -1066,8 +1082,8 @@ pub fn fontSize(ctx: *Context) ?types.FontSize {
         .token_percentage => blk: {
             const pct = item.index.extra(ctx.ast).number orelse break :blk null;
             if (pct < 0) break :blk null;
-            // Percentage tokens hold the fraction (50% = 0.5).
-            break :blk .{ .em = pct };
+            // Percentage tokens hold the number as written (50% = 50).
+            break :blk .{ .em = pct / 100.0 };
         },
         .token_dimension => blk: {
             const index = item.index;
@@ -1440,11 +1456,11 @@ pub fn lineHeight(ctx: *Context) ?types.LineHeight {
     if (parseNumberFactor(ctx)) |factor| return .{ .number = factor };
     const item = ctx.next() orelse return null;
     switch (item.tag) {
-        // Percentage tokens hold the fraction (150% = 1.5).
+        // Percentage tokens hold the number as written (150% = 150).
         .token_percentage => {
-            const fraction = item.index.extra(ctx.ast).number orelse return null;
-            if (fraction < 0) return null;
-            return .{ .em = fraction };
+            const number = item.index.extra(ctx.ast).number orelse return null;
+            if (number < 0) return null;
+            return .{ .em = number / 100.0 };
         },
         .token_dimension => {
             var children = item.index.children(ctx.ast);
@@ -1496,11 +1512,11 @@ fn parseLengthToUnits(ctx: *Context) ?@import("../zss.zig").math.Unit {
     return pxToUnits(px);
 }
 
-/// A length in px as layout units: rounded, clamped to the range (Chromium
-/// LayoutUnit::FromFloatRound).
+/// A length in px as layout units, as `Layout/solve.zig length` (Blink's
+/// `LayoutUnit(float)`: truncated, clamped to the range).
 fn pxToUnits(px: f32) @import("../zss.zig").math.Unit {
     const units_per_pixel: f32 = @floatFromInt(@import("../zss.zig").math.units_per_pixel);
-    return @intFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
+    return zss.math.unitsFromFloat(zss.values.calc.clampPx(px) * units_per_pixel);
 }
 
 /// A <length> in CSS px (font-relative units against the initial font
@@ -1669,7 +1685,7 @@ pub fn opacity(ctx: *Context) ?types.Opacity {
     const value: f32 = switch (item.tag) {
         .token_integer => if (item.index.extra(ctx.ast).integer) |i| @as(f32, @floatFromInt(i)) else null,
         .token_number => item.index.extra(ctx.ast).number,
-        .token_percentage => item.index.extra(ctx.ast).number,
+        .token_percentage => if (item.index.extra(ctx.ast).number) |n| n / 100.0 else null,
         else => null,
     } orelse {
         ctx.resetPoint(item.index);
@@ -1870,68 +1886,68 @@ test "value parsers" {
     try ns.expectValue(background.attachment, "local", .local);
 
     try ns.expectValue(background.position, "center", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "left", .{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "top", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .start, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "50%", .{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0.5 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 50 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "50px", .{
         .x = .{ .side = .start, .offset = .{ .px = 50 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "left top", .{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .start, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "left center", .{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "center right", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "50px right", .{
         .x = .{ .side = .start, .offset = .{ .px = 50 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "right center", .{
-        .x = .{ .side = .end, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .end, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "center center 50%", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "left center 20px", .{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .center, .offset = .{ .percentage = 0 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
     });
     try ns.expectValue(background.position, "left 20px bottom 50%", .{
         .x = .{ .side = .start, .offset = .{ .px = 20 } },
-        .y = .{ .side = .end, .offset = .{ .percentage = 0.5 } },
+        .y = .{ .side = .end, .offset = .{ .percentage = .{ .number = 50 } } },
     });
     try ns.expectValue(background.position, "center bottom 50%", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .end, .offset = .{ .percentage = 0.5 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .end, .offset = .{ .percentage = .{ .number = 50 } } },
     });
     try ns.expectValue(background.position, "bottom 50% center", .{
-        .x = .{ .side = .center, .offset = .{ .percentage = 0 } },
-        .y = .{ .side = .end, .offset = .{ .percentage = 0.5 } },
+        .x = .{ .side = .center, .offset = .{ .percentage = .{ .number = 0 } } },
+        .y = .{ .side = .end, .offset = .{ .percentage = .{ .number = 50 } } },
     });
     try ns.expectValue(background.position, "bottom 50% left 20px", .{
         .x = .{ .side = .start, .offset = .{ .px = 20 } },
-        .y = .{ .side = .end, .offset = .{ .percentage = 0.5 } },
+        .y = .{ .side = .end, .offset = .{ .percentage = .{ .number = 50 } } },
     });
 
     try ns.expectValue(background.clip, "border-box", .border_box);
@@ -1947,7 +1963,7 @@ test "value parsers" {
     try ns.expectValue(background.size, "auto", .{ .size = .{ .width = .auto, .height = .auto } });
     try ns.expectValue(background.size, "auto auto", .{ .size = .{ .width = .auto, .height = .auto } });
     try ns.expectValue(background.size, "5px", .{ .size = .{ .width = .{ .px = 5 }, .height = .{ .px = 5 } } });
-    try ns.expectValue(background.size, "5px 5%", .{ .size = .{ .width = .{ .px = 5 }, .height = .{ .percentage = 0.05 } } });
+    try ns.expectValue(background.size, "5px 5%", .{ .size = .{ .width = .{ .px = 5 }, .height = .{ .percentage = .{ .number = 5 } } } });
 
     try ns.expectValue(color, "currentColor", .current_color);
     try ns.expectValue(color, "transparent", .transparent);

@@ -34,7 +34,7 @@ pub fn appendBlockBox(box_tree: BoxTreeManaged, subtree: *Subtree) !Subtree.Size
     // One slice for every column: `items` computes all of them on each call.
     const blocks = subtree.blocks.slice();
     blocks.items(.intrinsic)[new_len - 1] = .{};
-    blocks.items(.percent_width)[new_len - 1] = .{ .percentage = 0 };
+    blocks.items(.percent_width)[new_len - 1] = .{ .percentage = .{ .number = 0 } };
     blocks.items(.specified_margins)[new_len - 1] = .{ 0, 0 };
     blocks.items(.block_margins)[new_len - 1] = .{ 0, 0 };
     blocks.items(.min_block_size)[new_len - 1] = 0;

@@ -153,8 +153,7 @@ const Tokens = struct {
         return value;
     }
 
-    /// A <percentage>, in percent (the tokenizer holds the fraction; the
-    /// product is rounded back to the written precision).
+    /// A <percentage>, in percent (the number as written).
     fn acceptPercentage(t: *Tokens) ?f32 {
         const tok = t.peek() orelse return null;
         const value = switch (tok.token) {
@@ -162,7 +161,7 @@ const Tokens = struct {
             else => return null,
         };
         t.pos += 1;
-        return @round(value * 100 * 1e4) / 1e4;
+        return value;
     }
 
     /// An <angle> (CSS Values 4 §7.1), in degrees.

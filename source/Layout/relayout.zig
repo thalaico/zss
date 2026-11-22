@@ -68,7 +68,7 @@ pub fn usedInlineSize(env: *const zss.Environment, subtree: Subtree.View, index:
         .fixed => bo.content_size.w,
         .percentage => blk: {
             const resolved: Unit = switch (subtree.items(.percent_width)[index]) {
-                .percentage => |p| zss.math.unitsFromFloat(@round(p * @as(f32, @floatFromInt(cb_width)))),
+                .percentage => |p| solve.percentage(p, cb_width),
                 .calc => |c| solve.positiveCalc(env, c, cb_width).?,
             };
             break :blk @max(0, if (flags.border_box) resolved -| edges else resolved);

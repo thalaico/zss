@@ -613,8 +613,8 @@ test "adding values" {
     const size_values = &[_]types.BackgroundSize{.contain};
     const repeat_values = &[_]types.BackgroundRepeat{.{ .x = .space, .y = .no_repeat }};
     const position_values = &[_]types.BackgroundPosition{.{
-        .x = .{ .side = .start, .offset = .{ .percentage = 0.5 } },
-        .y = .{ .side = .start, .offset = .{ .percentage = 0.5 } },
+        .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 50 } } },
+        .y = .{ .side = .start, .offset = .{ .percentage = .{ .number = 50 } } },
     }};
     try decls.addValues(allocator, .normal, .{
         .background = .{

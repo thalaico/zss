@@ -604,8 +604,8 @@ pub const Background = struct {
         .repeat = .{ .x = .repeat, .y = .repeat },
         .attachment = .scroll,
         .position = .{
-            .x = .{ .side = .start, .offset = .{ .percentage = 0 } },
-            .y = .{ .side = .start, .offset = .{ .percentage = 0 } },
+            .x = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
+            .y = .{ .side = .start, .offset = .{ .percentage = .{ .number = 0 } } },
         },
         .origin = .padding_box,
         .size = .{ .size = .{ .width = .auto, .height = .auto } },

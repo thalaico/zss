@@ -52,7 +52,8 @@ pub fn clampPx(px: f32) f32 {
     return std.math.clamp(px, -max_px, max_px);
 }
 
-/// px + em × (font size) + percentage × (percentage base).
+/// px + em × (font size) + percentage / 100 × (percentage base); `percentage` is
+/// the number as written (6 for `6%`).
 pub const Linear = struct {
     px: f32 = 0,
     em: f32 = 0,
@@ -93,7 +94,8 @@ pub const Linear = struct {
 
     pub fn eval(a: Linear, font_size: f32, base: ?f32) ?f32 {
         if (a.percentage != 0 and base == null) return null;
-        return a.px + a.em * font_size + a.percentage * (base orelse 0);
+        // Blink (`CalculationValue::Evaluate`, pixels and percent): percent / 100 × base.
+        return a.px + a.em * font_size + a.percentage / 100 * (base orelse 0);
     }
 };
 
@@ -250,7 +252,7 @@ pub const Formatter = struct {
     fn linear(f: Formatter, w: *std.Io.Writer, l: Linear) std.Io.Writer.Error!void {
         const px = l.px + l.em * f.font_size;
         if (l.percentage != 0) {
-            try w.print("{d}%", .{rounded(l.percentage * 100)});
+            try w.print("{d}%", .{rounded(l.percentage)});
             if (px != 0) try w.print(" {s} {d}px", .{ if (px < 0) "-" else "+", rounded(@abs(px)) });
         } else try w.print("{d}px", .{rounded(px)});
     }

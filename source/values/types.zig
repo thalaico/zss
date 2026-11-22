@@ -1,6 +1,19 @@
 const std = @import("std");
 const zss = @import("../zss.zig");
 
+/// A <percentage> of a length, as written: 6 for `6%` (Blink's `Length::Percent`).
+/// Its length of a base is `Layout/solve.zig percentage` (Blink: `LayoutUnit(float(
+/// base * percent / 100))`); keeping the number keeps that exact — a fraction cannot
+/// (0.29 is not a float: 29% of 100px would come out 1/64 px short).
+pub const Percentage = struct {
+    number: f32,
+
+    /// The fraction (`number / 100`), for uses that are not a LayoutUnit.
+    pub fn fraction(p: Percentage) f32 {
+        return p.number / 100.0;
+    }
+};
+
 pub const CssWideKeyword = enum(u2) {
     initial = 1,
     inherit = 2,
@@ -187,7 +200,7 @@ pub const FlexFactor = f32;
 pub const FlexBasis = union(enum) {
     auto,
     px: f32,
-    percentage: f32,
+    percentage: Percentage,
 };
 
 pub const FlexWrap = enum {
@@ -338,7 +351,7 @@ pub const LengthPercentageAuto = union(enum) {
     em: f32,
     /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
     rem: f32,
-    percentage: f32,
+    percentage: Percentage,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
     auto,
@@ -364,7 +377,7 @@ pub const LengthPercentage = union(enum) {
     em: f32,
     /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
     rem: f32,
-    percentage: f32,
+    percentage: Percentage,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
 
@@ -386,7 +399,7 @@ pub const MaxSize = union(enum) {
     em: f32,
     /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
     rem: f32,
-    percentage: f32,
+    percentage: Percentage,
     /// A math function that did not fold (CSS Values 4 §10).
     calc: Calc,
     none,
@@ -480,7 +493,7 @@ pub const BackgroundPosition = struct {
     pub const Side = enum { start, end, center };
     pub const Offset = union(enum) {
         px: f32,
-        percentage: f32,
+        percentage: Percentage,
     };
 
     // TODO: Make this a tagged union instead
@@ -511,7 +524,7 @@ pub const BackgroundOrigin = enum {
 pub const BackgroundSize = union(enum) {
     pub const SizeType = union(enum) {
         px: f32,
-        percentage: f32,
+        percentage: Percentage,
         auto,
     };
 
@@ -700,8 +713,8 @@ pub const VerticalAlign = union(enum) {
     /// <length>: raise by this many px (negative lowers).
     px: f32,
     em: f32,
-    /// <percentage> of the element's line-height (0.5 = 50%).
-    percentage: f32,
+    /// <percentage> of the element's line-height (50 = 50%).
+    percentage: Percentage,
 };
 
 /// CSS UI 4 §6.2 `user-select`. Treated as inherited (see groups.zig): the used value of `auto`

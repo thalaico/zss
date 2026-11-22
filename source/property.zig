@@ -723,12 +723,12 @@ test "parsing properties from a stylesheet" {
 
     try ns.expectEqual(.content_width, &env.decls, block, .{
         .width = .{ .declared = .auto },
-        .min_width = .{ .declared = .{ .percentage = 0.07 } },
+        .min_width = .{ .declared = .{ .percentage = .{ .number = 7 } } },
         .max_width = .{ .declared = .none },
     });
 
     try ns.expectEqual(.content_height, &env.decls, block, .{
-        .height = .{ .declared = .{ .percentage = 0.1 } },
+        .height = .{ .declared = .{ .percentage = .{ .number = 10 } } },
         .min_height = .unset,
         .max_height = .{ .declared = .none },
     });

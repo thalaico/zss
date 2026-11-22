@@ -390,8 +390,10 @@ pub fn consumeNumericToken(source_code: []const u8, location: *Location) !Token 
         location.* += 1;
         return .{
             .token_percentage = switch (value) {
-                .integer => |integer| if (integer) |int| @as(Token.Float, @floatFromInt(int)) / 100.0 else null,
-                .number => |number| if (number) |num| num / 100.0 else null,
+                // The number as written (6 for `6%`, as Blink's Length::Percent): a
+                // reader that wants the fraction divides by 100 itself.
+                .integer => |integer| if (integer) |int| @as(Token.Float, @floatFromInt(int)) else null,
+                .number => |number| number,
             },
         };
     }

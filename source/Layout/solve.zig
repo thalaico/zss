@@ -14,10 +14,12 @@ const units_per_pixel = math.units_per_pixel;
 
 pub const LengthUnit = enum { px };
 
+/// A length in layout units as Blink makes one (`MinimumValueForLength` →
+/// `LayoutUnit(float)`): px × 64 in float, truncated toward zero (10.01px is
+/// 640/64, not 641), clamped to the range, NaN 0.
 pub fn length(comptime unit: LengthUnit, value: f32) Unit {
     return switch (unit) {
-        // Chromium LayoutUnit::FromFloatRound: clamped to the range, NaN 0.
-        .px => zss.math.unitsFromFloat(@round(zss.values.calc.clampPx(value) * units_per_pixel)),
+        .px => zss.math.unitsFromFloat(zss.values.calc.clampPx(value) * units_per_pixel),
     };
 }
 
@@ -26,12 +28,17 @@ pub fn positiveLength(comptime unit: LengthUnit, value: f32) Unit {
     return length(unit, value);
 }
 
-pub fn percentage(value: f32, unit: Unit) Unit {
-    return zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(unit)) * value));
+/// `value` of the length `unit` as Blink resolves it (`MinimumValueForLength`,
+/// kPercent: `LayoutUnit(float(base * percent / 100))`): in float, the base in
+/// px times the number as written over 100, then truncated to 1/64 px.
+pub fn percentage(value: types.Percentage, unit: Unit) Unit {
+    const base_px: f32 = @as(f32, @floatFromInt(unit)) / units_per_pixel;
+    const px: f32 = base_px * value.number / 100.0;
+    return zss.math.unitsFromFloat(px * units_per_pixel);
 }
 
-pub fn positivePercentage(value: f32, unit: Unit) Unit {
-    if (value < 0.0 or !std.math.isNormal(value)) return 0;
+pub fn positivePercentage(value: types.Percentage, unit: Unit) Unit {
+    if (value.number < 0.0 or !std.math.isNormal(value.number)) return 0;
     return percentage(value, unit);
 }
 
@@ -41,7 +48,8 @@ pub fn positivePercentage(value: f32, unit: Unit) Unit {
 pub fn calc(env: *const zss.Environment, value: types.Calc, base: ?Unit) ?Unit {
     const base_px: ?f32 = if (base) |b| @as(f32, @floatFromInt(b)) / units_per_pixel else null;
     const px = env.calc.eval(value.id, value.font_size, base_px) orelse return null;
-    return zss.math.unitsFromFloat(@round(zss.values.calc.clampPx(px) * units_per_pixel));
+    // Blink: `LayoutUnit(float)` of the calculated value — truncated.
+    return zss.math.unitsFromFloat(zss.values.calc.clampPx(px) * units_per_pixel);
 }
 
 /// `calc` for properties that take no negative values: the result is
@@ -485,12 +493,12 @@ pub fn backgroundImage(
                             break :blk offset_adjusted;
                         },
                         .percentage => |p| {
-                            const percentage_adjusted = if (specified.position.x.side == .start) p else 1 - p;
+                            const percentage_adjusted: types.Percentage = if (specified.position.x.side == .start) p else .{ .number = 100 - p.number };
                             break :blk percentage(percentage_adjusted, available_space);
                         },
                     }
                 },
-                .center => break :blk percentage(0.5, available_space),
+                .center => break :blk percentage(.{ .number = 50 }, available_space),
             }
         },
         .y = blk: {
@@ -504,12 +512,12 @@ pub fn backgroundImage(
                             break :blk offset_adjusted;
                         },
                         .percentage => |p| {
-                            const percentage_adjusted = if (specified.position.y.side == .start) p else 1 - p;
+                            const percentage_adjusted: types.Percentage = if (specified.position.y.side == .start) p else .{ .number = 100 - p.number };
                             break :blk percentage(percentage_adjusted, available_space);
                         },
                     }
                 },
-                .center => break :blk percentage(0.5, available_space),
+                .center => break :blk percentage(.{ .number = 50 }, available_space),
             }
         },
     };

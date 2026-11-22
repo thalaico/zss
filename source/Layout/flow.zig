@@ -108,13 +108,13 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                             // Chrome; falling back to content here caused e.g.
                             // Wikipedia's .mw-header (width:100%) to shrink to its
                             // intrinsic content width inside .vector-header-container.
-                            .percentage => |pct| @as(i32, zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct))),
+                            .percentage => |pct| solve.percentage(pct, containing_block_size.width),
                             .calc => |c| solve.positiveCalc(computer.env, .{ .id = c.id, .font_size = computer.resolvedFontSizePx(.box_gen) }, containing_block_size.width) orelse -1,
                             .auto => @as(i32, -1),
                         };
                     },
                     .px => |v| solve.length(.px, v),
-                    .percentage => |pct| zss.math.unitsFromFloat(@round(@as(f32, @floatFromInt(containing_block_size.width)) * pct)),
+                    .percentage => |pct| solve.percentage(pct, containing_block_size.width),
                 };
                 info.grid_area_hash = box_style_specified.grid_area;
                 // CSS spec: float and clear have no effect on flex/grid items.
@@ -345,8 +345,8 @@ pub fn specifiedMargins(env: *const zss.Environment, specified: BlockComputedSiz
 pub fn percentWidth(env: *const zss.Environment, specified: BlockComputedSizes) BoxTree.Subtree.PercentWidth {
     return switch (specified.content_width.width) {
         .percentage => |p| .{ .percentage = p },
-        .calc => |c| if (solve.calcHasPercentage(env, c)) .{ .calc = c } else .{ .percentage = 0 },
-        else => .{ .percentage = 0 },
+        .calc => |c| if (solve.calcHasPercentage(env, c)) .{ .calc = c } else .{ .percentage = .{ .number = 0 } },
+        else => .{ .percentage = .{ .number = 0 } },
     };
 }
 
@@ -929,7 +929,7 @@ pub fn solveInsets(
                     // Insets are positioned from the specified values
                     // (BoxGen.solveInsets*); a math function is recorded like
                     // a percentage.
-                    .calc => sizes.setPercentage(pair[1], 0),
+                    .calc => sizes.setPercentage(pair[1], .{ .number = 0 }),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
                     .rem => unreachable,
@@ -950,7 +950,7 @@ pub fn solveInsets(
                     // Insets are positioned from the specified values
                     // (BoxGen.solveInsets*); a math function is recorded like
                     // a percentage.
-                    .calc => sizes.setPercentage(pair[1], 0),
+                    .calc => sizes.setPercentage(pair[1], .{ .number = 0 }),
                     .auto => sizes.setAuto(pair[1]),
                     .em => unreachable,
                     .rem => unreachable,

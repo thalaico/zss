@@ -736,7 +736,7 @@ fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytyp
             .middle => -@divFloor(slice.items(.x_height)[p], 2) -| @divFloor(below -| above, 2),
             .px => |v| (0 -| zss.math.unitsFromFloat(v * upp)),
             .em => |v| (0 -| zss.math.unitsFromFloat(v * size * upp)),
-            .percentage => |v| (0 -| zss.math.unitsFromFloat(v * @as(f32, @floatFromInt(line_height)))),
+            .percentage => |v| (0 -| solve.percentage(v, line_height)),
         };
         shift = p_shift +| relative;
     }
@@ -1931,7 +1931,7 @@ fn inlineBlockPlacement(layout: *Layout, subtree: Subtree.View, ifc: *Ifc, index
         .em => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * p_em)),
         // Percentages refer to the element's own line-height; an
         // inline-block's is its parent's here (it inherits).
-        .percentage => |v| baseline_ascent + @as(Unit, zss.math.unitsFromFloat(v * @as(f32, @floatFromInt(boxes.items(.above)[parent] + boxes.items(.below)[parent])))),
+        .percentage => |v| baseline_ascent +| solve.percentage(v, boxes.items(.above)[parent] +| boxes.items(.below)[parent]),
     };
     return .{
         .offset = &subtree.items(.offset)[index],

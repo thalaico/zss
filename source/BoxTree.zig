@@ -260,13 +260,13 @@ pub const Subtree = struct {
     /// (`Layout/intrinsic.zig`) need, since used sizes lose it.
     /// A block's specified width when it depends on the containing block width.
 pub const PercentWidth = union(enum) {
-    percentage: f32,
+    percentage: values.types.Percentage,
     calc: values.types.Calc,
 
     /// The plain percentage (0..1), or 0 for a math function.
     pub fn fraction(w: PercentWidth) f32 {
         return switch (w) {
-            .percentage => |p| p,
+            .percentage => |p| p.fraction(),
             .calc => 0,
         };
     }
@@ -358,7 +358,7 @@ pub const IntrinsicFlags = packed struct(u8) {
         /// The specified width of a `width: <percentage>` block (0..1), or a
         /// math function with a percentage: what relayout resolves against a
         /// new containing block width.
-        percent_width: PercentWidth = .{ .percentage = 0 },
+        percent_width: PercentWidth = .{ .percentage = .{ .number = 0 } },
         /// The specified inline-start/end margins in layout units (0 for
         /// `auto`; `margin_percent` for percentages). The used end margin of
         /// an over-constrained block (CSS 2.1 §10.3.3) is not its specified
