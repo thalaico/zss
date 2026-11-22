@@ -94,6 +94,10 @@ system_fonts: ?SystemFonts = null,
 /// (its first available family) — the custom fonts style rules refer to
 /// (CSS Fonts 4 §4.9: only those may be downloaded).
 custom_fonts_referenced: u32 = 0,
+/// Bit i: the custom family `custom_font_names[i]` has no font loaded yet (the host's
+/// font loading, CSS Fonts 4 §4.4): a `font-family` value skips it, as an unavailable
+/// family, and records it as `pending` (the text uses the next family meanwhile).
+custom_fonts_pending: u32 = 0,
 /// The distinct specified font-family lists, serialized (CSSOM), indexed by
 /// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
 font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,

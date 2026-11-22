@@ -1135,6 +1135,8 @@ pub fn familyIsGenericMonospace(ctx: *Context) bool {
 pub const FontFamilyValue = struct {
     family: types.FontFamily,
     list: types.FontFamilyList,
+    /// The first family before `family` whose font is loading (`custom_fonts_pending`).
+    pending: types.FontFamilyPending = .none,
 };
 
 /// <'font-family'> = [ <family-name> | <generic-family> ]# (CSS Fonts 4
@@ -1156,6 +1158,7 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
     var name: std.ArrayList(u8) = .empty;
     defer name.deinit(allocator);
     var resolved: ?types.FontFamily = null;
+    var pending: types.FontFamilyPending = .none;
 
     while (true) {
         name.clearRetainingCapacity();
@@ -1214,10 +1217,15 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
             try serialized.append(allocator, '"');
         }
 
-        if (resolved == null) resolved = if (generic) |g|
-            renderedGenericFamily(g)
-        else
-            availableNamedFamily(env, name.items);
+        if (resolved == null) {
+            if (generic == null and pending == .none) {
+                if (pendingNamedFamily(env, name.items)) |idx| pending = @enumFromInt(idx);
+            }
+            resolved = if (generic) |g|
+                renderedGenericFamily(g)
+            else
+                availableNamedFamily(env, name.items);
+        }
 
         const separator = ctx.next() orelse break;
         if (separator.tag != .token_comma) return null;
@@ -1230,6 +1238,7 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
     return .{
         .family = resolved orelse .serif,
         .list = try env.internFontFamilyList(serialized.items),
+        .pending = pending,
     };
 }
 
@@ -1261,11 +1270,25 @@ fn renderedGenericFamily(generic: []const u8) ?types.FontFamily {
 /// else an installed font the host finds (`Environment.system_fonts`).
 fn availableNamedFamily(env: *Environment, name: []const u8) ?types.FontFamily {
     for (env.custom_font_names, 0..) |custom, idx| {
-        if (std.ascii.eqlIgnoreCase(custom, name)) return .{ .custom = @intCast(idx) };
+        if (std.ascii.eqlIgnoreCase(custom, name)) {
+            if (idx < 32 and env.custom_fonts_pending & (@as(u32, 1) << @intCast(idx)) != 0) return null;
+            return .{ .custom = @intCast(idx) };
+        }
     }
     const system = env.system_fonts orelse return null;
     const idx = system.find(system.ctx, env, name) orelse return null;
     return .{ .custom = idx };
+}
+
+/// The custom family named `name` whose font is still loading (`custom_fonts_pending`).
+fn pendingNamedFamily(env: *const Environment, name: []const u8) ?u8 {
+    if (env.custom_fonts_pending == 0) return null;
+    for (env.custom_font_names, 0..) |custom, idx| {
+        if (idx >= 32 or !std.ascii.eqlIgnoreCase(custom, name)) continue;
+        if (env.custom_fonts_pending & (@as(u32, 1) << @intCast(idx)) != 0) return @intCast(idx);
+        return null;
+    }
+    return null;
 }
 
 /// Whether `text` is a CSS identifier as written (CSS Syntax 3 §4.3.10),

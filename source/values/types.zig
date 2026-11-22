@@ -628,6 +628,13 @@ pub const FontFamily = union(enum) {
     custom: u8,
 };
 
+/// The custom family (an index into the custom font registry) the element's
+/// font-family list names before the family it resolved to, whose font is not loaded
+/// yet (`Environment.custom_fonts_pending`): the text uses the fallback until it is in,
+/// and is invisible during the face's block period (CSS Fonts 4 §4.4). `none`: the
+/// resolved family is the first available one.
+pub const FontFamilyPending = enum(u8) { none = 255, _ };
+
 pub const TextDecoration = enum {
     none,
     underline,

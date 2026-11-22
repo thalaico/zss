@@ -344,6 +344,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                         runs.items[runs.items.len - 1].font_style == font.font_style and
                         runs.items[runs.items.len - 1].text_transform == font.text_transform and
                         runs.items[runs.items.len - 1].font_size == font.font_size.px_val() and
+                        runs.items[runs.items.len - 1].pending_family == font.font_family_pending and
                         runs.items[runs.items.len - 1].glyph_end == glyph_start)
                     {
                         runs.items[runs.items.len - 1].glyph_end = glyph_end;
@@ -355,6 +356,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                             .font_style = font.font_style,
                             .text_transform = font.text_transform,
                             .font_size = font.font_size.px_val(),
+                            .pending_family = font.font_family_pending,
                         });
                     }
                 }

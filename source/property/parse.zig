@@ -1048,6 +1048,7 @@ pub fn font(ctx: *Context, declaration_index: Ast.Index, env: *Environment) !?Re
     return .{ .font = .{
         .font_family = .{ .declared = family.family },
         .font_family_list = .{ .declared = family.list },
+        .font_family_pending = .{ .declared = family.pending },
         .generic_monospace = .{ .declared = generic_monospace },
         .font_size = .{ .declared = size },
         .font_size_info = .{ .declared = values.parse.fontSizeInfo(size) },
@@ -1064,6 +1065,7 @@ pub fn @"font-family"(ctx: *Context, declaration_index: Ast.Index, env: *Environ
     return .{ .font = .{
         .font_family = .{ .declared = value.family },
         .font_family_list = .{ .declared = value.list },
+        .font_family_pending = .{ .declared = value.pending },
         .generic_monospace = .{ .declared = generic_monospace },
     } };
 }

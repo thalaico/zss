@@ -539,6 +539,9 @@ pub const InlineFormattingContext = struct {
         text_transform: values.types.TextTransform,
         /// Cascaded font-size in px for this run (for per-run metrics and rendering).
         font_size: f32,
+        /// The family the text waits for (its font loading): painted only after the
+        /// face's block period (CSS Fonts 4 §4.4), by the host's choice.
+        pending_family: values.types.FontFamilyPending = .none,
     };
 
     pub const Size = u16;
