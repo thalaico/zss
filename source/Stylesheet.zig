@@ -174,6 +174,58 @@ pub fn parseAndCreate(allocator: Allocator, source_code: SourceCode, env: *Envir
     return create(allocator, ast, rule_list_index, source_code, env);
 }
 
+/// One style sheet of a document's author origin: its parsed text (`ast`, whose locations
+/// are byte offsets into `source_code`) and the index of its `rule_list` node. The Ast does
+/// not refer to the text: a host may keep one parsed sheet and use it with any copy of the
+/// same text.
+pub const Sheet = struct {
+    ast: Ast,
+    rule_list_index: Ast.Index,
+    source_code: SourceCode,
+};
+
+/// Create one `Stylesheet` (one cascade source) from a document's style sheets, in order:
+/// their rules keep their order across sheets (CSS Cascade 4 §6.4.4: order of appearance),
+/// and specificity decides across sheets as within one. Each sheet is parsed on its own,
+/// as the CSS Syntax spec parses a style sheet: its `@namespace` rules are its own, and an
+/// unclosed block ends with it. The text of each URL is kept in the environment
+/// (`Urls.recordTexts`) per sheet. Free using `deinit`.
+pub fn createFromSheets(allocator: Allocator, sheets: []const Sheet, env: *Environment) !Stylesheet {
+    var stylesheet = Stylesheet{
+        .namespaces = .{},
+        .decl_urls = .init(env),
+        .cascade_source = .{},
+    };
+    errdefer stylesheet.deinit(allocator);
+    var unsorted_selectors: @FieldType(RuleProcessor, "unsorted_selectors") = .{};
+    defer unsorted_selectors.deinit(allocator);
+
+    for (sheets) |sheet| {
+        stylesheet.namespaces.deinit(allocator);
+        stylesheet.namespaces = .{};
+        var ctx = RuleProcessor{
+            .allocator = allocator,
+            .ast = sheet.ast,
+            .source_code = sheet.source_code,
+            .env = env,
+            .stylesheet = &stylesheet,
+            .selector_parser = selectors.Parser.init(env, allocator, sheet.source_code, sheet.ast, &stylesheet.namespaces),
+            .unsorted_selectors = unsorted_selectors,
+        };
+        defer ctx.selector_parser.deinit();
+        ctx.processRuleList(sheet.rule_list_index) catch |err| {
+            unsorted_selectors = ctx.unsorted_selectors;
+            return err;
+        };
+        unsorted_selectors = ctx.unsorted_selectors;
+        stylesheet.decl_urls.recordTexts(env, sheet.source_code);
+        stylesheet.decl_urls.commit(env);
+        stylesheet.decl_urls.clear(env);
+    }
+    sortSelectors(&stylesheet, unsorted_selectors.slice());
+    return stylesheet;
+}
+
 /// Create a `Stylesheet` from an Ast `rule_list` node.
 /// Free using `deinit`.
 pub fn create(
@@ -206,8 +258,11 @@ pub fn create(
 
     stylesheet.decl_urls.commit(env);
 
-    const unsorted_selectors_slice = ctx.unsorted_selectors.slice();
+    sortSelectors(&stylesheet, ctx.unsorted_selectors.slice());
+    return stylesheet;
+}
 
+fn sortSelectors(stylesheet: *Stylesheet, unsorted_selectors_slice: anytype) void {
     // Sort the selectors such that items with a higher cascade order appear earlier in each list.
     for ([_]Importance{ .important, .normal }) |importance| {
         const list = switch (importance) {
@@ -244,7 +299,6 @@ pub fn create(
         }
     }
 
-    return stylesheet;
 }
 
 /// Mutable context for processing CSS rules during stylesheet creation.
