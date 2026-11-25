@@ -1143,8 +1143,8 @@ pub fn familyIsGenericMonospace(ctx: *Context) bool {
 pub const FontFamilyValue = struct {
     family: types.FontFamily,
     list: types.FontFamilyList,
-    /// The first family before `family` whose font is loading (`custom_fonts_pending`).
-    pending: types.FontFamilyPending = .none,
+    /// The families characters are matched against (`types.FontChain`).
+    chain: types.FontChain,
 };
 
 /// <'font-family'> = [ <family-name> | <generic-family> ]# (CSS Fonts 4
@@ -1158,7 +1158,9 @@ pub const FontFamilyValue = struct {
 /// installed font (`Environment.system_fonts`) — or the UA standard font
 /// (`serif`, Chrome's Times New Roman) when none is. Generic families zss
 /// does not render (cursive, fantasy, emoji, math, fangsong, ui-*) are
-/// skipped like unavailable names.
+/// skipped like unavailable names. An @font-face family none of whose faces is
+/// loaded yet (`Environment.custom_fonts_pending`) is skipped for `family`; the
+/// `chain` keeps it (its characters wait for their faces, CSS Fonts 4 §4.4).
 pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
     const allocator = env.allocator;
     var serialized: std.ArrayList(u8) = .empty;
@@ -1166,7 +1168,10 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
     var name: std.ArrayList(u8) = .empty;
     defer name.deinit(allocator);
     var resolved: ?types.FontFamily = null;
-    var pending: types.FontFamilyPending = .none;
+    var chain: [16]types.FontFamily = undefined;
+    var chain_len: usize = 0;
+    // The chain ends at the first available family that is not an @font-face one.
+    var chain_done = false;
 
     while (true) {
         name.clearRetainingCapacity();
@@ -1225,28 +1230,44 @@ pub fn fontFamily(ctx: *Context, env: *Environment) !?FontFamilyValue {
             try serialized.append(allocator, '"');
         }
 
-        if (resolved == null) {
-            if (generic == null and pending == .none) {
-                if (pendingNamedFamily(env, name.items)) |idx| pending = @enumFromInt(idx);
-            }
-            resolved = if (generic) |g|
+        if (!chain_done and chain_len < chain.len) {
+            const in_chain: ?types.FontFamily = if (generic) |g|
                 renderedGenericFamily(g)
+            else if (fontFaceFamily(env, name.items)) |idx|
+                .{ .custom = idx }
             else
                 availableNamedFamily(env, name.items);
+            if (in_chain) |family| {
+                chain[chain_len] = family;
+                chain_len += 1;
+                const is_font_face = switch (family) {
+                    .custom => |idx| idx < env.font_face_families,
+                    else => false,
+                };
+                if (is_font_face) {
+                    env.custom_fonts_referenced |= if (referencedBit(family)) |bit| bit else 0;
+                    if (resolved == null and !familyPending(env, family)) resolved = family;
+                } else {
+                    chain_done = true;
+                    if (resolved == null) resolved = family;
+                }
+            }
         }
 
         const separator = ctx.next() orelse break;
         if (separator.tag != .token_comma) return null;
     }
 
-    if (resolved) |family| switch (family) {
-        .custom => |idx| env.custom_fonts_referenced |= @as(u32, 1) << @intCast(idx),
-        else => {},
-    };
+    if (resolved) |family| env.custom_fonts_referenced |= if (referencedBit(family)) |bit| bit else 0;
+    // No available family: the UA's standard font.
+    if (!chain_done and chain_len < chain.len) {
+        chain[chain_len] = .serif;
+        chain_len += 1;
+    }
     return .{
         .family = resolved orelse .serif,
         .list = try env.internFontFamilyList(serialized.items),
-        .pending = pending,
+        .chain = try env.internFontChain(chain[0..chain_len]),
     };
 }
 
@@ -1289,14 +1310,28 @@ fn availableNamedFamily(env: *Environment, name: []const u8) ?types.FontFamily {
 }
 
 /// The custom family named `name` whose font is still loading (`custom_fonts_pending`).
-fn pendingNamedFamily(env: *const Environment, name: []const u8) ?u8 {
-    if (env.custom_fonts_pending == 0) return null;
-    for (env.custom_font_names, 0..) |custom, idx| {
-        if (idx >= 32 or !std.ascii.eqlIgnoreCase(custom, name)) continue;
-        if (env.custom_fonts_pending & (@as(u32, 1) << @intCast(idx)) != 0) return @intCast(idx);
-        return null;
+/// The @font-face family named `name` (ASCII case-insensitive), available or not.
+fn fontFaceFamily(env: *const Environment, name: []const u8) ?u8 {
+    for (env.custom_font_names[0..@min(env.font_face_families, env.custom_font_names.len)], 0..) |custom, idx| {
+        if (std.ascii.eqlIgnoreCase(custom, name)) return @intCast(idx);
     }
     return null;
+}
+
+/// Whether `family` is an @font-face family with no face loaded yet.
+fn familyPending(env: *const Environment, family: types.FontFamily) bool {
+    return switch (family) {
+        .custom => |idx| idx < 32 and env.custom_fonts_pending & (@as(u32, 1) << @intCast(idx)) != 0,
+        else => false,
+    };
+}
+
+/// The `custom_fonts_referenced` bit of a custom family.
+fn referencedBit(family: types.FontFamily) ?u32 {
+    return switch (family) {
+        .custom => |idx| if (idx < 32) @as(u32, 1) << @intCast(idx) else null,
+        else => null,
+    };
 }
 
 /// Whether `text` is a CSS identifier as written (CSS Syntax 3 §4.3.10),

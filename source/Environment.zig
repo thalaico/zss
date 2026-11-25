@@ -98,6 +98,12 @@ custom_fonts_referenced: u32 = 0,
 /// font loading, CSS Fonts 4 §4.4): a `font-family` value skips it, as an unavailable
 /// family, and records it as `pending` (the text uses the next family meanwhile).
 custom_fonts_pending: u32 = 0,
+/// How many of `custom_font_names` (the first ones) are @font-face families; the
+/// others are installed families the host registered.
+font_face_families: usize = 0,
+/// The distinct font chains (`zss.values.types.FontChain`), indexed by id - 1.
+font_chains: std.ArrayListUnmanaged([]const zss.values.types.FontFamily) = .empty,
+font_chain_ids: std.StringHashMapUnmanaged(u32) = .empty,
 /// The distinct specified font-family lists, serialized (CSSOM), indexed by
 /// `FontFamilyList` - 1 (`zss.values.types.FontFamilyList`).
 font_family_lists: std.ArrayListUnmanaged([]const u8) = .empty,
@@ -266,6 +272,11 @@ pub fn deinit(env: *Environment) void {
     }
     for (env.font_family_lists.items) |text| env.allocator.free(text);
     env.font_family_lists.deinit(env.allocator);
+    for (env.font_chains.items) |chain| env.allocator.free(chain);
+    env.font_chains.deinit(env.allocator);
+    var chain_keys = env.font_chain_ids.keyIterator();
+    while (chain_keys.next()) |key| env.allocator.free(key.*);
+    env.font_chain_ids.deinit(env.allocator);
     for (env.animation_values.items) |text| env.allocator.free(text);
     env.animation_values.deinit(env.allocator);
     env.animation_value_ids.deinit(env.allocator);
@@ -293,6 +304,38 @@ pub fn internFontFamilyList(env: *Environment, text: []const u8) !zss.values.typ
         gop.value_ptr.* = @intCast(env.font_family_lists.items.len);
     }
     return @enumFromInt(gop.value_ptr.*);
+}
+
+/// The id of the font chain `families`, interning it.
+pub fn internFontChain(env: *Environment, families: []const zss.values.types.FontFamily) !zss.values.types.FontChain {
+    // Keyed by two bytes a family (tag, custom index): a union's unused payload
+    // bytes are undefined.
+    var key_buf: [64]u8 = undefined;
+    if (families.len * 2 > key_buf.len) return error.OutOfMemory;
+    for (families, 0..) |family, i| {
+        key_buf[2 * i] = @intFromEnum(std.meta.activeTag(family));
+        key_buf[2 * i + 1] = switch (family) {
+            .custom => |idx| idx,
+            else => 0,
+        };
+    }
+    const key = key_buf[0 .. families.len * 2];
+    if (env.font_chain_ids.get(key)) |id| return @enumFromInt(id);
+    const owned = try env.allocator.dupe(zss.values.types.FontFamily, families);
+    errdefer env.allocator.free(owned);
+    const owned_key = try env.allocator.dupe(u8, key);
+    errdefer env.allocator.free(owned_key);
+    try env.font_chains.append(env.allocator, owned);
+    errdefer _ = env.font_chains.pop();
+    const id: u32 = @intCast(env.font_chains.items.len);
+    try env.font_chain_ids.put(env.allocator, owned_key, id);
+    return @enumFromInt(id);
+}
+
+/// The families of a font chain.
+pub fn fontChain(env: *const Environment, chain: zss.values.types.FontChain) []const zss.values.types.FontFamily {
+    if (chain == .initial) return &.{.serif};
+    return env.font_chains.items[@intFromEnum(chain) - 1];
 }
 
 /// Intern the serialization of an `animation-*` longhand's value.

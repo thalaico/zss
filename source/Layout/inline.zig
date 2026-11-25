@@ -314,34 +314,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     }
                 }
                 try ifc.ptr.text_nodes.append(layout.allocator, .{ .node = node, .glyph_start = glyph_start, .text_len = @intCast(text.len) });
-                try ifcAddText(layout.box_tree, ifc.ptr, text, hb_font, font.white_space);
-                const glyph_end: u32 = @intCast(ifc.ptr.glyphs.len);
-                if (glyph_end > glyph_start) {
-                    // Extend the last run if same weight and font size, otherwise start a new one.
-                    const runs = &ifc.ptr.font_runs;
-                    if (runs.items.len > 0 and
-                        std.meta.eql(runs.items[runs.items.len - 1].font_family, font.font_family) and
-                        runs.items[runs.items.len - 1].font_weight == font.font_weight and
-                        runs.items[runs.items.len - 1].font_style == font.font_style and
-                        runs.items[runs.items.len - 1].text_transform == font.text_transform and
-                        runs.items[runs.items.len - 1].font_size == font.font_size.px_val() and
-                        runs.items[runs.items.len - 1].pending_family == font.font_family_pending and
-                        runs.items[runs.items.len - 1].glyph_end == glyph_start)
-                    {
-                        runs.items[runs.items.len - 1].glyph_end = glyph_end;
-                    } else {
-                        try runs.append(layout.allocator, .{
-                            .glyph_start = glyph_start,
-                            .glyph_end = glyph_end,
-                            .font_family = font.font_family,
-                            .font_weight = font.font_weight,
-                            .font_style = font.font_style,
-                            .text_transform = font.text_transform,
-                            .font_size = font.font_size.px_val(),
-                            .pending_family = font.font_family_pending,
-                        });
-                    }
-                }
+                try addTextByFace(layout, ifc.ptr, text, font, handle, hb_font);
             }
 
             layout.advanceNode();
@@ -792,11 +765,112 @@ fn ifcAddLineBreak(box_tree: BoxTreeManaged, ifc: *Ifc) !void {
 /// also removes the collapsible spaces around them) and collapsible spaces
 /// otherwise. Preserved tabs advance to tab stops (`Tab` glyphs). Spaces
 /// are soft wrap opportunities unless `nowrap` or `pre`.
-fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.hb_font_t, white_space: zss.values.types.WhiteSpace) !void {
+/// Add a text node's text to the IFC a face at a time (CSS Fonts 4 §5.3 cluster
+/// matching, a character at a time): each character takes the first family of the
+/// font chain with a face covering it (`Fonts.faceFor`); a combining mark or a format
+/// character (ZWJ, variation selectors) stays with the face before it, as in Blink. A
+/// chain of one family that is not an @font-face family is that family's face
+/// throughout (`primary_font`).
+fn addTextByFace(layout: *Layout, ifc: *Ifc, text: []const u8, font: zss.values.groups.Tag.ComputedValues(.font), primary: Fonts.Handle, primary_font: *hb.hb_font_t) !void {
+    const fonts = layout.inputs.fonts;
+    const chain = layout.computer.env.fontChain(font.font_chain);
+    const single = chain.len == 1 and switch (chain[0]) {
+        .custom => |idx| fonts.composites[idx][0].len + fonts.composites[idx][1].len + fonts.composites[idx][2].len + fonts.composites[idx][3].len == 0,
+        else => true,
+    };
+    if (single) {
+        const v = fonts.entryVariant(primary, font.font_weight, font.font_style) orelse return;
+        return addFaceText(layout, ifc, text, 0, text.len, font, .{ .hb_font = primary_font, .ft_face = v.ft_face });
+    }
+    var begin: usize = 0;
+    var current: ?Fonts.Choice = null;
+    var i: usize = 0;
+    while (i < text.len) {
+        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        const end = @min(text.len, i + len);
+        const cp: u21 = std.unicode.utf8Decode(text[i..end]) catch std.unicode.replacement_character;
+        const choice: Fonts.Choice = if (current != null and followsPrevious(cp))
+            current.?
+        else
+            // `primary` has a font (the caller's `getVariant`), so there is a choice.
+            fonts.faceFor(chain, primary, font.font_weight, font.font_style, cp) orelse unreachable;
+        if (current) |prev| if (!sameFace(prev, choice)) {
+            try addFaceText(layout, ifc, text, begin, i, font, prev);
+            begin = i;
+        };
+        current = choice;
+        i = end;
+    }
+    if (current) |prev| try addFaceText(layout, ifc, text, begin, text.len, font, prev);
+}
+
+fn sameFace(a: Fonts.Choice, b: Fonts.Choice) bool {
+    return a.hb_font == b.hb_font and std.meta.eql(a.pending, b.pending);
+}
+
+/// A character that belongs with the character before it (a mark, a format control).
+fn followsPrevious(cp: u21) bool {
+    const category = hb.hb_unicode_general_category(hb.hb_unicode_funcs_get_default(), cp);
+    return switch (category) {
+        hb.HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK,
+        hb.HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK,
+        hb.HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK,
+        hb.HB_UNICODE_GENERAL_CATEGORY_FORMAT,
+        => true,
+        else => false,
+    };
+}
+
+/// Shape `text[begin..stop]` with one face and record its font run (extending the
+/// last run when nothing about the font changes).
+fn addFaceText(layout: *Layout, ifc: *Ifc, text: []const u8, begin: usize, stop: usize, font: zss.values.groups.Tag.ComputedValues(.font), choice: Fonts.Choice) !void {
+    const size = font.font_size.px_val();
+    Fonts.setFaceSize(choice.ft_face, choice.hb_font, size);
+    const glyph_start: u32 = @intCast(ifc.glyphs.len);
+    try ifcAddText(layout.box_tree, ifc, text, begin, stop, choice.hb_font, font.white_space);
+    const glyph_end: u32 = @intCast(ifc.glyphs.len);
+    if (glyph_end == glyph_start) return;
+    const pending_family: zss.values.types.FontFamilyPending = if (choice.pending) |p| @enumFromInt(p.family) else .none;
+    const pending_face: u16 = if (choice.pending) |p| p.face else 0;
+    const runs = &ifc.font_runs;
+    if (runs.items.len > 0) {
+        const last = &runs.items[runs.items.len - 1];
+        if (std.meta.eql(last.font_family, font.font_family) and
+            last.hb_font == choice.hb_font and
+            last.font_weight == font.font_weight and
+            last.font_style == font.font_style and
+            last.text_transform == font.text_transform and
+            last.font_size == size and
+            last.pending_family == pending_family and
+            last.pending_face == pending_face and
+            last.glyph_end == glyph_start)
+        {
+            last.glyph_end = glyph_end;
+            return;
+        }
+    }
+    try runs.append(layout.allocator, .{
+        .glyph_start = glyph_start,
+        .glyph_end = glyph_end,
+        .font_family = font.font_family,
+        .font_weight = font.font_weight,
+        .font_style = font.font_style,
+        .text_transform = font.text_transform,
+        .font_size = size,
+        .hb_font = choice.hb_font,
+        .ft_face = choice.ft_face,
+        .pending_family = pending_family,
+        .pending_face = pending_face,
+    });
+}
+
+/// Shape `text[begin..stop]` (a text node's text, or the part of it one face draws)
+/// with `font` and append its glyphs; source offsets are into `text`.
+fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, begin: usize, stop: usize, font: *hb.hb_font_t, white_space: zss.values.types.WhiteSpace) !void {
     const buffer = hb.hb_buffer_create() orelse unreachable;
     defer hb.hb_buffer_destroy(buffer);
     // TODO: Need to put a limit on the length of text
-    _ = hb.hb_buffer_pre_allocate(buffer, @intCast(text.len));
+    _ = hb.hb_buffer_pre_allocate(buffer, @intCast(stop - begin));
     // TODO direction, script, and language must be determined by examining the text itself
     hb.hb_buffer_set_direction(buffer, hb.HB_DIRECTION_LTR);
     hb.hb_buffer_set_script(buffer, hb.HB_SCRIPT_LATIN);
@@ -825,9 +899,9 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
     // The text item the runs belong to (Blink: one item per text node, split at
     // forced breaks); its width is rounded up as a whole (`ItemAdvance`).
     var item: ItemAdvance = .{};
-    var run_begin: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
+    var run_begin: usize = begin;
+    var i: usize = begin;
+    while (i < stop) : (i += 1) {
         const ch = text[i];
         if (preserve_breaks and ch == '\n') {
             _ = try seg.addText(allocator, text, run_begin, i);
@@ -866,14 +940,14 @@ fn ifcAddText(box_tree: BoxTreeManaged, ifc: *Ifc, text: []const u8, font: *hb.h
             // (pre-wrap), hanging at a line's end.
             _ = try seg.addText(allocator, text, run_begin, i);
             var end = i;
-            while (end < text.len and text[end] == ' ') end += 1;
+            while (end < stop and text[end] == ' ') end += 1;
             try seg.add(allocator, .preserved_spaces, text[i..end], i);
             ifc.ends_in_collapsible_space = false;
             run_begin = end;
             i = end - 1;
         }
     }
-    if (try seg.addText(allocator, text, run_begin, text.len)) ifc.ends_in_collapsible_space = false;
+    if (try seg.addText(allocator, text, run_begin, stop)) ifc.ends_in_collapsible_space = false;
     try seg.flush(box_tree, ifc, buffer, font, &item, wrap);
 }
 
@@ -1834,9 +1908,10 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
             if (run_idx < runs.len and i >= runs[run_idx].glyph_start and current_run != run_idx) {
                 current_run = run_idx;
                 const run = runs[run_idx];
-                const handle = fonts.queryFamily(run.font_family);
-                font = fonts.getVariant(handle, run.font_weight, run.font_style) orelse font;
-                fonts.setFontSizeVariant(handle, run.font_weight, run.font_style, run.font_size);
+                if (run.hb_font) |run_font| {
+                    font = run_font;
+                    Fonts.setFaceSize(run.ft_face.?, run_font, run.font_size);
+                }
             }
             // Advance already stored from hb_shape; fill extents only.
             setMetricsGlyphExtents(metrics, font, glyph_index);

@@ -542,9 +542,15 @@ pub const InlineFormattingContext = struct {
         text_transform: values.types.TextTransform,
         /// Cascaded font-size in px for this run (for per-run metrics and rendering).
         font_size: f32,
-        /// The family the text waits for (its font loading): painted only after the
-        /// face's block period (CSS Fonts 4 §4.4), by the host's choice.
+        /// The face the run's glyphs were shaped with (glyph indices are its own),
+        /// owned by the layout's `Fonts`: drawn and measured with it.
+        hb_font: ?*zss.Fonts.HbFont = null,
+        ft_face: ?zss.Fonts.FT_Face = null,
+        /// The family whose face the text waits for (its font loading, CSS Fonts 4
+        /// §4.4), and that face (`Fonts.SubFace.id`): painted only after the face's
+        /// block period, by the host's choice.
         pending_family: values.types.FontFamilyPending = .none,
+        pending_face: u16 = 0,
     };
 
     pub const Size = u16;

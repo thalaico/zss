@@ -3,6 +3,7 @@ const Fonts = @This();
 const std = @import("std");
 const hb = @import("harfbuzz").c;
 const types = @import("values/types.zig");
+const font_face = @import("font_face.zig");
 
 pub const Handle = enum(u8) {
     invalid,
@@ -128,8 +129,111 @@ fonts: [4]?FontEntry = .{ null, null, null, null },
 /// Handles 5..5+MAX_CUSTOM-1 map to custom_entries[0..MAX_CUSTOM-1].
 custom_entries: [MAX_CUSTOM]?FontEntry = .{null} ** MAX_CUSTOM,
 custom_count: u8 = 0,
+/// The composite faces of the @font-face families (CSS Fonts 4 §4.5: the faces of a
+/// family whose descriptors differ only in `unicode-range`), by custom index and
+/// variant (regular, bold, italic, bold italic). Empty: no composite (an installed
+/// family, or a variant no rule serves). The host owns the slices.
+composites: [MAX_CUSTOM][4][]const SubFace = .{.{ &.{}, &.{}, &.{}, &.{} }} ** MAX_CUSTOM,
 
 pub const MAX_CUSTOM = 24;
+
+
+/// One face of a composite face: an @font-face rule's font.
+pub const SubFace = struct {
+    /// Null while the face is not loaded.
+    hb_font: ?*hb.hb_font_t = null,
+    ft_face: ?FT_Face = null,
+    /// The rule's `unicode-range`; empty: every code point.
+    ranges: []const font_face.CodepointRange = &.{},
+    /// The host's id of the face, to request it (`Choice.pending`).
+    id: u16,
+    /// The face will not load (its sources failed): never used or waited for.
+    failed: bool = false,
+
+    pub fn inRange(sub: SubFace, cp: u21) bool {
+        if (sub.ranges.len == 0) return true;
+        for (sub.ranges) |r| if (cp >= r.first and cp <= r.last) return true;
+        return false;
+    }
+};
+
+/// The faces a character's glyph comes from (`faceFor`).
+pub const Choice = struct {
+    hb_font: *hb.hb_font_t,
+    ft_face: FT_Face,
+    /// A face before the chosen one would serve the character but is not loaded
+    /// (CSS Fonts 4 §4.4): its family and id. The text is drawn with the chosen face
+    /// meanwhile, and not at all during the face's block period.
+    pending: ?Pending = null,
+
+    pub const Pending = struct { family: u8, face: u16 };
+};
+
+/// Set the composite face of custom family `custom_index` for `variant` (0 regular,
+/// 1 bold, 2 italic, 3 bold italic), its faces in the order they are tried (CSS Fonts 4
+/// §4.5: the rule defined last first).
+pub fn setComposite(fonts: *Fonts, custom_index: u8, variant: usize, faces: []const SubFace) void {
+    if (custom_index >= MAX_CUSTOM) return;
+    fonts.composites[custom_index][variant] = faces;
+}
+
+/// The composite of a custom family for a weight and style, falling back as
+/// `FontEntry.variantFor` does; null: the family has none.
+fn compositeFor(fonts: *const Fonts, custom_index: u8, weight: types.FontWeight, style: types.FontStyle) ?[]const SubFace {
+    if (custom_index >= MAX_CUSTOM) return null;
+    const c = fonts.composites[custom_index];
+    const wants_bold = weight.isBold();
+    const wants_italic = style != .normal;
+    const order: []const usize = if (wants_bold and wants_italic)
+        &.{ 3, 1, 2, 0 }
+    else if (wants_bold)
+        &.{ 1, 0, 3, 2 }
+    else if (wants_italic)
+        &.{ 2, 0, 3, 1 }
+    else
+        &.{ 0, 1, 2, 3 };
+    for (order) |v| if (c[v].len > 0) return c[v];
+    return null;
+}
+
+/// Whether a font has a glyph for `cp` in its character map.
+fn hasGlyph(font: *hb.hb_font_t, cp: u21) bool {
+    var glyph: hb.hb_codepoint_t = 0;
+    return hb.hb_font_get_nominal_glyph(font, cp, &glyph) != 0;
+}
+
+/// The face for code point `cp` of text in `chain` (CSS Fonts 4 §5.3 cluster
+/// matching, a character at a time): the first family of the chain with a face whose
+/// `unicode-range` and character map cover it — for a composite face, its faces in
+/// order. A face whose range covers `cp` but which is not loaded is skipped and
+/// recorded as `pending`. When no family covers `cp`, the `primary` family's face.
+/// Null only if `primary` has no font either.
+pub fn faceFor(fonts: *const Fonts, chain: []const types.FontFamily, primary: Handle, weight: types.FontWeight, style: types.FontStyle, cp: u21) ?Choice {
+    var pending: ?Choice.Pending = null;
+    for (chain) |family| {
+        if (family == .custom) {
+            if (fonts.compositeFor(family.custom, weight, style)) |faces| {
+                for (faces) |sub| {
+                    if (sub.failed or !sub.inRange(cp)) continue;
+                    const hb_font = sub.hb_font orelse {
+                        if (pending == null) pending = .{ .family = family.custom, .face = sub.id };
+                        continue;
+                    };
+                    if (!hasGlyph(hb_font, cp)) continue;
+                    return .{ .hb_font = hb_font, .ft_face = sub.ft_face.?, .pending = pending };
+                }
+                continue;
+            }
+        }
+        const entry = fonts.entryFor(familyToHandle(family)) orelse continue;
+        const v = entry.variantFor(weight, style);
+        if (!hasGlyph(v.hb_font, cp)) continue;
+        return .{ .hb_font = v.hb_font, .ft_face = v.ft_face, .pending = pending };
+    }
+    const entry = fonts.entryFor(primary) orelse return null;
+    const v = entry.variantFor(weight, style);
+    return .{ .hb_font = v.hb_font, .ft_face = v.ft_face, .pending = pending };
+}
 
 pub fn init() Fonts {
     return .{};
@@ -202,6 +306,12 @@ fn entryFor(fonts: *const Fonts, handle: Handle) ?FontEntry {
         .system_ui => fonts.fonts[3],
         else => null,
     };
+}
+
+/// The family's face for a weight and style (`FontEntry.variantFor`).
+pub fn entryVariant(fonts: *const Fonts, handle: Handle, weight: types.FontWeight, style: types.FontStyle) ?FontEntry.Variant {
+    const entry = fonts.entryFor(handle) orelse return null;
+    return entry.variantFor(weight, style);
 }
 
 /// The HarfBuzz font to shape a run with: the family's face matching the

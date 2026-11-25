@@ -706,6 +706,13 @@ pub const FontStyle = enum {
 /// (`Environment.internFontFamilyList`). `.initial` is the UA's standard font.
 pub const FontFamilyList = enum(u32) { initial = 0, _ };
 
+/// The families the element's text takes its glyphs from, in `font-family` order
+/// (CSS Fonts 4 §5.3 cluster matching): every @font-face family of the list, up to and
+/// including the first other available family (installed or generic) — an id of the
+/// list interned in the Environment (`Environment.internFontChain`). `.initial` is the
+/// UA's standard font alone.
+pub const FontChain = enum(u32) { initial = 0, _ };
+
 /// The computed value of one `animation-*` longhand (CSS Animations 1 §4): a
 /// comma-separated list, held as the id of its serialization interned in the
 /// Environment (`Environment.internAnimationValue`); `.initial` is the
