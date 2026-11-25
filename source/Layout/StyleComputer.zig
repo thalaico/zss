@@ -643,6 +643,17 @@ fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *co
     }
     result.font_size = .{ .px = size };
     result.font_size_info = info;
+    // A table never takes the -webkit-left / -center / -right alignments (they align
+    // block children, HTML Rendering §15.3.3 for `<center>` / `align`): it resets to
+    // `start`, so its cells are not centered by an enclosing `<center>` (Blink
+    // StyleAdjuster::AdjustStyleForHTMLElement, "Tables never support the -webkit-*
+    // values for text-align").
+    switch (result.text_align) {
+        .@"-webkit-left", .@"-webkit-center", .@"-webkit-right" => if (sc.env.nodeTagEql(node, "table")) {
+            result.text_align = .start;
+        },
+        else => {},
+    }
     // CSS 2.1 §10.8.1: a percentage (and an em length) is relative to the
     // element's own font size; the computed value is the length.
     switch (specified.line_height) {
