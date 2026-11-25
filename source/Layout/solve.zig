@@ -47,7 +47,7 @@ pub fn positivePercentage(value: types.Percentage, unit: Unit) Unit {
 /// null (indefinite).
 pub fn calc(env: *const zss.Environment, value: types.Calc, base: ?Unit) ?Unit {
     const base_px: ?f32 = if (base) |b| @as(f32, @floatFromInt(b)) / units_per_pixel else null;
-    const px = env.calc.eval(value.id, value.font_size, base_px) orelse return null;
+    const px = env.calc.eval(value.id, value.font_size, value.root_font_size, base_px) orelse return null;
     // Blink: `LayoutUnit(float)` of the calculated value — truncated.
     return zss.math.unitsFromFloat(zss.values.calc.clampPx(px) * units_per_pixel);
 }
@@ -303,7 +303,11 @@ pub fn borderRadii(border_radii: SpecifiedValues(.border_radii)) BoxTree.BorderR
 }
 
 fn resolveRadiusValue(radius: types.BorderRadius) Unit {
-    return positiveLength(.px, radius.px);
+    return switch (radius) {
+        .px => |px| positiveLength(.px, px),
+        // Computed values: StyleComputer.computedBorderRadii.
+        .em, .rem => unreachable,
+    };
 }
 
 pub fn borderStyles(border_styles: SpecifiedValues(.border_styles)) void {

@@ -845,8 +845,9 @@ fn mathLength(allocator: Allocator, text: []const u8, device: Device) ?f32 {
         .viewport_height_px = device.height_px,
     }) catch return null) orelse return null;
     return switch (value) {
-        .linear => |linear| linear.eval(16, null),
-        .node => |id| table.eval(id, 16, null),
+        // Media Queries 5 §2.4.3: relative units are based on the initial font size.
+        .linear => |linear| linear.eval(16, 16, null),
+        .node => |id| table.eval(id, 16, 16, null),
     };
 }
 

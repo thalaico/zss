@@ -493,12 +493,16 @@ fn mathFunction(ctx: *Context, comptime Type: type, index: Ast.Index, percentage
     }) catch return null) orelse return null;
     switch (value) {
         .linear => |l| {
-            if (l.em == 0 and l.percentage == 0) return .{ .px = zss.values.calc.clampPx(l.px) };
-            if (l.px == 0 and l.percentage == 0) {
+            if (l.em == 0 and l.rem == 0 and l.percentage == 0) return .{ .px = zss.values.calc.clampPx(l.px) };
+            if (l.px == 0 and l.rem == 0 and l.percentage == 0) {
                 if (@hasField(Type, "em")) return .{ .em = l.em };
                 return .{ .px = l.em * ctx.font_size_px };
             }
-            if (@hasField(Type, "percentage") and l.px == 0 and l.em == 0) return .{ .percentage = percentageOf(@FieldType(Type, "percentage"), l.percentage) };
+            if (l.px == 0 and l.em == 0 and l.percentage == 0) {
+                if (@hasField(Type, "rem")) return .{ .rem = l.rem };
+                return .{ .px = l.rem * 16.0 };
+            }
+            if (@hasField(Type, "percentage") and l.px == 0 and l.em == 0 and l.rem == 0) return .{ .percentage = percentageOf(@FieldType(Type, "percentage"), l.percentage) };
         },
         .node => {},
     }
@@ -507,7 +511,7 @@ fn mathFunction(ctx: *Context, comptime Type: type, index: Ast.Index, percentage
         .node => |id| id,
         .linear => |l| env.calc.addLinear(env.allocator, l) catch return null,
     };
-    return .{ .calc = .{ .id = id, .font_size = 0 } };
+    return .{ .calc = .{ .id = id, .font_size = 0, .root_font_size = 0 } };
 }
 
 // Spec: CSS 2.2
@@ -1001,8 +1005,12 @@ pub fn flexBasis(ctx: *Context) ?types.FlexBasis {
         return .auto;
     }
     // Try <length>
-    if (parseLengthPx(ctx)) |px| {
-        return .{ .px = px };
+    if (parseLength(ctx)) |l| {
+        return switch (l) {
+            .px => |v| .{ .px = v },
+            .em => |v| .{ .em = v },
+            .rem => |v| .{ .rem = v },
+        };
     }
     // Try <percentage>
     const item = ctx.next() orelse return null;
@@ -1453,17 +1461,17 @@ pub fn cursor(ctx: *Context) ?types.Cursor {
 
 /// Parse border-spacing: <length>. Returns layout units (4 units = 1px).
 pub fn borderSpacing(ctx: *Context) ?types.BorderSpacing {
-    const h = parseLengthToUnits(ctx) orelse return null;
-    if (h < 0) return null;
+    const h = parseLength(ctx) orelse return null;
+    if (h.number() < 0) return null;
     if (ctx.empty()) return .{ .h = h, .v = h };
-    const v = parseLengthToUnits(ctx) orelse return null;
-    if (v < 0) return null;
+    const v = parseLength(ctx) orelse return null;
+    if (v.number() < 0) return null;
     return .{ .h = h, .v = v };
 }
 
 /// Parse gap: <length>. Returns layout units (4 units = 1px).
-pub fn gap(ctx: *Context) ?zss.math.Unit {
-    return parseLengthToUnits(ctx);
+pub fn gap(ctx: *Context) ?types.Length {
+    return parseLength(ctx);
 }
 
 /// Parse line-height: <length> | <number> | normal.
@@ -1542,9 +1550,22 @@ fn pxToUnits(px: f32) @import("../zss.zig").math.Unit {
     return zss.math.unitsFromFloat(zss.values.calc.clampPx(px) * units_per_pixel);
 }
 
-/// A <length> in CSS px (font-relative units against the initial font
-/// size), or a unitless 0.
+/// A <length> in absolute units, in CSS px, or a unitless 0 (a font-relative length is
+/// not one: `parseLength`).
 fn parseLengthPx(ctx: *Context) ?f32 {
+    const save = ctx.savePoint();
+    const length_value = parseLength(ctx) orelse return null;
+    return switch (length_value) {
+        .px => |px| px,
+        .em, .rem => {
+            ctx.resetPoint(save);
+            return null;
+        },
+    };
+}
+
+/// A <length>, font-relative units kept (CSS Values 4 §6.1), or a unitless 0.
+fn parseLength(ctx: *Context) ?types.Length {
     const item = ctx.next() orelse return null;
     switch (item.tag) {
         .token_dimension => {
@@ -1557,16 +1578,15 @@ fn parseLengthPx(ctx: *Context) ?f32 {
                 break :blk @floatFromInt(int_val);
             };
             const unit = unit_index.extra(ctx.ast).unit orelse return null;
-            const px: f32 = switch (unit) {
-                .em => number * ctx.font_size_px,
-                .rem => number * 16.0,
-                else => absLength(ctx, unit, number),
+            return switch (unit) {
+                .em => .{ .em = number },
+                .rem => .{ .rem = number },
+                else => .{ .px = absLength(ctx, unit, number) },
             };
-            return px;
         },
         .token_integer => {
             const int_val = item.index.extra(ctx.ast).integer orelse return null;
-            if (int_val == 0) return 0.0;
+            if (int_val == 0) return .{ .px = 0 };
             return null;
         },
         else => {
@@ -1743,7 +1763,7 @@ pub fn borderRadius(ctx: *Context) ?types.BorderRadius {
     const item = ctx.next() orelse return null;
     if (item.tag == .token_dimension) {
         if (genericLength(ctx, types.BorderRadius, item.index)) |result| {
-            if (result.px < 0) return null;
+            if (result.number() < 0) return null;
             return result;
         }
     }
@@ -1985,7 +2005,8 @@ test "value parsers" {
     try ns.expectValue(background.size, "cover", .cover);
     try ns.expectValue(background.size, "auto", .{ .size = .{ .width = .auto, .height = .auto } });
     try ns.expectValue(background.size, "auto auto", .{ .size = .{ .width = .auto, .height = .auto } });
-    try ns.expectValue(background.size, "5px", .{ .size = .{ .width = .{ .px = 5 }, .height = .{ .px = 5 } } });
+    // CSS Backgrounds 3 §3.9: one value is the width; the height is `auto`.
+    try ns.expectValue(background.size, "5px", .{ .size = .{ .width = .{ .px = 5 }, .height = .auto } });
     try ns.expectValue(background.size, "5px 5%", .{ .size = .{ .width = .{ .px = 5 }, .height = .{ .percentage = .{ .number = 5 } } } });
 
     try ns.expectValue(color, "currentColor", .current_color);
@@ -2096,8 +2117,10 @@ fn gridTrackSize(ctx: *Context) ?types.GridTrackSize {
             return types.GridTrackSize{
                 .kind = .minmax,
                 .value = min_val.value,
+                .value_unit = min_val.value_unit,
                 .max_kind = max_val.kind,
                 .max_value = max_val.value,
+                .max_value_unit = max_val.value_unit,
             };
         }
         ctx.resetPoint(save);
@@ -2138,8 +2161,8 @@ fn parseFrOrLength(ctx: *Context) ?types.GridTrackSize {
             return null;
         };
         const px: f32 = switch (unit) {
-            .em => number * ctx.font_size_px,
-            .rem => number * 16.0,
+            .em => return types.GridTrackSize.initFontRelative(.em, number),
+            .rem => return types.GridTrackSize.initFontRelative(.rem, number),
             else => absLength(ctx, unit, number),
         };
         return types.GridTrackSize.initFixed(pxToUnits(px));

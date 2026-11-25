@@ -276,7 +276,7 @@ pub fn stageCosmeticValues(sc: *StyleComputer, comptime stage: Stage) void {
     }
     if (cur.color == null) cur.color = sc.getSpecifiedValue(stage, .color);
     if (cur.border_colors == null) cur.border_colors = sc.getSpecifiedValue(stage, .border_colors);
-    if (cur.border_radii == null) cur.border_radii = sc.getSpecifiedValue(stage, .border_radii);
+    if (cur.border_radii == null) cur.border_radii = sc.computedBorderRadii(stage);
     if (cur.background_color == null) cur.background_color = sc.getSpecifiedValue(stage, .background_color);
     if (cur.background_clip == null) cur.background_clip = sc.getSpecifiedValue(stage, .background_clip);
     if (cur.background == null) cur.background = sc.getSpecifiedValue(stage, .background);
@@ -396,6 +396,15 @@ pub fn resolvedFontSizePx(sc: *const StyleComputer, comptime stage: Stage) f32 {
 
 /// The current element's computed `font` group: its specified value with
 /// the font size computed (`computeFont`).
+/// The current element's border radii with `em` / `rem` resolved (CSS Values 4 §6.1).
+pub fn computedBorderRadii(sc: *const StyleComputer, comptime stage: Stage) ComputedValues(.border_radii) {
+    var v = sc.getSpecifiedValue(stage, .border_radii);
+    const font_px = sc.resolvedFontSizePx(stage);
+    const root_px = sc.resolvedRootFontSizePx(stage);
+    inline for (.{ "top_left", "top_right", "bottom_right", "bottom_left" }) |name| @field(v, name) = @field(v, name).resolveEm(font_px, root_px);
+    return v;
+}
+
 pub fn computedFont(sc: *const StyleComputer, comptime stage: Stage) ComputedValues(.font) {
     return computeFont(stage, sc.getSpecifiedValue(stage, .font), sc, sc.current.node);
 }
@@ -623,6 +632,14 @@ fn computeFont(comptime stage: Stage, specified: SpecifiedValues(.font), sc: *co
     }
     // CSS 2.1 §10.8.1: a percentage (and an em length) is relative to the
     // element's own font size; the computed value is the length.
+    // CSS 2.1 §17.6.1: border-spacing computes to two absolute lengths.
+    {
+        const root_px = rootFontSizePx(stage, sc, node);
+        result.border_spacing = .{
+            .h = .{ .px = specified.border_spacing.h.resolvePx(size, root_px) },
+            .v = .{ .px = specified.border_spacing.v.resolvePx(size, root_px) },
+        };
+    }
     switch (specified.line_height) {
         .em => |m| result.line_height = .{ .length = m * size },
         .rem => |m| result.line_height = .{ .length = m * rootFontSizePx(stage, sc, node) },
@@ -667,8 +684,8 @@ fn resolveEmLengths(comptime group: groups.Tag, specified: SpecifiedValues(group
     const fields = comptime switch (group) {
         .content_width => .{ "width", "min_width", "max_width" },
         .content_height => .{ "height", "min_height", "max_height" },
-        .horizontal_edges => .{ "padding_left", "padding_right", "margin_left", "margin_right" },
-        .vertical_edges => .{ "padding_top", "padding_bottom", "margin_top", "margin_bottom" },
+        .horizontal_edges => .{ "padding_left", "padding_right", "border_left", "border_right", "margin_left", "margin_right" },
+        .vertical_edges => .{ "padding_top", "padding_bottom", "border_top", "border_bottom", "margin_top", "margin_bottom" },
         .insets => .{ "left", "right", "top", "bottom" },
         else => @compileError("no em lengths in " ++ @tagName(group)),
     };
@@ -699,6 +716,13 @@ fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specif
         .font => return computeFont(stage, specified, sc, node),
         .content_width, .content_height, .horizontal_edges, .vertical_edges, .insets => {
             return resolveEmLengths(group, specified, sc.resolvedFontSizePxForNode(stage, node), rootFontSizePx(stage, sc, node));
+        },
+        .border_radii => {
+            var v = specified;
+            const font_px = sc.resolvedFontSizePxForNode(stage, node);
+            const root_px = rootFontSizePx(stage, sc, node);
+            inline for (.{ "top_left", "top_right", "bottom_right", "bottom_left" }) |name| @field(v, name) = @field(v, name).resolveEm(font_px, root_px);
+            return v;
         },
         else => return specified,
     }

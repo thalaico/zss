@@ -534,6 +534,9 @@ pub const InlineFormattingContext = struct {
         /// Glyph index range [start, end) in the IFC glyph list.
         glyph_start: u32,
         glyph_end: u32,
+        /// The family the run's glyphs were shaped with: each run is drawn with its own
+        /// (an inline formatting context mixes families: `<code>` in a paragraph).
+        font_family: values.types.FontFamily,
         font_weight: values.types.FontWeight,
         font_style: values.types.FontStyle,
         text_transform: values.types.TextTransform,

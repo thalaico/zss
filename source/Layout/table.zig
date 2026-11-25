@@ -191,7 +191,7 @@ pub fn dispatch(box_gen: *BoxGen, node: NodeId, box_style: BoxStyle) !bool {
 
     const allocator = layout.allocator;
     // Values that must be read while the element is the current node.
-    const font = layout.computer.getSpecifiedValue(.box_gen, .font);
+    const font = layout.computer.computedFont(.box_gen);
     const vertical_align = layout.computer.getSpecifiedValue(.box_gen, .box_style).vertical_align;
     const content_width = layout.computer.getSpecifiedValue(.box_gen, .content_width);
 
@@ -210,8 +210,8 @@ pub fn dispatch(box_gen: *BoxGen, node: NodeId, box_style: BoxStyle) !bool {
                 .block = block_index,
                 .subtree_id = box_gen.currentSubtree(),
                 // §17.6.2: no spacing between cells in the collapsing model.
-                .spacing_h = if (font.border_collapse == .collapse) 0 else font.border_spacing.h,
-                .spacing_v = if (font.border_collapse == .collapse) 0 else font.border_spacing.v,
+                .spacing_h = if (font.border_collapse == .collapse) 0 else font.border_spacing.units()[0],
+                .spacing_v = if (font.border_collapse == .collapse) 0 else font.border_spacing.units()[1],
                 .specified_width = content_width.width != .auto,
                 .node = node,
                 .collapse = font.border_collapse == .collapse,

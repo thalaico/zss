@@ -12,7 +12,8 @@
 //! used-value time against the percentage base.
 //!
 //! Absolute and viewport units fold to px at parse time, like other zss
-//! lengths; `rem` against the initial font size (16px), as elsewhere in zss.
+//! lengths; `em` and `rem` stay terms of their own until computed-value time
+//! (CSS Values 4 §6.1: the element's and the root element's font size).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -52,15 +53,16 @@ pub fn clampPx(px: f32) f32 {
     return std.math.clamp(px, -max_px, max_px);
 }
 
-/// px + em × (font size) + percentage / 100 × (percentage base); `percentage` is
-/// the number as written (6 for `6%`).
+/// px + em × (font size) + rem × (root font size) + percentage / 100 × (percentage
+/// base); `percentage` is the number as written (6 for `6%`).
 pub const Linear = struct {
     px: f32 = 0,
     em: f32 = 0,
+    rem: f32 = 0,
     percentage: f32 = 0,
 
     fn add(a: Linear, b: Linear) Linear {
-        return .{ .px = a.px + b.px, .em = a.em + b.em, .percentage = a.percentage + b.percentage };
+        return .{ .px = a.px + b.px, .em = a.em + b.em, .rem = a.rem + b.rem, .percentage = a.percentage + b.percentage };
     }
 
     fn scale(a: Linear, factor: f32) Linear {
@@ -70,32 +72,42 @@ pub const Linear = struct {
                 return if (v == 0) 0 else v * k;
             }
         }.mul;
-        return .{ .px = f(a.px, factor), .em = f(a.em, factor), .percentage = f(a.percentage, factor) };
+        return .{ .px = f(a.px, factor), .em = f(a.em, factor), .rem = f(a.rem, factor), .percentage = f(a.percentage, factor) };
     }
 
     /// The single unit this value is expressed in, if it has exactly one
     /// (zero counts as px).
-    const SoleUnit = enum { px, em, percentage };
+    const SoleUnit = enum { px, em, rem, percentage };
 
     fn soleUnit(a: Linear) ?SoleUnit {
-        const n = @as(u2, @intFromBool(a.px != 0)) + @intFromBool(a.em != 0) + @intFromBool(a.percentage != 0);
+        const n = @as(u3, @intFromBool(a.px != 0)) + @intFromBool(a.em != 0) + @intFromBool(a.rem != 0) + @intFromBool(a.percentage != 0);
         if (n == 0) return .px;
         if (n > 1) return null;
-        return if (a.px != 0) .px else if (a.em != 0) .em else .percentage;
+        return if (a.px != 0) .px else if (a.em != 0) .em else if (a.rem != 0) .rem else .percentage;
     }
 
     fn component(a: Linear, unit: SoleUnit) f32 {
         return switch (unit) {
             .px => a.px,
             .em => a.em,
+            .rem => a.rem,
             .percentage => a.percentage,
         };
     }
 
-    pub fn eval(a: Linear, font_size: f32, base: ?f32) ?f32 {
+    pub fn isZero(a: Linear) bool {
+        return a.px == 0 and a.em == 0 and a.rem == 0 and a.percentage == 0;
+    }
+
+    /// The px part with the font-relative terms resolved.
+    pub fn lengthPx(a: Linear, font_size: f32, root_font_size: f32) f32 {
+        return a.px + a.em * font_size + a.rem * root_font_size;
+    }
+
+    pub fn eval(a: Linear, font_size: f32, root_font_size: f32, base: ?f32) ?f32 {
         if (a.percentage != 0 and base == null) return null;
         // Blink (`CalculationValue::Evaluate`, pixels and percent): percent / 100 × base.
-        return a.px + a.em * font_size + a.percentage / 100 * (base orelse 0);
+        return a.lengthPx(font_size, root_font_size) + a.percentage / 100 * (base orelse 0);
     }
 };
 
@@ -138,27 +150,27 @@ pub const Table = struct {
     /// The value in px for an element with font size `font_size`, with
     /// percentages of `base` (px). Null if the value has a percentage and
     /// `base` is null (an indefinite percentage base).
-    pub fn eval(table: *const Table, id: Id, font_size: f32, base: ?f32) ?f32 {
+    pub fn eval(table: *const Table, id: Id, font_size: f32, root_font_size: f32, base: ?f32) ?f32 {
         switch (table.nodes.items[@intFromEnum(id)]) {
-            .linear => |l| return l.eval(font_size, base),
+            .linear => |l| return l.eval(font_size, root_font_size, base),
             .sum => |r| {
                 var total: f32 = 0;
-                for (table.range(r)) |child| total += table.eval(child, font_size, base) orelse return null;
+                for (table.range(r)) |child| total += table.eval(child, font_size, root_font_size, base) orelse return null;
                 return total;
             },
-            .scale => |s| return (table.eval(s.child, font_size, base) orelse return null) * s.factor,
+            .scale => |s| return (table.eval(s.child, font_size, root_font_size, base) orelse return null) * s.factor,
             inline .min, .max => |r, tag| {
                 var result: ?f32 = null;
                 for (table.range(r)) |child| {
-                    const v = table.eval(child, font_size, base) orelse return null;
+                    const v = table.eval(child, font_size, root_font_size, base) orelse return null;
                     result = if (result) |acc| (if (tag == .min) @min(acc, v) else @max(acc, v)) else v;
                 }
                 return result.?;
             },
             .clamp => |c| {
-                const lo = table.eval(c[0], font_size, base) orelse return null;
-                const val = table.eval(c[1], font_size, base) orelse return null;
-                const hi = table.eval(c[2], font_size, base) orelse return null;
+                const lo = table.eval(c[0], font_size, root_font_size, base) orelse return null;
+                const val = table.eval(c[1], font_size, root_font_size, base) orelse return null;
+                const hi = table.eval(c[2], font_size, root_font_size, base) orelse return null;
                 // §10.4: max(MIN, min(VAL, MAX)) — MIN wins over MAX.
                 return @max(lo, @min(val, hi));
             },
@@ -184,12 +196,13 @@ pub const Table = struct {
 };
 
 /// CSSOM serialization of a computed math-function value (`em` terms
-/// resolved against `font_size`), as Chrome writes it: `calc(50% - 10px)`,
+/// and `rem` terms resolved against `font_size` / `root_font_size`), as Chrome writes it: `calc(50% - 10px)`,
 /// `min(50%, 300px)`; percentages before lengths.
 pub const Formatter = struct {
     table: *const Table,
     id: Id,
     font_size: f32,
+    root_font_size: f32,
 
     pub fn format(f: Formatter, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try f.root(writer, f.id);
@@ -245,12 +258,12 @@ pub const Formatter = struct {
     }
 
     fn termCount(f: Formatter, l: Linear) usize {
-        const px = l.px + l.em * f.font_size;
+        const px = l.lengthPx(f.font_size, f.root_font_size);
         return @as(usize, @intFromBool(l.percentage != 0)) + @intFromBool(px != 0);
     }
 
     fn linear(f: Formatter, w: *std.Io.Writer, l: Linear) std.Io.Writer.Error!void {
-        const px = l.px + l.em * f.font_size;
+        const px = l.lengthPx(f.font_size, f.root_font_size);
         if (l.percentage != 0) {
             try w.print("{d}%", .{rounded(l.percentage)});
             if (px != 0) try w.print(" {s} {d}px", .{ if (px < 0) "-" else "+", rounded(@abs(px)) });
@@ -401,7 +414,7 @@ const Parser = struct {
                 const unit = unit_index.extra(p.ast).unit orelse return error.Invalid;
                 const linear: Linear = switch (unit) {
                     .em => .{ .em = number },
-                    .rem => .{ .px = number * 16.0 },
+                    .rem => .{ .rem = number },
                     else => .{ .px = absoluteLengthPx(unit, number, p.options.viewport_width_px, p.options.viewport_height_px).? },
                 };
                 return .{ .length = .{ .linear = linear } };
@@ -473,7 +486,7 @@ const Parser = struct {
             for (args) |arg| {
                 if (arg.length != .linear) break :fold;
                 const u = arg.length.linear.soleUnit() orelse break :fold;
-                const zero = arg.length.linear.px == 0 and arg.length.linear.em == 0 and arg.length.linear.percentage == 0;
+                const zero = arg.length.linear.isZero();
                 if (zero) continue;
                 if (unit == null) unit = u else if (unit.? != u) break :fold;
             }
@@ -487,6 +500,7 @@ const Parser = struct {
             switch (u) {
                 .px => folded.px = result,
                 .em => folded.em = result,
+                .rem => folded.rem = result,
                 .percentage => folded.percentage = result,
             }
             return .{ .length = .{ .linear = folded } };

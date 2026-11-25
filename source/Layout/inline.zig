@@ -320,6 +320,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                     // Extend the last run if same weight and font size, otherwise start a new one.
                     const runs = &ifc.ptr.font_runs;
                     if (runs.items.len > 0 and
+                        std.meta.eql(runs.items[runs.items.len - 1].font_family, font.font_family) and
                         runs.items[runs.items.len - 1].font_weight == font.font_weight and
                         runs.items[runs.items.len - 1].font_style == font.font_style and
                         runs.items[runs.items.len - 1].text_transform == font.text_transform and
@@ -332,6 +333,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                         try runs.append(layout.allocator, .{
                             .glyph_start = glyph_start,
                             .glyph_end = glyph_end,
+                            .font_family = font.font_family,
                             .font_weight = font.font_weight,
                             .font_style = font.font_style,
                             .text_transform = font.text_transform,
@@ -378,7 +380,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
 
                 layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
                 layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
-                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.computedBorderRadii(.box_gen));
                 layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
                 layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
                 layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
@@ -409,7 +411,7 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 layout.computer.setComputedValue(.box_gen, .font, ib_font);
                 layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
                 layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
-                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+                layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.computedBorderRadii(.box_gen));
                 layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
                 layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
                 layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));
@@ -620,7 +622,7 @@ pub fn outOfFlowElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.Box
     computer.setComputedValue(.box_gen, .font, computer.computedFont(.box_gen));
     computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
     computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .border_radii, computer.computedBorderRadii(.box_gen));
     computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
     computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
     computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
@@ -718,6 +720,7 @@ fn setInlineBoxMetrics(layout: *Layout, ifc: *Ifc, index: Ifc.Size, font: anytyp
             .middle => -@divFloor(slice.items(.x_height)[p], 2) -| @divFloor(below -| above, 2),
             .px => |v| (0 -| zss.math.unitsFromFloat(v * upp)),
             .em => |v| (0 -| zss.math.unitsFromFloat(v * size * upp)),
+            .rem => |v| (0 -| zss.math.unitsFromFloat(v * layout.computer.resolvedRootFontSizePx(.box_gen) * upp)),
             .percentage => |v| (0 -| solve.percentage(v, line_height)),
         };
         shift = p_shift +| relative;
@@ -1169,6 +1172,8 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
                 computed.horizontal_edges.border_left = .{ .px = width };
                 used.border_inline_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.horizontal_edges.border_left = .{ .px = width };
@@ -1220,6 +1225,8 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
                 computed.horizontal_edges.border_right = .{ .px = width };
                 used.border_inline_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.horizontal_edges.border_right = .{ .px = width };
@@ -1252,6 +1259,8 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
                 computed.vertical_edges.border_top = .{ .px = width };
                 used.border_block_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.vertical_edges.border_top = .{ .px = width };
@@ -1283,6 +1292,8 @@ fn setDataInlineBox(computer: *StyleComputer, ifc: Ifc.Slice, inline_box_index: 
                 computed.vertical_edges.border_bottom = .{ .px = width };
                 used.border_block_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.vertical_edges.border_bottom = .{ .px = width };
@@ -1387,6 +1398,8 @@ fn inlineBlockSolveSizes(
                 computed.horizontal_edges.border_left = .{ .px = width };
                 used.border_inline_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.horizontal_edges.border_left = .{ .px = width };
@@ -1402,6 +1415,8 @@ fn inlineBlockSolveSizes(
                 computed.horizontal_edges.border_right = .{ .px = width };
                 used.border_inline_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.horizontal_edges.border_right = .{ .px = width };
@@ -1547,6 +1562,8 @@ fn inlineBlockSolveSizes(
                 computed.vertical_edges.border_top = .{ .px = width };
                 used.border_block_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.vertical_edges.border_top = .{ .px = width };
@@ -1562,6 +1579,8 @@ fn inlineBlockSolveSizes(
                 computed.vertical_edges.border_bottom = .{ .px = width };
                 used.border_block_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.vertical_edges.border_bottom = .{ .px = width };
@@ -1815,8 +1834,9 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
             if (run_idx < runs.len and i >= runs[run_idx].glyph_start and current_run != run_idx) {
                 current_run = run_idx;
                 const run = runs[run_idx];
-                font = fonts.getVariant(ifc.font, run.font_weight, run.font_style) orelse font;
-                fonts.setFontSizeVariant(ifc.font, run.font_weight, run.font_style, run.font_size);
+                const handle = fonts.queryFamily(run.font_family);
+                font = fonts.getVariant(handle, run.font_weight, run.font_style) orelse font;
+                fonts.setFontSizeVariant(handle, run.font_weight, run.font_style, run.font_size);
             }
             // Advance already stored from hb_shape; fill extents only.
             setMetricsGlyphExtents(metrics, font, glyph_index);
@@ -1997,6 +2017,7 @@ fn inlineBlockPlacement(layout: *Layout, subtree: Subtree.View, ifc: *Ifc, index
         .middle => @divFloor(height, 2) +| @divFloor(boxes.items(.x_height)[parent], 2),
         .px => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * upp)),
         .em => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * p_em)),
+        .rem => |v| baseline_ascent +| @as(Unit, zss.math.unitsFromFloat(v * layout.computer.resolvedRootFontSizePx(.box_gen) * upp)),
         // Percentages refer to the element's own line-height; an
         // inline-block's is its parent's here (it inherits).
         .percentage => |v| baseline_ascent +| solve.percentage(v, boxes.items(.above)[parent] +| boxes.items(.below)[parent]),
@@ -2669,8 +2690,8 @@ fn resolveHorizontalEdgesEm(edges: ComputedValues(.horizontal_edges), fs: f32, r
         .margin_right = edges.margin_right.resolveEm(fs, rfs),
         .padding_left = edges.padding_left.resolveEm(fs, rfs),
         .padding_right = edges.padding_right.resolveEm(fs, rfs),
-        .border_left = edges.border_left,
-        .border_right = edges.border_right,
+        .border_left = edges.border_left.resolveEm(fs, rfs),
+        .border_right = edges.border_right.resolveEm(fs, rfs),
     };
 }
 
@@ -2681,7 +2702,7 @@ fn resolveVerticalEdgesEm(edges: ComputedValues(.vertical_edges), fs: f32, rfs: 
         .margin_bottom = edges.margin_bottom.resolveEm(fs, rfs),
         .padding_top = edges.padding_top.resolveEm(fs, rfs),
         .padding_bottom = edges.padding_bottom.resolveEm(fs, rfs),
-        .border_top = edges.border_top,
-        .border_bottom = edges.border_bottom,
+        .border_top = edges.border_top.resolveEm(fs, rfs),
+        .border_bottom = edges.border_bottom.resolveEm(fs, rfs),
     };
 }

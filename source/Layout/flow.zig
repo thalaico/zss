@@ -74,7 +74,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
 
             computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
             computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-            computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+            computer.setComputedValue(.box_gen, .border_radii, computer.computedBorderRadii(.box_gen));
             computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
             computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
             computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));
@@ -109,11 +109,13 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerB
                             // Wikipedia's .mw-header (width:100%) to shrink to its
                             // intrinsic content width inside .vector-header-container.
                             .percentage => |pct| solve.percentage(pct, containing_block_size.width),
-                            .calc => |c| solve.positiveCalc(computer.env, .{ .id = c.id, .font_size = computer.resolvedFontSizePx(.box_gen) }, containing_block_size.width) orelse -1,
+                            .calc => |c| solve.positiveCalc(computer.env, .{ .id = c.id, .font_size = computer.resolvedFontSizePx(.box_gen), .root_font_size = computer.resolvedRootFontSizePx(.box_gen) }, containing_block_size.width) orelse -1,
                             .auto => @as(i32, -1),
                         };
                     },
                     .px => |v| solve.length(.px, v),
+                    .em => |v| solve.length(.px, v * computer.resolvedFontSizePx(.box_gen)),
+                    .rem => |v| solve.length(.px, v * computer.resolvedRootFontSizePx(.box_gen)),
                     .percentage => |pct| solve.percentage(pct, containing_block_size.width),
                 };
                 info.grid_area_hash = box_style_specified.grid_area;
@@ -162,7 +164,7 @@ pub fn setupContainer(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, box_st
             .stretch => .stretch,
             else => .stretch,
         };
-        info.flex_gap = box_style_specified.column_gap;
+        info.flex_gap = solve.length(.px, box_style_specified.column_gap.resolvePx(computer.resolvedFontSizePx(.box_gen), computer.resolvedRootFontSizePx(.box_gen)));
         info.flex_wrap = box_style_specified.flex_wrap;
     }
     if (inner_block == .grid) {
@@ -174,12 +176,14 @@ pub fn setupContainer(box_gen: *BoxGen, inner_block: BoxStyle.InnerBlock, box_st
             .flex_end => .flex_end,
             else => .stretch,
         };
-        info.grid_column_gap = box_style_specified.column_gap;
-        info.grid_row_gap = box_style_specified.row_gap;
+        info.grid_column_gap = solve.length(.px, box_style_specified.column_gap.resolvePx(computer.resolvedFontSizePx(.box_gen), computer.resolvedRootFontSizePx(.box_gen)));
+        info.grid_row_gap = solve.length(.px, box_style_specified.row_gap.resolvePx(computer.resolvedFontSizePx(.box_gen), computer.resolvedRootFontSizePx(.box_gen)));
         // Read grid template properties from cascade
         const grid_tmpl = computer.getSpecifiedValue(.box_gen, .grid_template);
-        info.grid_columns = grid_tmpl.columns;
-        info.grid_rows = grid_tmpl.rows;
+        const fs = computer.resolvedFontSizePx(.box_gen);
+        const rfs = computer.resolvedRootFontSizePx(.box_gen);
+        info.grid_columns = grid_tmpl.columns.resolveFontRelative(fs, rfs);
+        info.grid_rows = grid_tmpl.rows.resolveFontRelative(fs, rfs);
         info.grid_areas = grid_tmpl.areas;
     }
 }
@@ -255,8 +259,8 @@ pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32, rfs: f32) BlockCompute
             .margin_right = sizes.horizontal_edges.margin_right.resolveEm(fs, rfs),
             .padding_left = sizes.horizontal_edges.padding_left.resolveEm(fs, rfs),
             .padding_right = sizes.horizontal_edges.padding_right.resolveEm(fs, rfs),
-            .border_left = sizes.horizontal_edges.border_left,
-            .border_right = sizes.horizontal_edges.border_right,
+            .border_left = sizes.horizontal_edges.border_left.resolveEm(fs, rfs),
+            .border_right = sizes.horizontal_edges.border_right.resolveEm(fs, rfs),
         },
         .content_height = .{
             .height = sizes.content_height.height.resolveEm(fs, rfs),
@@ -268,8 +272,8 @@ pub fn resolveBlockEm(sizes: BlockComputedSizes, fs: f32, rfs: f32) BlockCompute
             .margin_bottom = sizes.vertical_edges.margin_bottom.resolveEm(fs, rfs),
             .padding_top = sizes.vertical_edges.padding_top.resolveEm(fs, rfs),
             .padding_bottom = sizes.vertical_edges.padding_bottom.resolveEm(fs, rfs),
-            .border_top = sizes.vertical_edges.border_top,
-            .border_bottom = sizes.vertical_edges.border_bottom,
+            .border_top = sizes.vertical_edges.border_top.resolveEm(fs, rfs),
+            .border_bottom = sizes.vertical_edges.border_bottom.resolveEm(fs, rfs),
         },
         .insets = .{
             .top = sizes.insets.top.resolveEm(fs, rfs),
@@ -646,6 +650,8 @@ fn solveHorizontalBorderPadding(
                 computed.border_left = .{ .px = width };
                 sizes.border_inline_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.border_left = .{ .px = width };
@@ -661,6 +667,8 @@ fn solveHorizontalBorderPadding(
                 computed.border_right = .{ .px = width };
                 sizes.border_inline_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.border_right = .{ .px = width };
@@ -804,6 +812,8 @@ fn solveVerticalEdges(
                 computed.border_top = .{ .px = width };
                 sizes.border_block_start = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.border_top = .{ .px = width };
@@ -819,6 +829,8 @@ fn solveVerticalEdges(
                 computed.border_bottom = .{ .px = width };
                 sizes.border_block_end = solve.positiveLength(.px, width);
             },
+            // Font-relative widths were resolved with the other edges.
+            .em, .rem => unreachable,
             inline .thin, .medium, .thick => |_, tag| {
                 const width = solve.borderWidth(tag) * multiplier;
                 computed.border_bottom = .{ .px = width };

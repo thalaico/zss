@@ -1429,7 +1429,7 @@ fn solveInsetsRelative(
     const left: ?math.Unit = switch (specified.left) {
         .px => |v| solve.length(.px, v),
         .percentage => |v| solve.percentage(v, containing_block_size.w),
-        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
+        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
         .rem => |v| solve.length(.px, v * root_font_size_px),
@@ -1437,7 +1437,7 @@ fn solveInsetsRelative(
     const right: ?math.Unit = switch (specified.right) {
         .px => |v| -solve.length(.px, v),
         .percentage => |v| -solve.percentage(v, containing_block_size.w),
-        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
+        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.w).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
         .rem => |v| -solve.length(.px, v * root_font_size_px),
@@ -1445,7 +1445,7 @@ fn solveInsetsRelative(
     const top: ?math.Unit = switch (specified.top) {
         .px => |v| solve.length(.px, v),
         .percentage => |v| solve.percentage(v, containing_block_size.h),
-        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
+        .calc => |v| solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| solve.length(.px, v * font_size_px),
         .rem => |v| solve.length(.px, v * root_font_size_px),
@@ -1453,7 +1453,7 @@ fn solveInsetsRelative(
     const bottom: ?math.Unit = switch (specified.bottom) {
         .px => |v| -solve.length(.px, v),
         .percentage => |v| -solve.percentage(v, containing_block_size.h),
-        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
+        .calc => |v| -solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.h).?,
         .auto => null,
         .em => |v| -solve.length(.px, v * font_size_px),
         .rem => |v| -solve.length(.px, v * root_font_size_px),
@@ -1477,7 +1477,7 @@ fn solveInsetsAbsolute(
     switch (specified.left) {
         .px => |v| left = solve.length(.px, v),
         .percentage => |v| left = solve.percentage(v, containing_block_size.w),
-        .calc => |v| left = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.w).?,
+        .calc => |v| left = solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.w).?,
         .auto => {},
         .em => |v| left = solve.length(.px, v * font_size_px),
         .rem => |v| left = solve.length(.px, v * root_font_size_px),
@@ -1485,7 +1485,7 @@ fn solveInsetsAbsolute(
     switch (specified.top) {
         .px => |v| top = solve.length(.px, v),
         .percentage => |v| top = solve.percentage(v, containing_block_size.h),
-        .calc => |v| top = solve.calc(env, .{ .id = v.id, .font_size = font_size_px }, containing_block_size.h).?,
+        .calc => |v| top = solve.calc(env, .{ .id = v.id, .font_size = font_size_px, .root_font_size = root_font_size_px }, containing_block_size.h).?,
         .auto => {},
         .em => |v| top = solve.length(.px, v * font_size_px),
         .rem => |v| top = solve.length(.px, v * root_font_size_px),

@@ -30,7 +30,7 @@ pub fn blockElement(box_gen: *BoxGen, node: NodeId, inner_block: BoxTree.BoxStyl
     layout.computer.setComputedValue(.box_gen, .font, font_specified);
     layout.computer.setComputedValue(.box_gen, .color, layout.computer.getSpecifiedValue(.box_gen, .color));
     layout.computer.setComputedValue(.box_gen, .border_colors, layout.computer.getSpecifiedValue(.box_gen, .border_colors));
-    layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.getSpecifiedValue(.box_gen, .border_radii));
+    layout.computer.setComputedValue(.box_gen, .border_radii, layout.computer.computedBorderRadii(.box_gen));
     layout.computer.setComputedValue(.box_gen, .background_color, layout.computer.getSpecifiedValue(.box_gen, .background_color));
     layout.computer.setComputedValue(.box_gen, .background_clip, layout.computer.getSpecifiedValue(.box_gen, .background_clip));
     layout.computer.setComputedValue(.box_gen, .background, layout.computer.getSpecifiedValue(.box_gen, .background));

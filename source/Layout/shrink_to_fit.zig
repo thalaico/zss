@@ -292,7 +292,7 @@ fn flowObject(box_gen: *BoxGen, node: NodeId, inner_block: BoxStyle.InnerBlock, 
     computer.setComputedValue(.box_gen, .font, font_specified);
     computer.setComputedValue(.box_gen, .color, computer.getSpecifiedValue(.box_gen, .color));
     computer.setComputedValue(.box_gen, .border_colors, computer.getSpecifiedValue(.box_gen, .border_colors));
-    computer.setComputedValue(.box_gen, .border_radii, computer.getSpecifiedValue(.box_gen, .border_radii));
+    computer.setComputedValue(.box_gen, .border_radii, computer.computedBorderRadii(.box_gen));
     computer.setComputedValue(.box_gen, .background_color, computer.getSpecifiedValue(.box_gen, .background_color));
     computer.setComputedValue(.box_gen, .background_clip, computer.getSpecifiedValue(.box_gen, .background_clip));
     computer.setComputedValue(.box_gen, .background, computer.getSpecifiedValue(.box_gen, .background));

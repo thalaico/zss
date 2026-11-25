@@ -785,6 +785,30 @@ pub fn @"border-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType
         else => unreachable,
     }
 }
+/// A corner's radius longhand (CSS Backgrounds 3 §5.1: <length-percentage>{1,2}). One
+/// radius per corner is supported: a second, different radius (an elliptical corner) is
+/// rejected.
+fn cornerRadius(ctx: *Context, declaration_index: Ast.Index) ?types.BorderRadius {
+    ctx.initDecl(declaration_index);
+    const h = values.parse.borderRadius(ctx) orelse return null;
+    if (ctx.empty()) return h;
+    const v = values.parse.borderRadius(ctx) orelse return null;
+    if (!ctx.empty() or !std.meta.eql(h, v)) return null;
+    return h;
+}
+pub fn @"border-top-left-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-top-left-radius") {
+    return .{ .border_radii = .{ .top_left = .{ .declared = cornerRadius(ctx, declaration_index) orelse return null } } };
+}
+pub fn @"border-top-right-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-top-right-radius") {
+    return .{ .border_radii = .{ .top_right = .{ .declared = cornerRadius(ctx, declaration_index) orelse return null } } };
+}
+pub fn @"border-bottom-right-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-bottom-right-radius") {
+    return .{ .border_radii = .{ .bottom_right = .{ .declared = cornerRadius(ctx, declaration_index) orelse return null } } };
+}
+pub fn @"border-bottom-left-radius"(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.@"border-bottom-left-radius") {
+    return .{ .border_radii = .{ .bottom_left = .{ .declared = cornerRadius(ctx, declaration_index) orelse return null } } };
+}
+
 pub fn color(ctx: *Context, declaration_index: Ast.Index) ?ReturnType(.color) {
     ctx.initDecl(declaration_index);
     const value = values.parse.color(ctx) orelse return null;

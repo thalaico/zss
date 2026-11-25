@@ -200,7 +200,34 @@ pub const FlexFactor = f32;
 pub const FlexBasis = union(enum) {
     auto,
     px: f32,
+    /// Font-relative lengths (CSS Values 4 §6.1): resolved against the element's font
+    /// sizes where layout reads them.
+    em: f32,
+    rem: f32,
     percentage: Percentage,
+};
+
+/// A <length> as specified: absolute units folded to px, font-relative ones kept until
+/// the element's font sizes are known (CSS Values 4 §6.1).
+pub const Length = union(enum) {
+    px: f32,
+    em: f32,
+    rem: f32,
+
+    pub fn resolvePx(self: Length, font_size_px: f32, root_font_size_px: f32) f32 {
+        return switch (self) {
+            .px => |v| v,
+            .em => |v| v * font_size_px,
+            .rem => |v| v * root_font_size_px,
+        };
+    }
+
+    /// The length as written, for sign checks.
+    pub fn number(self: Length) f32 {
+        return switch (self) {
+            inline else => |v| v,
+        };
+    }
 };
 
 pub const FlexWrap = enum {
@@ -249,6 +276,38 @@ pub const GridTrackSize = struct {
     max_kind: Kind = .auto,
     /// For .minmax only: the max value (same encoding as value).
     max_value: i32 = 0,
+    /// The unit of a length `value` / `max_value` as specified: `.em` / `.rem` hold the
+    /// number as written (f32 bits) until `resolveFontRelative` (CSS Values 4 §6.1).
+    value_unit: LengthUnit = .units,
+    max_value_unit: LengthUnit = .units,
+
+    pub const LengthUnit = enum(u2) { units, em, rem };
+
+    pub fn initFontRelative(unit: LengthUnit, number: f32) GridTrackSize {
+        return .{ .kind = .fixed, .value = @bitCast(number), .value_unit = unit };
+    }
+
+    /// The track size with font-relative lengths in layout units.
+    pub fn resolveFontRelative(self: GridTrackSize, font_size_px: f32, root_font_size_px: f32) GridTrackSize {
+        var out = self;
+        out.value = resolveValue(self.value, self.value_unit, font_size_px, root_font_size_px);
+        out.value_unit = .units;
+        out.max_value = resolveValue(self.max_value, self.max_value_unit, font_size_px, root_font_size_px);
+        out.max_value_unit = .units;
+        return out;
+    }
+
+    fn resolveValue(value: i32, unit: LengthUnit, font_size_px: f32, root_font_size_px: f32) i32 {
+        const zss_math = @import("../zss.zig").math;
+        const number: f32 = @bitCast(value);
+        const px = switch (unit) {
+            .units => return value,
+            .em => number * font_size_px,
+            .rem => number * root_font_size_px,
+        };
+        const upp: f32 = @floatFromInt(zss_math.units_per_pixel);
+        return zss_math.unitsFromFloat(@import("calc.zig").clampPx(px) * upp);
+    }
 
     pub const Kind = enum(u8) {
         auto,
@@ -291,6 +350,12 @@ pub const GridTrackSize = struct {
 pub const GridTrackList = struct {
     tracks: [MAX_GRID_TRACKS]GridTrackSize = [_]GridTrackSize{.{}} ** MAX_GRID_TRACKS,
     count: u8 = 0,
+
+    pub fn resolveFontRelative(self: GridTrackList, font_size_px: f32, root_font_size_px: f32) GridTrackList {
+        var out = self;
+        for (out.tracks[0..out.count]) |*t| t.* = t.resolveFontRelative(font_size_px, root_font_size_px);
+        return out;
+    }
 };
 
 /// A named grid area entry: maps a name hash to a rectangular region.
@@ -340,10 +405,12 @@ pub const Clear = enum {
 };
 
 /// A math-function value: a node of the Environment's calc table, and the
-/// element's font size for its `em` terms (0 until computed: `resolveEm`).
+/// element's and the root element's font sizes for its `em` and `rem` terms (0
+/// until computed: `resolveEm`).
 pub const Calc = struct {
     id: @import("calc.zig").Id,
     font_size: f32,
+    root_font_size: f32,
 };
 
 pub const LengthPercentageAuto = union(enum) {
@@ -362,7 +429,7 @@ pub const LengthPercentageAuto = union(enum) {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
             .rem => |v| .{ .px = v * root_font_size_px },
-            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px, .root_font_size = root_font_size_px } },
             else => self,
         };
     }
@@ -385,7 +452,7 @@ pub const LengthPercentage = union(enum) {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
             .rem => |v| .{ .px = v * root_font_size_px },
-            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px, .root_font_size = root_font_size_px } },
             else => self,
         };
     }
@@ -408,7 +475,7 @@ pub const MaxSize = union(enum) {
         return switch (self) {
             .em => |v| .{ .px = v * font_size_px },
             .rem => |v| .{ .px = v * root_font_size_px },
-            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px } },
+            .calc => |c| .{ .calc = .{ .id = c.id, .font_size = font_size_px, .root_font_size = root_font_size_px } },
             else => self,
         };
     }
@@ -416,13 +483,42 @@ pub const MaxSize = union(enum) {
 
 pub const BorderWidth = union(enum) {
     px: f32,
+    /// Font-relative lengths (CSS Values 4 §6.1), resolved to px for the computed value.
+    em: f32,
+    rem: f32,
     thin,
     medium,
     thick,
+
+    pub fn resolveEm(self: BorderWidth, font_size_px: f32, root_font_size_px: f32) BorderWidth {
+        return switch (self) {
+            .em => |v| .{ .px = v * font_size_px },
+            .rem => |v| .{ .px = v * root_font_size_px },
+            else => self,
+        };
+    }
 };
 
 pub const BorderRadius = union(enum) {
     px: f32,
+    /// Font-relative lengths (CSS Values 4 §6.1), resolved to px for the computed value.
+    em: f32,
+    rem: f32,
+
+    pub fn resolveEm(self: BorderRadius, font_size_px: f32, root_font_size_px: f32) BorderRadius {
+        return switch (self) {
+            .px => self,
+            .em => |v| .{ .px = v * font_size_px },
+            .rem => |v| .{ .px = v * root_font_size_px },
+        };
+    }
+
+    /// The length as written, for the sign check of the parser.
+    pub fn number(self: BorderRadius) f32 {
+        return switch (self) {
+            inline else => |v| v,
+        };
+    }
 };
 pub const BorderStyle = enum {
     none,
@@ -720,6 +816,8 @@ pub const VerticalAlign = union(enum) {
     /// <length>: raise by this many px (negative lowers).
     px: f32,
     em: f32,
+    /// A multiple of the root element's font size (CSS Values 4 §6.1.1).
+    rem: f32,
     /// <percentage> of the element's line-height (50 = 50%).
     percentage: Percentage,
 };
@@ -746,9 +844,19 @@ pub const BorderCollapse = enum { separate, collapse };
 
 /// CSS 2.1 §17.6.1 `border-spacing: <length> <length>?` — horizontal, then
 /// vertical (one value sets both). Layout units.
+/// Specified: lengths as written; computed (StyleComputer.computeFont): px.
 pub const BorderSpacing = struct {
-    h: @import("../zss.zig").math.Unit,
-    v: @import("../zss.zig").math.Unit,
+    h: Length,
+    v: Length,
+
+    /// The computed spacing in layout units (Blink LayoutUnit: truncated).
+    pub fn units(self: BorderSpacing) [2]@import("../zss.zig").math.Unit {
+        const upp: f32 = @floatFromInt(@import("../zss.zig").math.units_per_pixel);
+        return .{
+            @import("../zss.zig").math.unitsFromFloat(self.h.px * upp),
+            @import("../zss.zig").math.unitsFromFloat(self.v.px * upp),
+        };
+    }
 };
 
 /// line-height (CSS 2.1 §10.8.1, CSS Inline 3).
