@@ -39,30 +39,6 @@ const Subtree = BoxTree.Subtree;
 
 const hb = @import("harfbuzz").c;
 
-const TransformMode = enum { upper, lower, capitalize };
-
-fn transformCase(allocator: std.mem.Allocator, text: []const u8, mode: TransformMode) ![]const u8 {
-    const result = try allocator.dupe(u8, text);
-    switch (mode) {
-        .upper => {
-            for (result) |*ch| ch.* = std.ascii.toUpper(ch.*);
-        },
-        .lower => {
-            for (result) |*ch| ch.* = std.ascii.toLower(ch.*);
-        },
-        .capitalize => {
-            var prev_was_space = true;
-            for (result) |*ch| {
-                if (prev_was_space and std.ascii.isAlphabetic(ch.*)) {
-                    ch.* = std.ascii.toUpper(ch.*);
-                }
-                prev_was_space = std.ascii.isWhitespace(ch.*);
-            }
-        },
-    }
-    return result;
-}
-
 pub const Result = struct {
     min_width: Unit,
 };
@@ -190,6 +166,9 @@ pub const Context = struct {
         /// Set to true the moment we see ANY non-whitespace text run, ANY
         /// inline box (which itself may contain content), or ANY inline-block.
         has_visible_content: bool,
+        /// The last character of the IFC's text so far (a space at its start): the
+        /// context `text-transform: capitalize` reads (text_transform.zig).
+        previous_char: u21 = ' ',
         /// Snapshot of the parent block's float context, used by splitIntoLineBoxes
         /// to query per-line exclusions for floats placed before this IFC.
         /// Null when the IFC has no parent block container with float tracking.
@@ -311,10 +290,11 @@ pub fn inlineElement(box_gen: *BoxGen, node: NodeId, inner_inline: BoxStyle.Inne
                 const raw_text = layout.computer.getText();
                 const text = switch (font.text_transform) {
                     .none => raw_text,
-                    .uppercase => try transformCase(layout.allocator, raw_text, .upper),
-                    .lowercase => try transformCase(layout.allocator, raw_text, .lower),
-                    .capitalize => try transformCase(layout.allocator, raw_text, .capitalize),
+                    else => try zss.text_transform.apply(layout.allocator, raw_text, font.text_transform, ctx.ifc.top.?.previous_char),
                 };
+                // Blink's PreviousCharacter: `capitalize` does not start a word again
+                // where the text continues one.
+                if (zss.text_transform.lastCodePoint(raw_text)) |cp| ctx.ifc.top.?.previous_char = cp;
                 // Track for whitespace-only IFC discard (CSS 2.1 §9.2.2.1).
                 // If any character in this text run is not HTML whitespace, the
                 // IFC has visible content and must not be zeroed in endMode.

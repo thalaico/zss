@@ -328,43 +328,10 @@ fn completeComputedValues(sc: *StyleComputer, comptime stage: Stage) void {
     const font_px = sc.resolvedFontSizePx(stage);
     const root_px = rootFontSizePx(stage, sc, sc.current.node);
 
-    if (cur.content_width == null) {
-        var v = sc.getSpecifiedValue(stage, .content_width);
-        v.width = v.width.resolveEm(font_px, root_px);
-        v.min_width = v.min_width.resolveEm(font_px, root_px);
-        v.max_width = v.max_width.resolveEm(font_px, root_px);
-        cur.content_width = v;
-    }
-    if (cur.content_height == null) {
-        var v = sc.getSpecifiedValue(stage, .content_height);
-        v.height = v.height.resolveEm(font_px, root_px);
-        v.min_height = v.min_height.resolveEm(font_px, root_px);
-        v.max_height = v.max_height.resolveEm(font_px, root_px);
-        cur.content_height = v;
-    }
-    if (cur.horizontal_edges == null) {
-        var v = sc.getSpecifiedValue(stage, .horizontal_edges);
-        v.padding_left = v.padding_left.resolveEm(font_px, root_px);
-        v.padding_right = v.padding_right.resolveEm(font_px, root_px);
-        v.margin_left = v.margin_left.resolveEm(font_px, root_px);
-        v.margin_right = v.margin_right.resolveEm(font_px, root_px);
-        cur.horizontal_edges = v;
-    }
-    if (cur.vertical_edges == null) {
-        var v = sc.getSpecifiedValue(stage, .vertical_edges);
-        v.padding_top = v.padding_top.resolveEm(font_px, root_px);
-        v.padding_bottom = v.padding_bottom.resolveEm(font_px, root_px);
-        v.margin_top = v.margin_top.resolveEm(font_px, root_px);
-        v.margin_bottom = v.margin_bottom.resolveEm(font_px, root_px);
-        cur.vertical_edges = v;
-    }
-    if (cur.insets == null) {
-        var v = sc.getSpecifiedValue(stage, .insets);
-        v.left = v.left.resolveEm(font_px, root_px);
-        v.right = v.right.resolveEm(font_px, root_px);
-        v.top = v.top.resolveEm(font_px, root_px);
-        v.bottom = v.bottom.resolveEm(font_px, root_px);
-        cur.insets = v;
+    inline for (.{ .content_width, .content_height, .horizontal_edges, .vertical_edges, .insets }) |group| {
+        if (@field(cur, @tagName(group)) == null) {
+            @field(cur, @tagName(group)) = resolveEmLengths(group, sc.getSpecifiedValue(stage, group), font_px, root_px);
+        }
     }
     if (cur.z_index == null) cur.z_index = sc.getSpecifiedValue(stage, .z_index);
     if (cur.border_styles == null) cur.border_styles = sc.getSpecifiedValue(stage, .border_styles);
@@ -693,7 +660,29 @@ fn rootFontSizePx(comptime stage: Stage, sc: *const StyleComputer, node: NodeId)
     return computeFont(stage, specified, sc, root).font_size.px_val();
 }
 
-/// Given a specified value, returns a computed value.
+/// The length fields of the groups whose computed values differ from their specified
+/// values only by `em` / `rem` (CSS-VALUES-4 §6.1.2: against the element's own font
+/// size; percentages and `auto` stay).
+fn resolveEmLengths(comptime group: groups.Tag, specified: SpecifiedValues(group), font_px: f32, root_px: f32) ComputedValues(group) {
+    const fields = comptime switch (group) {
+        .content_width => .{ "width", "min_width", "max_width" },
+        .content_height => .{ "height", "min_height", "max_height" },
+        .horizontal_edges => .{ "padding_left", "padding_right", "margin_left", "margin_right" },
+        .vertical_edges => .{ "padding_top", "padding_bottom", "margin_top", "margin_bottom" },
+        .insets => .{ "left", "right", "top", "bottom" },
+        else => @compileError("no em lengths in " ++ @tagName(group)),
+    };
+    var v = specified;
+    inline for (fields) |name| @field(v, name) = @field(v, name).resolveEm(font_px, root_px);
+    return v;
+}
+
+/// Given a specified value, returns a computed value: the parent's value for an
+/// `inherit` (also of a non-inherited property: `width: inherit`, `all: inherit`) when
+/// the parent's computed values are not committed yet. The same rules as the table
+/// (`completeComputedValues`, `stageCosmeticValues`): box style solved, the font
+/// computed, em lengths resolved; every other group's computed value is its specified
+/// value.
 fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specified: SpecifiedValues(group), sc: *const StyleComputer, node: NodeId) ComputedValues(group) {
     switch (group) {
         .box_style => {
@@ -708,11 +697,9 @@ fn specifiedToComputed(comptime stage: Stage, comptime group: groups.Tag, specif
             return computed_value;
         },
         .font => return computeFont(stage, specified, sc, node),
-        .color => {
-            return .{
-                .color = specified.color,
-            };
+        .content_width, .content_height, .horizontal_edges, .vertical_edges, .insets => {
+            return resolveEmLengths(group, specified, sc.resolvedFontSizePxForNode(stage, node), rootFontSizePx(stage, sc, node));
         },
-        else => std.debug.panic("TODO: specifiedToComputed for aggregate '{s}'", .{@tagName(group)}),
+        else => return specified,
     }
 }

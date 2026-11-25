@@ -8,6 +8,7 @@ pub const property = @import("property.zig");
 pub const selectors = @import("selectors.zig");
 pub const syntax = @import("syntax.zig");
 pub const unicode = @import("unicode.zig");
+pub const text_transform = @import("text_transform.zig");
 pub const values = @import("values.zig");
 pub const zml = @import("zml.zig");
 pub const custom_properties = @import("custom_properties.zig");

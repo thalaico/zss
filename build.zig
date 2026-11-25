@@ -26,6 +26,26 @@ const Config = struct {
 
 const deps = struct {
     var system_harfbuzz_module: ?*Module = null;
+    var icu_module: ?*Module = null;
+
+    /// `text-transform` case mapping (source/text_transform.zig) uses the host's
+    /// ICU (libicuuc): its headers from the system include directories (or the
+    /// default ones), the library linked by the host (`icuuc`).
+    fn addIcu(b: *Build, config: Config, module: *Module) void {
+        const shim = icu_module orelse blk: {
+            const m = b.createModule(.{
+                .root_source_file = b.path("source/icu_system.zig"),
+                .target = config.target,
+                .optimize = config.optimize,
+                .link_libc = true,
+            });
+            for (config.system_include_dirs) |dir| m.addSystemIncludePath(.{ .cwd_relative = dir });
+            m.linkSystemLibrary("icuuc", .{});
+            icu_module = m;
+            break :blk m;
+        };
+        module.addImport("icu", shim);
+    }
 
     fn addHarfbuzz(b: *Build, config: Config, module: *Module) void {
         if (!config.enable_harfbuzz) return;
@@ -98,6 +118,7 @@ pub fn build(b: *Build) void {
         .optimize = config.optimize,
     });
     deps.addHarfbuzz(b, config, zss);
+    deps.addIcu(b, config, zss);
     deps.addZgl(b, config, zss);
 
     const unit_tests = addUnitTests(b, config, zss);
@@ -122,6 +143,7 @@ fn addUnitTests(b: *Build, config: Config, zss: *Module) *Step.Run {
         .use_llvm = true,
     });
     deps.addHarfbuzz(b, config, unit_tests.root_module);
+    deps.addIcu(b, config, unit_tests.root_module);
 
     const run = b.addRunArtifact(unit_tests);
     const install = b.addInstallArtifact(unit_tests, .{});
@@ -148,6 +170,7 @@ fn addTestSuite(b: *Build, config: Config, zss: *Module) *Step.Run {
         }),
     });
     deps.addHarfbuzz(b, config, test_suite.root_module);
+    deps.addIcu(b, config, test_suite.root_module);
     deps.addZgl(b, config, test_suite.root_module);
     deps.addZigimg(b, config, test_suite.root_module);
 
@@ -215,6 +238,7 @@ fn addDemo(b: *Build, config: Config, zss: *Module) void {
         }),
     });
     deps.addHarfbuzz(b, config, demo.root_module);
+    deps.addIcu(b, config, demo.root_module);
     deps.addZgl(b, config, demo.root_module);
     deps.addZigimg(b, config, demo.root_module);
     deps.addMachGlfw(b, config, demo.root_module);
