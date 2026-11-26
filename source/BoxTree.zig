@@ -546,6 +546,8 @@ pub const InlineFormattingContext = struct {
         /// owned by the layout's `Fonts`: drawn and measured with it.
         hb_font: ?*zss.Fonts.HbFont = null,
         ft_face: ?zss.Fonts.FT_Face = null,
+        /// The `wght` axis value of a variable face (`Fonts.Choice.wght`); 0: none.
+        wght: f32 = 0,
         /// The family whose face the text waits for (its font loading, CSS Fonts 4
         /// §4.4), and that face (`Fonts.SubFace.id`): painted only after the face's
         /// block period, by the host's choice.

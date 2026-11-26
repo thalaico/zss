@@ -805,7 +805,7 @@ fn addTextByFace(layout: *Layout, ifc: *Ifc, text: []const u8, font: zss.values.
 }
 
 fn sameFace(a: Fonts.Choice, b: Fonts.Choice) bool {
-    return a.hb_font == b.hb_font and std.meta.eql(a.pending, b.pending);
+    return a.hb_font == b.hb_font and a.wght == b.wght and std.meta.eql(a.pending, b.pending);
 }
 
 /// A character that belongs with the character before it (a mark, a format control).
@@ -826,6 +826,7 @@ fn followsPrevious(cp: u21) bool {
 fn addFaceText(layout: *Layout, ifc: *Ifc, text: []const u8, begin: usize, stop: usize, font: zss.values.groups.Tag.ComputedValues(.font), choice: Fonts.Choice) !void {
     const size = font.font_size.px_val();
     Fonts.setFaceSize(choice.ft_face, choice.hb_font, size);
+    Fonts.setWeightVariation(choice.hb_font, choice.wght);
     const glyph_start: u32 = @intCast(ifc.glyphs.len);
     try ifcAddText(layout.box_tree, ifc, text, begin, stop, choice.hb_font, font.white_space);
     const glyph_end: u32 = @intCast(ifc.glyphs.len);
@@ -837,6 +838,7 @@ fn addFaceText(layout: *Layout, ifc: *Ifc, text: []const u8, begin: usize, stop:
         const last = &runs.items[runs.items.len - 1];
         if (std.meta.eql(last.font_family, font.font_family) and
             last.hb_font == choice.hb_font and
+            last.wght == choice.wght and
             last.font_weight == font.font_weight and
             last.font_style == font.font_style and
             last.text_transform == font.text_transform and
@@ -859,6 +861,7 @@ fn addFaceText(layout: *Layout, ifc: *Ifc, text: []const u8, begin: usize, stop:
         .font_size = size,
         .hb_font = choice.hb_font,
         .ft_face = choice.ft_face,
+        .wght = choice.wght,
         .pending_family = pending_family,
         .pending_face = pending_face,
     });
@@ -1102,12 +1105,17 @@ fn unitsCeil(positions: i64) Unit {
 /// `hb_font_t` in place for every size of a face — keyed on the pointer
 /// alone, text shaped at 32px was reused at 16px ("R e a c t"). Reset at the
 /// start of every layout, so a freed and reused font pointer can never hit.
-const FontKey = struct { ptr: usize, x_scale: i32, y_scale: i32 };
+/// The variation coordinates are part of the key too: a variable face's font is set to
+/// each weight it serves in turn (`Fonts.setWeightVariation`).
+const FontKey = struct { ptr: usize, x_scale: i32, y_scale: i32, coords: u64 };
 fn fontKey(font: *hb.hb_font_t) FontKey {
     var x: c_int = 0;
     var y: c_int = 0;
     hb.hb_font_get_scale(font, &x, &y);
-    return .{ .ptr = @intFromPtr(font), .x_scale = x, .y_scale = y };
+    var len: c_uint = 0;
+    const coords = hb.hb_font_get_var_coords_normalized(font, &len);
+    const coords_hash: u64 = if (len == 0 or coords == null) 0 else std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(coords[0..len]));
+    return .{ .ptr = @intFromPtr(font), .x_scale = x, .y_scale = y, .coords = coords_hash };
 }
 const ShapeKey = struct { font: FontKey, text: []const u8 };
 const ShapeKeyContext = struct {
@@ -1911,6 +1919,7 @@ fn ifcSolveMetrics(ifc: *Ifc, subtree: Subtree.View, fonts: *const Fonts) void {
                 if (run.hb_font) |run_font| {
                     font = run_font;
                     Fonts.setFaceSize(run.ft_face.?, run_font, run.font_size);
+                    Fonts.setWeightVariation(run_font, run.wght);
                 }
             }
             // Advance already stored from hb_shape; fill extents only.

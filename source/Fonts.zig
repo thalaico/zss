@@ -118,6 +118,39 @@ pub fn setFaceSize(ft_face: FT_Face, hb_font: *hb.hb_font_t, size_px: f32) void 
     hb.hb_font_set_ptem(hb_font, size_px);
 }
 
+/// OpenType variation axis tag `wght` (HB_OT_TAG_VAR_AXIS_WEIGHT).
+const wght_tag: hb.hb_tag_t = (@as(u32, 'w') << 24) | (@as(u32, 'g') << 16) | (@as(u32, 'h') << 8) | 't';
+
+// hb-ot-var.h, declared here: neither HarfBuzz import (vendored, system) pulls in hb-ot.h.
+const OtVarAxisInfo = extern struct {
+    axis_index: c_uint,
+    tag: hb.hb_tag_t,
+    name_id: c_uint,
+    flags: c_uint,
+    min_value: f32,
+    default_value: f32,
+    max_value: f32,
+    reserved: c_uint,
+};
+extern fn hb_ot_var_find_axis_info(face: ?*hb.hb_face_t, axis_tag: hb.hb_tag_t, axis_info: *OtVarAxisInfo) hb.hb_bool_t;
+
+/// Whether a font has a `wght` variation axis.
+pub fn hasWeightAxis(font: *hb.hb_font_t) bool {
+    var info: OtVarAxisInfo = undefined;
+    return hb_ot_var_find_axis_info(hb.hb_font_get_face(font), wght_tag, &info) != 0;
+}
+
+/// Set the `wght` axis of a font to `wght` (0: the font's default instance). A face's
+/// HarfBuzz font is shared by every weight it serves: set it before each use.
+pub fn setWeightVariation(font: *hb.hb_font_t, wght: f32) void {
+    if (wght == 0) {
+        hb.hb_font_set_variations(font, null, 0);
+        return;
+    }
+    const variation: hb.hb_variation_t = .{ .tag = wght_tag, .value = wght };
+    hb.hb_font_set_variations(font, &variation, 1);
+}
+
 /// Destroy a HarfBuzz font created with createHbFont().
 pub fn destroyHbFont(font: *hb.hb_font_t) void {
     hb.hb_font_destroy(font);
@@ -149,6 +182,11 @@ pub const SubFace = struct {
     id: u16,
     /// The face will not load (its sources failed): never used or waited for.
     failed: bool = false,
+    /// The rule's `font-weight` descriptor range; with a `wght` axis in the font, a
+    /// run's weight clamped to it is the axis value (`Choice.wght`).
+    weight_min: f32 = 400,
+    weight_max: f32 = 400,
+    wght_axis: bool = false,
 
     pub fn inRange(sub: SubFace, cp: u21) bool {
         if (sub.ranges.len == 0) return true;
@@ -165,6 +203,8 @@ pub const Choice = struct {
     /// (CSS Fonts 4 §4.4): its family and id. The text is drawn with the chosen face
     /// meanwhile, and not at all during the face's block period.
     pending: ?Pending = null,
+    /// The `wght` axis value to shape and draw with (a variable face); 0: none set.
+    wght: f32 = 0,
 
     pub const Pending = struct { family: u8, face: u16 };
 };
@@ -220,7 +260,11 @@ pub fn faceFor(fonts: *const Fonts, chain: []const types.FontFamily, primary: Ha
                         continue;
                     };
                     if (!hasGlyph(hb_font, cp)) continue;
-                    return .{ .hb_font = hb_font, .ft_face = sub.ft_face.?, .pending = pending };
+                    // CSS Fonts 4 §5.2 / §4.4: a variable face takes the weight, clamped to its
+                    // descriptor's range, on its `wght` axis (Blink: the selection request's
+                    // weight clamped to the face's capabilities).
+                    const wght: f32 = if (sub.wght_axis) std.math.clamp(@as(f32, @floatFromInt(@intFromEnum(weight))), sub.weight_min, sub.weight_max) else 0;
+                    return .{ .hb_font = hb_font, .ft_face = sub.ft_face.?, .pending = pending, .wght = wght };
                 }
                 continue;
             }
